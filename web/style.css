@@ -17,6 +17,24 @@
   --green:#a6e3a1; --red:#f38ba8; --yellow:#f9e2af; --blue:#89b4fa;
   --sel:#26263a;
 }
+[data-theme="nord"] {
+  --bg0:#2e3440; --bg1:#3b4252; --bg2:#434c5e; --border:#4c566a;
+  --fg:#eceff4; --mut:#8e9bb3; --acc:#ebcb8b; --acc-dim:#4d4429;
+  --green:#a3be8c; --red:#bf616a; --yellow:#ebcb8b; --blue:#88c0d0;
+  --sel:#434c5e;
+}
+[data-theme="dracula"] {
+  --bg0:#282a36; --bg1:#343746; --bg2:#44475a; --border:#4d5169;
+  --fg:#f8f8f2; --mut:#9a9cb3; --acc:#ffb86c; --acc-dim:#54432c;
+  --green:#50fa7b; --red:#ff5555; --yellow:#f1fa8c; --blue:#8be9fd;
+  --sel:#44475a;
+}
+[data-theme="gruvbox"] {
+  --bg0:#282828; --bg1:#3c3836; --bg2:#504945; --border:#665c54;
+  --fg:#ebdbb2; --mut:#a89984; --acc:#fe8019; --acc-dim:#4e3a1f;
+  --green:#b8bb26; --red:#fb4934; --yellow:#fabd2f; --blue:#83a598;
+  --sel:#3c3836;
+}
 * { box-sizing:border-box; }
 :focus-visible { outline:2px solid var(--acc); outline-offset:1px; border-radius:4px; }
 body { margin:0; background:var(--bg0); color:var(--fg);

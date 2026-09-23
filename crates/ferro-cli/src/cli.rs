@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "ferro", version, about = "Ferro — fast local code review")]
 pub struct Cli {
-    /// Directory to inspect (serve mode). Defaults to cwd.
+    /// Directory, file, file:line, or GitHub PR URL to inspect.
     pub path: Option<PathBuf>,
 
     #[arg(short, long, default_value_t = 7778)]
@@ -34,6 +34,10 @@ pub struct Cli {
     /// Disable ANSI colors in terminal output.
     #[arg(long, default_value_t = false)]
     pub no_color: bool,
+
+    /// Bypass refusal when opening an already-merged PR URL.
+    #[arg(short = 'y', long = "yes", default_value_t = false)]
+    pub yes: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,

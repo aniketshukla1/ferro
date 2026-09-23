@@ -58,11 +58,32 @@ async fn serve(cli: Cli) -> AnyhowResult {
             return serve_pr(cli, info).await;
         }
     }
-    let root = cli
-        .path
-        .unwrap_or_else(|| PathBuf::from("."))
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("."));
+    // file:line launch: serve the containing dir, open the file at the line.
+    let mut initial: Option<(String, usize)> = None;
+    let root = match cli.path.clone() {
+        Some(p) => {
+            let s = p.to_string_lossy().to_string();
+            if let Some((f, l)) = split_file_line(&s) {
+                let fp = std::path::Path::new(&f);
+                let dir = fp
+                    .parent()
+                    .filter(|d| !d.as_os_str().is_empty())
+                    .map(|d| d.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                let name = fp
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or(f);
+                initial = Some((name, l));
+                dir.canonicalize().unwrap_or_else(|_| PathBuf::from("."))
+            } else {
+                p.canonicalize().unwrap_or_else(|_| PathBuf::from("."))
+            }
+        }
+        None => PathBuf::from(".")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(".")),
+    };
 
     let state = Arc::new(ferro_core::Index::new(root.clone()));
     let bg = state.clone();
@@ -70,17 +91,56 @@ async fn serve(cli: Cli) -> AnyhowResult {
 
     server::serve(
         state,
-        &cli.host,
-        cli.port,
-        cli.no_git,
-        !cli.quiet,
-        cli.no_open,
+        server::ServeOpts {
+            host: cli.host,
+            port: cli.port,
+            no_git: cli.no_git,
+            narrate: !cli.quiet,
+            no_open: cli.no_open,
+            initial,
+        },
     )
     .await;
     Ok(())
 }
 
+/// Split `path:line` (line = trailing :digits, file must exist or parent dir must).
+fn split_file_line(s: &str) -> Option<(String, usize)> {
+    let (head, tail) = s.rsplit_once(':')?;
+    let line: usize = tail.parse().ok()?;
+    if line == 0 {
+        return None;
+    }
+    let p = std::path::Path::new(head);
+    if p.is_file() || p.parent().map(|d| d.is_dir()).unwrap_or(false) {
+        Some((head.to_string(), line))
+    } else {
+        None
+    }
+}
+
 async fn serve_pr(cli: Cli, info: ferro_core::pr::PrInfo) -> AnyhowResult {
+    if !cli.yes {
+        // Refuse already-merged PRs unless -y (px0 parity).
+        let state_out = std::process::Command::new("gh")
+            .args([
+                "pr",
+                "view",
+                &info.number.to_string(),
+                "--repo",
+                &format!("{}/{}", info.owner, info.repo),
+                "--json",
+                "state",
+                "--jq",
+                ".state",
+            ])
+            .output();
+        if let Ok(o) = state_out {
+            if o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "MERGED" {
+                return Err("PR already merged (use -y to open anyway)".into());
+            }
+        }
+    }
     eprintln!(
         "ferro: fetching PR #{} {}/{} …",
         info.number, info.owner, info.repo
@@ -111,11 +171,14 @@ async fn serve_pr(cli: Cli, info: ferro_core::pr::PrInfo) -> AnyhowResult {
     let _keep = work;
     server::serve(
         state,
-        &cli.host,
-        cli.port,
-        cli.no_git,
-        !cli.quiet,
-        cli.no_open,
+        server::ServeOpts {
+            host: cli.host,
+            port: cli.port,
+            no_git: cli.no_git,
+            narrate: !cli.quiet,
+            no_open: cli.no_open,
+            initial: None,
+        },
     )
     .await;
     Ok(())
@@ -180,3 +243,17 @@ async fn ask(
 }
 
 type AnyhowResult = Result<(), Box<dyn std::error::Error>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_file_line() {
+        // CWD for bin tests is the package dir.
+        assert_eq!(split_file_line("src/main.rs:42"), Some(("src/main.rs".into(), 42)));
+        assert_eq!(split_file_line("src/main.rs"), None);
+        assert_eq!(split_file_line("nope/nothing.rs:10"), None);
+        assert_eq!(split_file_line("README.md:0"), None);
+    }
+}

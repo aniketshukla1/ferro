@@ -48,8 +48,8 @@ Legend: DONE · PART (partial) · TODO · SKIP (deferred with reason) · EDGE (f
 |---|---|
 | `px0 <pr-url>` ephemeral worktree + merge-base diff | DONE (PR-1a, verified on px0#158) |
 | Inline draft comments + submit (approve/changes) | DONE (PR-1b, submit via gh) |
-| Stage / commit / push panel, AI commit message | TODO |
-| Per-file stage ticks, ff-only pull | TODO |
+| Stage / commit / push panel, AI commit message | DONE (panel + AI draft + ff-only pull) |
+| Per-file stage ticks, ff-only pull | DONE |
 
 ## Systems
 

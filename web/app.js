@@ -119,7 +119,7 @@ function activatable(el, fn) {
 }
 
 /* ---------- themes ---------- */
-const THEMES = ['forge', 'paper', 'mocha'];
+const THEMES = ['forge', 'paper', 'mocha', 'nord', 'dracula', 'gruvbox'];
 function setTheme(t) {
   if (!THEMES.includes(t)) t = 'forge';
   document.documentElement.dataset.theme = t;
@@ -1174,8 +1174,7 @@ async function boot(reset) {
   renderSidebar(allFiles);
   status();
   try {
-    const info = await apiPrInfo();
-    prInfo = info && info.pr ? info.pr : null;
+    const info = await apiPrInfo();    prInfo = info && info.pr ? info.pr : null;
     const banner = $('prbanner');
     if (info && info.pr) {
       const pr = info.pr;
@@ -1194,6 +1193,17 @@ async function boot(reset) {
   setTimeout(bootStats, 800);
   if (!invoke && openBtn) openBtn.style.display = 'none';
   if (reset && currentPath) openFile(currentPath);
-  else showHome();
+  else {
+    // Deep link: /?file=path&line=N (from `ferro file:line`).
+    const params = new URLSearchParams(location.search);
+    const f = params.get('file');
+    if (f && allFiles.some(x => (typeof x === 'string' ? x : x.path) === f)) {
+      const n = parseInt(params.get('line') || '1', 10) || 1;
+      await openFile(f);
+      viewport.scrollTop = Math.max(0, (n - 8) * ROW_H);
+      paint();
+      history.replaceState(null, '', location.pathname);
+    } else showHome();
+  }
 }
 boot(false);

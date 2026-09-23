@@ -12,18 +12,22 @@ use tower_http::trace::TraceLayer;
 
 use ferro_core::Index;
 
+#[derive(Debug, Clone)]
+pub struct ServeOpts {
+    pub host: String,
+    pub port: u16,
+    pub no_git: bool,
+    pub narrate: bool,
+    pub no_open: bool,
+    /// File to open on boot with 1-based line.
+    pub initial: Option<(String, usize)>,
+}
+
 #[derive(RustEmbed, Clone)]
 #[folder = "../../web/"]
 struct Web;
 
-pub async fn serve(
-    state: Arc<Index>,
-    host: &str,
-    port: u16,
-    no_git: bool,
-    narrate: bool,
-    no_open: bool,
-) {
+pub async fn serve(state: Arc<Index>, o: ServeOpts) {
     let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/stats", get(stats))
@@ -35,7 +39,7 @@ pub async fn serve(
         .route("/api/file-window", get(file_window))
         .route("/api/highlight", get(highlight))
         .route("/api/ask", post(ask));
-    if !no_git {
+    if !o.no_git {
         app = app
             .route("/api/git-status", get(git_status))
             .route("/api/diff", get(diff));
@@ -45,7 +49,7 @@ pub async fn serve(
         .route("/api/review/drafts", get(review_list).post(review_add))
         .route("/api/review/drafts/{id}", delete(review_delete))
         .route("/api/review/submit", post(review_submit));
-    if !no_git {
+    if !o.no_git {
         app = app
             .route("/api/git/stage", post(git_stage))
             .route("/api/git/unstage", post(git_unstage))
@@ -59,23 +63,32 @@ pub async fn serve(
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 
-    let listener = tokio::net::TcpListener::bind(format!("{host}:{port}"))
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", o.host, o.port))
         .await
         .expect("bind");
-    let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
-    let host_out = if host == "0.0.0.0" { "127.0.0.1" } else { host };
-    if narrate {
-        tracing::info!(
-            "ferro serving {} on http://{}:{}/",
-            state.root().display(),
+    let bound = listener.local_addr().map(|a| a.port()).unwrap_or(o.port);
+    let host_out = if o.host == "0.0.0.0" {
+        "127.0.0.1"
+    } else {
+        o.host.as_str()
+    };
+    let mut url = format!("http://{}:{}/", host_out, bound);
+    if let Some((f, l)) = &o.initial {
+        url = format!(
+            "http://{}:{}/?file={}&line={}",
             host_out,
-            bound
+            bound,
+            encode_qs(f),
+            l
         );
-        println!("ferro http://{}:{}/", host_out, bound);
+    }
+    if o.narrate {
+        tracing::info!("ferro serving {} on {}", state.root().display(), url);
+        println!("ferro {}", url);
     }
 
-    if !no_open {
-        let _ = open::that(format!("http://127.0.0.1:{bound}/"));
+    if !o.no_open {
+        let _ = open::that(url);
     }
 
     axum::serve(listener, app).await.expect("serve");
@@ -423,6 +436,18 @@ async fn static_file(uri: axum::http::Uri) -> impl IntoResponse {
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+fn encode_qs(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 fn mime_guess(p: &str) -> &'static str {
