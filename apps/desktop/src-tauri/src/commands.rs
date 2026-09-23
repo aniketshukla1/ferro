@@ -283,3 +283,71 @@ pub async fn review_submit(
     ferro_agent::drafts().clear();
     Ok(out)
 }
+
+async fn git_run(
+    state: State<'_, CoreState>,
+    f: impl FnOnce(std::path::PathBuf) -> Result<String, String> + Send + 'static,
+) -> Result<String, String> {
+    let root = state.get().root().to_path_buf();
+    tokio::task::spawn_blocking(move || f(root))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn git_stage(state: State<'_, CoreState>, paths: Vec<String>) -> Result<String, String> {
+    git_run(state, move |r| ferro_core::git::stage(&r, &paths)).await
+}
+
+#[tauri::command]
+pub async fn git_unstage(
+    state: State<'_, CoreState>,
+    paths: Vec<String>,
+) -> Result<String, String> {
+    git_run(state, move |r| ferro_core::git::unstage(&r, &paths)).await
+}
+
+#[tauri::command]
+pub async fn git_commit(state: State<'_, CoreState>, message: String) -> Result<String, String> {
+    git_run(state, move |r| ferro_core::git::commit(&r, &message)).await
+}
+
+#[tauri::command]
+pub async fn git_push(state: State<'_, CoreState>) -> Result<String, String> {
+    git_run(state, |r| ferro_core::git::push(&r)).await
+}
+
+#[tauri::command]
+pub async fn git_pull(state: State<'_, CoreState>) -> Result<String, String> {
+    git_run(state, |r| ferro_core::git::pull_ff(&r)).await
+}
+
+#[tauri::command]
+pub async fn git_commit_message(state: State<'_, CoreState>) -> Result<String, String> {
+    let provider =
+        ferro_agent::OpenAiCompat::from_env(None, None, None).map_err(|e| e.to_string())?;
+    let root = state.get().root().to_path_buf();
+    let staged = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["diff", "--cached"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if staged.trim().is_empty() {
+        return Err("nothing staged — stage files first".into());
+    }
+    let basis: String = staged.chars().take(6000).collect();
+    provider
+        .complete_simple(
+            "Write a single conventional-commit message (type: subject, <=72 chars, imperative). Output only the message.",
+            &format!("Diff:\n{basis}"),
+        )
+        .await
+        .map(|m| m.lines().next().unwrap_or("").trim().to_string())
+        .map_err(|e| e.to_string())
+}

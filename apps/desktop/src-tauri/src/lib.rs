@@ -36,6 +36,12 @@ pub fn run() {
             commands::draft_list,
             commands::draft_delete,
             commands::review_submit,
+            commands::git_stage,
+            commands::git_unstage,
+            commands::git_commit,
+            commands::git_commit_message,
+            commands::git_push,
+            commands::git_pull,
             commands::ask,
         ])
         .run(tauri::generate_context!())

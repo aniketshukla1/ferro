@@ -45,6 +45,15 @@ pub async fn serve(
         .route("/api/review/drafts", get(review_list).post(review_add))
         .route("/api/review/drafts/{id}", delete(review_delete))
         .route("/api/review/submit", post(review_submit));
+    if !no_git {
+        app = app
+            .route("/api/git/stage", post(git_stage))
+            .route("/api/git/unstage", post(git_unstage))
+            .route("/api/git/commit", post(git_commit))
+            .route("/api/git/commit-message", post(git_commit_message))
+            .route("/api/git/push", post(git_push))
+            .route("/api/git/pull", post(git_pull));
+    }
     let app = app
         .fallback(static_file)
         .layer(TraceLayer::new_for_http())
@@ -288,6 +297,89 @@ async fn review_delete(Path(id): Path<String>) -> impl IntoResponse {
 struct SubmitBody {
     event: Option<String>,
     body: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PathsBody {
+    paths: Vec<String>,
+}
+
+async fn git_op(
+    s: Arc<Index>,
+    f: impl FnOnce(&std::path::Path) -> Result<String, String> + Send + 'static,
+) -> impl IntoResponse {
+    let root = s.root().to_path_buf();
+    let out = tokio::task::spawn_blocking(move || f(&root))
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+    match out {
+        Ok(o) => (StatusCode::OK, o).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+async fn git_stage(State(s): State<Arc<Index>>, Json(b): Json<PathsBody>) -> impl IntoResponse {
+    git_op(s, move |r| ferro_core::git::stage(r, &b.paths)).await
+}
+
+async fn git_unstage(State(s): State<Arc<Index>>, Json(b): Json<PathsBody>) -> impl IntoResponse {
+    git_op(s, move |r| ferro_core::git::unstage(r, &b.paths)).await
+}
+
+#[derive(Deserialize)]
+struct CommitBody {
+    message: String,
+}
+
+async fn git_commit(State(s): State<Arc<Index>>, Json(b): Json<CommitBody>) -> impl IntoResponse {
+    git_op(s, move |r| ferro_core::git::commit(r, &b.message)).await
+}
+
+async fn git_push(State(s): State<Arc<Index>>) -> impl IntoResponse {
+    git_op(s, ferro_core::git::push).await
+}
+
+async fn git_pull(State(s): State<Arc<Index>>) -> impl IntoResponse {
+    git_op(s, ferro_core::git::pull_ff).await
+}
+
+async fn git_commit_message(State(s): State<Arc<Index>>) -> impl IntoResponse {
+    let provider = match ferro_agent::OpenAiCompat::from_env(None, None, None) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::SERVICE_UNAVAILABLE, format!("no provider: {e}")).into_response()
+        }
+    };
+    let root = s.root().to_path_buf();
+    let staged = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["diff", "--cached"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
+    if staged.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "nothing staged — stage files first".to_string(),
+        )
+            .into_response();
+    }
+    let basis: String = staged.chars().take(6000).collect();
+    match provider
+        .complete_simple(
+            "Write a single conventional-commit message (type: subject, <=72 chars, imperative). Output only the message.",
+            &format!("Diff:\n{basis}"),
+        )
+        .await
+    {
+        Ok(m) => Json(serde_json::json!({"message": m.lines().next().unwrap_or("").trim()})).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    }
 }
 
 async fn review_submit(

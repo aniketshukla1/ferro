@@ -76,3 +76,93 @@ pub fn revert(root: &Path, tracked: &[String], untracked: &[String]) -> Result<(
     }
     Ok(())
 }
+
+pub fn stage(root: &Path, paths: &[String]) -> Result<String, String> {
+    if paths.is_empty() {
+        return Err("no paths".into());
+    }
+    let mut args = vec!["add", "--"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    run_check(root, &args)
+}
+
+pub fn unstage(root: &Path, paths: &[String]) -> Result<String, String> {
+    if paths.is_empty() {
+        return Err("no paths".into());
+    }
+    let mut args = vec!["reset", "HEAD", "--"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    run_check(root, &args)
+}
+
+pub fn commit(root: &Path, message: &str) -> Result<String, String> {
+    if message.trim().is_empty() {
+        return Err("empty message".into());
+    }
+    let staged = run_check(root, &["diff", "--cached", "--quiet"]).is_err();
+    if !staged {
+        return Err("nothing staged".into());
+    }
+    run_check(root, &["commit", "-m", message])
+}
+
+pub fn push(root: &Path) -> Result<String, String> {
+    run_check(root, &["push"])
+}
+
+pub fn pull_ff(root: &Path) -> Result<String, String> {
+    run_check(root, &["pull", "--ff-only"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            assert!(Command::new("git")
+                .arg("-C")
+                .arg(r)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::write(r.join("a.txt"), "one\n").unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(r)
+            .args(["add", "."])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(r)
+            .args(["commit", "-m", "init"])
+            .status()
+            .unwrap()
+            .success());
+        dir
+    }
+
+    #[test]
+    fn stage_unstage_commit() {
+        let dir = repo();
+        std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
+        stage(dir.path(), &["a.txt".to_string()]).unwrap();
+        assert!(status(dir.path()).contains('M'));
+        unstage(dir.path(), &["a.txt".to_string()]).unwrap();
+        commit(dir.path(), "should fail").unwrap_err();
+        stage(dir.path(), &["a.txt".to_string()]).unwrap();
+        let out = commit(dir.path(), "second").unwrap();
+        assert!(out.contains("second") || out.contains("1 file changed"));
+    }
+}

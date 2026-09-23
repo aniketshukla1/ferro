@@ -191,6 +191,27 @@ body.wrap #viewport.static #spacer { height:auto !important; }
 .d-del { background:color-mix(in srgb, var(--red) 14%, transparent); }
 .d-add { background:color-mix(in srgb, var(--green) 13%, transparent); }
 .d-empty { color:var(--mut); padding:12px; }
+/* git panel */
+#gitpanel { position:absolute; inset:0; overflow:auto; background:var(--bg0); padding:16px 20px; z-index:4; }
+#gitpanel[hidden] { display:none; }
+.git-head { display:flex; gap:10px; align-items:center; margin-bottom:12px; }
+.git-head .sp { flex:1; }
+.git-head button, .git-row button, .git-commit button {
+  background:var(--bg1); color:var(--fg); border:1px solid var(--border);
+  border-radius:8px; padding:6px 12px; cursor:pointer; }
+.git-head button:hover, .git-row button:hover, .git-commit button:hover { border-color:var(--acc); }
+#git-files { display:flex; flex-direction:column; gap:2px; margin-bottom:14px; }
+.gf { display:flex; gap:10px; align-items:center; padding:5px 8px; border-radius:6px; cursor:pointer; }
+.gf:hover { background:var(--bg2); }
+.gf input { accent-color:var(--acc); }
+.gf .xy { font-family:ui-monospace, monospace; font-size:11px; width:28px; color:var(--mut); }
+.gf .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.gf .staged-tag { font-size:10px; color:var(--green); }
+.git-commit { display:flex; gap:8px; margin-bottom:10px; }
+.git-commit input { flex:1; background:var(--bg1); color:var(--fg); border:1px solid var(--border); border-radius:8px; padding:7px 10px; }
+.git-commit input:focus { outline:none; border-color:var(--acc); }
+.git-row { display:flex; gap:8px; align-items:center; }
+.git-row .mut { color:var(--mut); font-size:12px; }
 /* status */
 #status { display:flex; gap:14px; padding:4px 12px; font-size:11.5px; color:var(--mut);
   background:var(--bg1); border-top:1px solid var(--border); }

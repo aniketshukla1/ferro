@@ -122,6 +122,56 @@ impl OpenAiCompat {
     pub fn label(&self) -> String {
         format!("{} @ {}", self.model, self.base_url)
     }
+
+    /// Single-shot completion without tools (commit messages, summaries).
+    pub async fn complete_simple(&self, system: &str, user: &str) -> Result<String, ProviderError> {
+        let messages = vec![
+            ChatMessage {
+                role: "system".into(),
+                content: Some(system.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: Some(user.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+        let req = ChatRequest {
+            model: &self.model,
+            messages: &messages,
+            tools: vec![],
+            tool_choice: "auto",
+        };
+        let resp = self
+            .client
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Transport(e.to_string()))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            let short: String = body.chars().take(300).collect();
+            return Err(ProviderError::BadResponse(format!("{status}: {short}")));
+        }
+        let parsed: ChatResponse = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::BadResponse(e.to_string()))?;
+        Ok(parsed
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|c| c.message.content)
+            .unwrap_or_default()
+            .trim()
+            .to_string())
+    }
 }
 
 #[derive(Serialize)]

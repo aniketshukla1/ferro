@@ -264,16 +264,106 @@ function goHistory(dir) {
 }
 
 function parseGitStatus(text) {
-  gitMap = new Map(); gitBranch = '';
+  gitMap = new Map(); gitBranch = ''; gitEntries = [];
   for (const line of String(text).split('\n')) {
     if (line.startsWith('## ')) { gitBranch = line.slice(3).split('...')[0]; continue; }
     if (line.length > 3) {
-      const xy = line.slice(0, 2).trim() || 'M';
+      const x = line[0] === ' ' ? '' : line[0];
+      const y = line[1] === ' ' ? '' : line[1];
+      const xy = (x + y) || 'M';
       const p = line.slice(3).trim().replace(/^"(.+)"$/, '$1');
-      if (p) gitMap.set(p, xy);
+      if (p) { gitMap.set(p, xy); gitEntries.push({ path: p, x, y }); }
     }
   }
 }
+
+/* ---------- git panel ---------- */
+let gitEntries = [];
+const gitpanel = $('gitpanel');
+async function gitPost(path, body) {
+  if (invoke) {
+    const cmd = { '/api/git/stage': 'git_stage', '/api/git/unstage': 'git_unstage', '/api/git/commit': 'git_commit', '/api/git/push': 'git_push', '/api/git/pull': 'git_pull' }[path];
+    if (path === '/api/git/commit') return await invoke('git_commit', { message: body.message });
+    if (path === '/api/git/commit-message') return await invoke('git_commit_message');
+    if (cmd) return await invoke(cmd, body?.paths !== undefined ? { paths: body.paths } : {});
+    throw new Error('unknown git op');
+  }
+  const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const t = await r.text();
+  if (!r.ok) throw new Error(t);
+  return t;
+}
+function openGitPanel() {
+  cur.mode = 'git';
+  viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; homeEl.hidden = true; plainEl.hidden = true; outlineEl.hidden = true;
+  gitpanel.hidden = false;
+  renderGitPanel();
+}
+function checkedPaths() {
+  return [...document.querySelectorAll('#git-files input:checked')].map(c => c.dataset.p);
+}
+function renderGitPanel() {
+  $('git-branch').textContent = gitBranch ? '⎇ ' + gitBranch : '';
+  const host = $('git-files');
+  host.innerHTML = '';
+  if (!gitEntries.length) {
+    host.innerHTML = '<div class="d-empty">Working tree clean.</div>';
+  }
+  for (const e of gitEntries) {
+    const d = document.createElement('div');
+    d.className = 'gf';
+    const tag = e.x ? '<span class="staged-tag">staged</span>' : '';
+    d.innerHTML = `<input type="checkbox" data-p="${esc(e.path)}" ${e.y ? 'checked' : ''} aria-label="Select ${esc(e.path)}"/>` +
+      `<span class="xy">${esc((e.x || ' ') + (e.y || ' '))}</span>` +
+      `<span class="nm">${esc(e.path)}</span>${tag}`;
+    d.onclick = (ev) => { if (ev.target.tagName !== 'INPUT') { const c = d.querySelector('input'); c.checked = !c.checked; } };
+    host.appendChild(d);
+  }
+}
+async function refreshGit() {
+  try { parseGitStatus(await apiGitStatus()); } catch {}
+  renderSidebar(allFiles);
+  status();
+  if (cur.mode === 'git') renderGitPanel();
+  if (cur.mode === 'file') { const st = gitMap.get(cur.path); fbDirty.hidden = !st; }
+}
+$('git-stage').onclick = async () => {
+  try { $('git-out').textContent = 'staging…'; await gitPost('/api/git/stage', { paths: checkedPaths() }); $('git-out').textContent = 'staged'; }
+  catch (e) { $('git-out').textContent = String(e.message || e); }
+  refreshGit();
+};
+$('git-unstage').onclick = async () => {
+  try { await gitPost('/api/git/unstage', { paths: checkedPaths() }); $('git-out').textContent = 'unstaged'; }
+  catch (e) { $('git-out').textContent = String(e.message || e); }
+  refreshGit();
+};
+$('git-commit-btn').onclick = async () => {
+  try {
+    const out = await gitPost('/api/git/commit', { message: $('git-msg').value });
+    $('git-out').textContent = String(out).split('\n')[0] || 'committed';
+    $('git-msg').value = '';
+  } catch (e) { $('git-out').textContent = String(e.message || e); }
+  refreshGit();
+};
+$('git-ai').onclick = async () => {
+  try {
+    $('git-out').textContent = 'drafting…';
+    const m = await gitPost('/api/git/commit-message', {});
+    const msg = typeof m === 'string' ? JSON.parse(m).message : m.message;
+    $('git-msg').value = msg || '';
+    $('git-out').textContent = msg ? 'drafted — edit then Commit' : 'no message';
+  } catch (e) { $('git-out').textContent = String(e.message || e); }
+};
+$('git-push').onclick = async () => {
+  try { $('git-out').textContent = 'pushing…'; await gitPost('/api/git/push', {}); $('git-out').textContent = 'pushed'; }
+  catch (e) { $('git-out').textContent = String(e.message || e); }
+  refreshGit();
+};
+$('git-pull').onclick = async () => {
+  try { await gitPost('/api/git/pull', {}); $('git-out').textContent = 'pulled (ff-only)'; }
+  catch (e) { $('git-out').textContent = String(e.message || e); }
+  refreshGit(); bootStats();
+};
 
 /* ---------- status bar ---------- */
 function status() {
@@ -286,14 +376,14 @@ function status() {
 const ROW_H = 20, OVERSCAN = 24, WIN = 200;
 const cur = { path: null, total: 0, cache: new Map(), mode: 'plain', pending: new Set() };
 
-function showFileMode() { cur.mode = 'file'; plainEl.hidden = true; askpanel.hidden = true; diffview.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; viewport.hidden = false; filebar.hidden = false; }
+function showFileMode() { cur.mode = 'file'; plainEl.hidden = true; askpanel.hidden = true; diffview.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; gitpanel.hidden = true; viewport.hidden = false; filebar.hidden = false; }
 function showPlainMode(text) {
-  cur.mode = 'plain'; viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; plainEl.hidden = false;
+  cur.mode = 'plain'; viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; gitpanel.hidden = true; plainEl.hidden = false;
   if (text !== undefined) plainEl.textContent = text;
 }
 function showHome() {
   cur.mode = 'home'; cur.path = null; currentPath = null;
-  viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; plainEl.hidden = true; homeEl.hidden = false;
+  viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; plainEl.hidden = true; homeEl.hidden = false; gitpanel.hidden = true; outlineEl.hidden = true;
   renderHome(); status(); renderTabs(); renderSidebar(allFiles);
 }
 function renderHome() {
@@ -323,7 +413,7 @@ document.querySelectorAll('.hero-actions button').forEach(b => b.onclick = () =>
   else if (act === 'ask') askq.focus();
 });
 function showDiffMode() {
-  cur.mode = 'diff'; viewport.hidden = true; askpanel.hidden = true; plainEl.hidden = true; filebar.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; diffview.hidden = false;
+  cur.mode = 'diff'; viewport.hidden = true; askpanel.hidden = true; plainEl.hidden = true; filebar.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; gitpanel.hidden = true; diffview.hidden = false;
 }
 
 /* ---------- symbol outline (regex, zero-config) ---------- */
@@ -795,6 +885,7 @@ let palItems = [], palActive = 0;
 const COMMANDS = [
   { name: 'search', hint: '>query — content search' },
   { name: 'diff', hint: 'show diff vs HEAD' },
+  { name: 'git', hint: 'open git panel' },
   { name: 'ask', hint: '>ask question — agent' },
   { name: 'reindex', hint: 'rebuild file index' },
   { name: 'theme', hint: 'cycle theme' },
@@ -934,6 +1025,8 @@ async function runPal(it) {
     paint();
   } else if (go.cmd === 'diff') {
     showDiff();
+  } else if (go.cmd === 'git') {
+    openGitPanel();
   } else if (go.cmd === 'drafts') {
     listDrafts();
   } else if (go.cmd === 'submit') {

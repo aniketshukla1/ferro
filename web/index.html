@@ -34,6 +34,24 @@
     <div id="content">
       <div id="askpanel" hidden><button id="askclose" aria-label="Close ask panel">×</button><div id="askbody"></div></div>
       <div id="diffview" hidden></div>
+    <div id="gitpanel" hidden>
+      <div class="git-head"><strong>Git</strong><span id="git-branch"></span>
+        <span class="sp"></span>
+        <button id="git-pull" title="Pull fast-forward only">↓ Pull</button>
+        <button id="git-push" title="Push">↑ Push</button>
+      </div>
+      <div id="git-files"></div>
+      <div class="git-commit">
+        <input id="git-msg" placeholder="Commit message…" aria-label="Commit message"/>
+        <button id="git-ai" title="Generate message from staged diff">AI</button>
+        <button id="git-commit-btn">Commit</button>
+      </div>
+      <div class="git-row">
+        <button id="git-stage">Stage checked</button>
+        <button id="git-unstage">Unstage checked</button>
+        <span id="git-out" class="mut"></span>
+      </div>
+    </div>
       <div id="outline" hidden><div class="ol-head">OUTLINE</div><div id="ol-items"></div></div>
     <div id="home"><div class="hero">
       <div class="hero-logo"><span class="mark big"></span></div>
