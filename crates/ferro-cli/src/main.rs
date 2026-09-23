@@ -1,8 +1,4 @@
 mod cli;
-mod fuzzy;
-mod git;
-mod index;
-mod search;
 mod server;
 
 use std::path::PathBuf;
@@ -26,8 +22,7 @@ async fn main() -> AnyhowResult {
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from("."));
 
-    let state = Arc::new(index::Index::new(root.clone()));
-    // Background index: listen first, index async (px0 parity).
+    let state = Arc::new(ferro_core::Index::new(root.clone()));
     let bg = state.clone();
     tokio::spawn(async move { bg.rebuild().await });
 

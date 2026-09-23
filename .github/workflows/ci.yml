@@ -1,12 +1,27 @@
 name: ci
 on: [push, pull_request]
 jobs:
-  build:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo test
-      - run: cargo build --release
+      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo build -p ferro --release
+  desktop-check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/package.json
+      - run: pnpm --dir apps/desktop install
+      - run: cargo check -p ferro-tauri

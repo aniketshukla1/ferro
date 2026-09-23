@@ -1,6 +1,16 @@
 /target/
+**/target/
 .DS_Store
 *.pdb
 web/dist/
 ferro-bench-*/
 .env
+node_modules/
+**/node_modules/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/Wix/
+*.dmg
+*.app
+*.deb
+*.rpm
+*.AppImage

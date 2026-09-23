@@ -6,14 +6,14 @@ use axum::{
     Json, Router,
 };
 use rust_embed::RustEmbed;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
-use crate::index::Index;
+use ferro_core::Index;
 
 #[derive(RustEmbed, Clone)]
-#[folder = "web/"]
+#[folder = "../../web/"]
 struct Web;
 
 pub async fn serve(state: Arc<Index>, addr: &str) {
@@ -58,7 +58,7 @@ async fn fuzzy(State(s): State<Arc<Index>>, Query(q): Query<Q>) -> impl IntoResp
     let limit = q.limit.unwrap_or(50).min(200);
     let snap = s.snapshot();
     let paths: Vec<String> = snap.into_iter().map(|f| f.path).collect();
-    let ranked = crate::fuzzy::rank(&query, &paths, limit);
+    let ranked = ferro_core::fuzzy::rank(&query, &paths, limit);
     Json(
         ranked
             .into_iter()
@@ -71,7 +71,7 @@ async fn search(State(s): State<Arc<Index>>, Query(q): Query<Q>) -> impl IntoRes
     let query = q.q.unwrap_or_default();
     let limit = q.limit.unwrap_or(50).min(200);
     let root = s.root().to_path_buf();
-    let hits = tokio::task::spawn_blocking(move || crate::search::grep(&root, &query, limit))
+    let hits = tokio::task::spawn_blocking(move || ferro_core::search::grep(&root, &query, limit))
         .await
         .unwrap_or_default();
     Json(hits)
@@ -88,7 +88,6 @@ async fn read_file(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl 
     };
     match tokio::fs::read_to_string(&p).await {
         Ok(t) => {
-            // Cap at ~512KB window parity with px0 hlWindowBytes.
             let out = if t.len() > 512 * 1024 {
                 t[..512 * 1024].to_string()
             } else {
@@ -102,7 +101,7 @@ async fn read_file(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl 
 
 async fn git_status(State(s): State<Arc<Index>>) -> impl IntoResponse {
     let root = s.root().to_path_buf();
-    let out = tokio::task::spawn_blocking(move || crate::git::status(&root))
+    let out = tokio::task::spawn_blocking(move || ferro_core::git::status(&root))
         .await
         .unwrap_or_default();
     (StatusCode::OK, out).into_response()
@@ -116,9 +115,10 @@ struct DiffQ {
 async fn diff(State(s): State<Arc<Index>>, Query(q): Query<DiffQ>) -> impl IntoResponse {
     let root = s.root().to_path_buf();
     let rel = q.path.clone();
-    let out = tokio::task::spawn_blocking(move || crate::git::diff_head(&root, rel.as_deref()))
-        .await
-        .unwrap_or_default();
+    let out =
+        tokio::task::spawn_blocking(move || ferro_core::git::diff_head(&root, rel.as_deref()))
+            .await
+            .unwrap_or_default();
     (StatusCode::OK, out).into_response()
 }
 
@@ -150,9 +150,4 @@ fn mime_guess(p: &str) -> &'static str {
     } else {
         "application/octet-stream"
     }
-}
-
-#[derive(Serialize)]
-struct _Unused {
-    _a: u8,
 }

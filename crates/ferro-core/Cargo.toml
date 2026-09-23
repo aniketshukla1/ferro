@@ -1,0 +1,16 @@
+[package]
+name = "ferro-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ferro core — index, fuzzy, search, git"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ignore.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
