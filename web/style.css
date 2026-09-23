@@ -71,6 +71,22 @@ main { flex:1; display:grid; grid-template-columns:300px 1fr; min-height:0; }
 .f .dir { color:var(--mut); font-size:11px; margin-left:auto; flex:none; }
 .f .badge { flex:none; font-size:10px; font-weight:700; width:14px; text-align:center; }
 .badge.M { color:var(--yellow); } .badge.A { color:var(--green); } .badge.D { color:var(--red); } .badge.U { color:var(--red); }
+.t-dir { display:flex; gap:6px; align-items:center; padding:3px 8px; border-radius:6px; cursor:pointer;
+  color:var(--mut); font-size:12px; font-weight:600; white-space:nowrap; }
+.t-dir:hover { background:var(--bg2); color:var(--fg); }
+.t-dir .tw { width:12px; flex:none; font-size:9px; }
+.t-dir .ddot { width:6px; height:6px; border-radius:50%; background:var(--yellow); flex:none; margin-left:auto; }
+.t-kids { margin-left:12px; border-left:1px solid var(--border); padding-left:2px; }
+#tabs { display:flex; gap:2px; background:var(--bg1); border-bottom:1px solid var(--border);
+  padding:6px 8px 0; overflow-x:auto; }
+#tabs[hidden] { display:none; }
+.tab { display:flex; gap:8px; align-items:center; padding:6px 8px 6px 12px; font-size:12.5px;
+  border:1px solid transparent; border-bottom:none; border-radius:8px 8px 0 0;
+  cursor:pointer; white-space:nowrap; color:var(--mut); }
+.tab:hover { color:var(--fg); background:var(--bg2); }
+.tab.active { background:var(--bg0); color:var(--fg); border-color:var(--border); }
+.tab .x { border:none; background:none; color:inherit; cursor:pointer; font-size:12px; opacity:.6; padding:0 2px; }
+.tab .x:hover { opacity:1; color:var(--red); }
 /* view */
 #view { position:relative; min-width:0; display:flex; flex-direction:column; }
 #filebar { display:flex; gap:10px; align-items:center; padding:6px 14px;

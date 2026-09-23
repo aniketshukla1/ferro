@@ -87,22 +87,98 @@ themeBtn.onclick = () => {
 const EXT_COLORS = { rs:'#ff8c1a', py:'#7aa2f7', js:'#e0af68', ts:'#7aa2f7', tsx:'#7aa2f7', go:'#66d9e8', md:'#9ece6a', json:'#bb9af7', toml:'#8b93a7', css:'#bb9af7', html:'#f7768e', sh:'#9ece6a', sql:'#66d9e8' };
 function extOf(p) { const i = p.lastIndexOf('.'); return i < 0 ? '' : p.slice(i + 1).toLowerCase(); }
 function renderSidebar(list) {
+  const paths = list.slice(0, 6000).map(f => (typeof f === 'string' ? f : f.path)).sort();
+  sideCount.textContent = list.length > 6000 ? '6000+' : list.length;
+  // Build tree.
+  const root = { dirs: new Map(), files: [] };
+  for (const p of paths) {
+    const parts = p.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!node.dirs.has(parts[i])) node.dirs.set(parts[i], { dirs: new Map(), files: [], open: parts.length < 4 });
+      node = node.dirs.get(parts[i]);
+    }
+    node.files.push(parts[parts.length - 1]);
+  }
   filesEl.innerHTML = '';
-  sideCount.textContent = list.length;
-  for (const f of list.slice(0, 400)) {
-    const p = (typeof f === 'string') ? f : f.path;
+  const frag = document.createDocumentFragment();
+  let rendered = 0;
+  const CAP = 3000;
+  function hasDirty(node, prefix) {
+    for (const [k, v] of gitMap) {
+      if (k === prefix || k.startsWith(prefix + '/')) return true;
+    }
+    return false;
+  }
+  function emitInto(container, node, prefix, depth) {
+    const sub = document.createDocumentFragment();
+    for (const [name, s] of [...node.dirs.entries()].sort()) {
+      if (rendered++ > CAP) break;
+      const full = prefix ? prefix + '/' + name : name;
+      const d = document.createElement('div');
+      d.className = 't-dir';
+      d.innerHTML = `<span class="tw">${s.open ? '▾' : '▸'}</span><span>${esc(name)}</span>` +
+        (hasDirty(s, full) ? '<span class="ddot"></span>' : '');
+      const kids = document.createElement('div');
+      kids.className = 't-kids';
+      kids.hidden = !s.open;
+      d.onclick = () => { s.open = !s.open; kids.hidden = !s.open; d.querySelector('.tw').textContent = s.open ? '▾' : '▸'; };
+      sub.appendChild(d); sub.appendChild(kids);
+      emitInto(kids, s, full, depth + 1);
+    }
+    for (const nm of [...node.files].sort()) {
+      if (rendered++ > CAP) break;
+      sub.appendChild(fileRow(prefix ? prefix + '/' + nm : nm, nm));
+    }
+    container.appendChild(sub);
+  }
+  function fileRow(p, nm) {
     const d = document.createElement('div');
     d.className = 'f' + (p === currentPath ? ' current' : '');
-    const slash = p.lastIndexOf('/');
-    const dir = slash < 0 ? '' : p.slice(0, slash);
-    const nm = slash < 0 ? p : p.slice(slash + 1);
     const st = gitMap.get(p) || '';
     d.innerHTML = `<span class="dot" style="background:${EXT_COLORS[extOf(p)] || 'var(--mut)'}"></span>` +
       `<span class="nm" title="${esc(p)}">${esc(nm)}</span>` +
-      (st ? `<span class="badge ${esc(st[0])}">${esc(st[0])}</span>` : '') +
-      (dir ? `<span class="dir">${esc(dir.split('/').pop())}</span>` : '');
+      (st ? `<span class="badge ${esc(st[0])}">${esc(st[0])}</span>` : '');
     d.onclick = () => openFile(p);
-    filesEl.appendChild(d);
+    return d;
+  }
+  emitInto(frag, root, '', 0);
+  filesEl.appendChild(frag);
+  if (rendered > CAP) {
+    const more = document.createElement('div');
+    more.className = 't-dir';
+    more.textContent = `… ${paths.length - CAP} more — use Ctrl+K`;
+    filesEl.appendChild(more);
+  }
+}
+
+/* ---------- tabs ---------- */
+let tabs = [];
+const tabsEl = $('tabs');
+function renderTabs() {
+  tabsEl.hidden = tabs.length === 0;
+  tabsEl.innerHTML = '';
+  for (const p of tabs) {
+    const t = document.createElement('div');
+    t.className = 'tab' + (p === currentPath ? ' active' : '');
+    const nm = p.split('/').pop();
+    const st = gitMap.get(p) || '';
+    t.innerHTML = `<span class="dot" style="width:6px;height:6px;border-radius:50%;background:${EXT_COLORS[extOf(p)] || 'var(--mut)'}"></span>` +
+      `<span title="${esc(p)}">${esc(nm)}</span>${st ? '<span style="color:var(--yellow)">●</span>' : ''}`;
+    const x = document.createElement('button');
+    x.className = 'x'; x.textContent = '×';
+    x.onclick = (e) => { e.stopPropagation(); closeTab(p); };
+    t.onclick = () => openFile(p);
+    t.appendChild(x);
+    tabsEl.appendChild(t);
+  }
+}
+function closeTab(p) {
+  tabs = tabs.filter(t => t !== p);
+  renderTabs();
+  if (p === currentPath) {
+    if (tabs.length) openFile(tabs[tabs.length - 1]);
+    else { currentPath = null; showPlainMode('Select a file, or press Ctrl+K to jump anywhere.'); status(); renderSidebar(allFiles); }
   }
 }
 
@@ -197,6 +273,8 @@ async function showDiff() {
 
 async function openFile(path) {
   currentPath = path;
+  if (!tabs.includes(path)) { tabs.push(path); if (tabs.length > 10) tabs.shift(); }
+  renderTabs();
   showFileMode();
   cur.path = path; cur.cache.clear(); cur.pending.clear();
   renderSidebar(allFiles);
@@ -471,6 +549,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape' && !pal.hidden) closePalette();
   else if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); showDiff(); }
   else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); pickFolder(); }
+  else if (mod && e.key.toLowerCase() === 'w') { e.preventDefault(); if (currentPath) closeTab(currentPath); }
   else if (e.key === '?' && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName || '')) { e.preventDefault(); openPalette('?'); }
 });
 
