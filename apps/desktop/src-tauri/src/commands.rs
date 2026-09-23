@@ -112,6 +112,22 @@ pub async fn read_window(
 }
 
 #[tauri::command]
+pub async fn highlight(
+    state: State<'_, CoreState>,
+    path: String,
+    start: Option<usize>,
+    count: Option<usize>,
+) -> Result<ferro_core::highlight::HlWindow, String> {
+    let idx = state.get();
+    let start = start.unwrap_or(0);
+    let count = count.unwrap_or(200).clamp(1, 1000);
+    tokio::task::spawn_blocking(move || idx.highlight_window(&path, start, count))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "not found".to_string())
+}
+
+#[tauri::command]
 pub async fn git_status(state: State<'_, CoreState>) -> Result<String, String> {
     let root = state.get().root().to_path_buf();
     tokio::task::spawn_blocking(move || ferro_core::git::status(&root))

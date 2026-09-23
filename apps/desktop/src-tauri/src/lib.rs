@@ -25,6 +25,7 @@ pub fn run() {
             commands::read_file,
             commands::file_meta,
             commands::read_window,
+            commands::highlight,
             commands::git_status,
             commands::git_diff,
             commands::set_root,

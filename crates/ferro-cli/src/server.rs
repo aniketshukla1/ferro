@@ -26,6 +26,7 @@ pub async fn serve(state: Arc<Index>, addr: &str) {
         .route("/api/file", get(read_file))
         .route("/api/file-meta", get(file_meta))
         .route("/api/file-window", get(file_window))
+        .route("/api/highlight", get(highlight))
         .route("/api/git-status", get(git_status))
         .route("/api/diff", get(diff))
         .fallback(static_file)
@@ -106,6 +107,20 @@ async fn file_window(State(s): State<Arc<Index>>, Query(q): Query<WindowQ>) -> i
     let s2 = s.clone();
     let path = q.path.clone();
     let out = tokio::task::spawn_blocking(move || s2.read_window(&path, start, count))
+        .await
+        .unwrap_or(None);
+    match out {
+        Some(w) => Json(w).into_response(),
+        None => (StatusCode::NOT_FOUND, "not found".to_string()).into_response(),
+    }
+}
+
+async fn highlight(State(s): State<Arc<Index>>, Query(q): Query<WindowQ>) -> impl IntoResponse {
+    let start = q.start.unwrap_or(0);
+    let count = q.count.unwrap_or(200).clamp(1, 1000);
+    let s2 = s.clone();
+    let path = q.path.clone();
+    let out = tokio::task::spawn_blocking(move || s2.highlight_window(&path, start, count))
         .await
         .unwrap_or(None);
     match out {
