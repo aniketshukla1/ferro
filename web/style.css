@@ -115,6 +115,8 @@ main { flex:1; display:grid; grid-template-columns:300px 1fr; min-height:0; }
 #askbody pre { background:var(--bg1); border:1px solid var(--border); padding:8px 10px; border-radius:8px; overflow:auto; }
 #askbody pre.code { border-left:3px solid var(--acc); }
 #askbody code { background:var(--bg2); padding:1px 5px; border-radius:4px; font-size:12px; }
+mark { background:color-mix(in srgb, var(--acc) 32%, transparent); color:inherit;
+  border-radius:3px; padding:0 1px; }
 #askbody details { margin:8px 0; border:1px solid var(--border); border-radius:8px; }
 #askbody summary { cursor:pointer; padding:6px 10px; color:var(--mut); }
 #askbody a { color:var(--acc); }

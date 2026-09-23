@@ -73,6 +73,15 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/* Highlight query matches (case-insensitive) inside already-escaped-safe text. */
+function hi(text, query) {
+  const t = String(text), q = String(query || '').trim();
+  if (!q) return esc(t);
+  const ix = t.toLowerCase().indexOf(q.toLowerCase());
+  if (ix < 0) return esc(t);
+  return esc(t.slice(0, ix)) + '<mark>' + esc(t.slice(ix, ix + q.length)) + '</mark>' + esc(t.slice(ix + q.length));
+}
+
 /* Every clickable row must be keyboard-operable (skill: no div-only controls). */
 function activatable(el, fn) {
   el.tabIndex = 0;
@@ -484,7 +493,7 @@ function renderPal(items) {
   items.slice(0, 12).forEach((it, i) => {
     const d = document.createElement('div');
     d.className = 'pr' + (i === 0 ? ' active' : '');
-    d.innerHTML = `<span class="k">${esc(it.k)}</span><span>${esc(it.label)}</span>${it.sub ? `<span class="s">${esc(it.sub)}</span>` : ''}`;
+    d.innerHTML = `<span class="k">${esc(it.k)}</span><span>${esc(it.label)}</span>${it.sub ? `<span class="s">${it.html ? it.sub : esc(it.sub)}</span>` : ''}`;
     d.onclick = () => { closePalette(); runPal(it); };
     activatable(d, () => { closePalette(); runPal(it); });
     palRes.appendChild(d);
@@ -530,7 +539,8 @@ async function updatePalette() {
     if (query.startsWith('ask ')) { renderPal([{ k: 'ask', label: query.slice(4), sub: 'ask agent', go: { cmd: 'ask', arg: query.slice(4) } }]); return; }
     const hits = await apiSearch(query).catch(() => []);
     renderPal([...cmds, ...hits.slice(0, 9).map(h => ({
-      k: 'grep', label: `${h.path}:${h.line}`, sub: String(h.text).slice(0, 60),
+      k: 'grep', label: `${h.path}:${h.line}`, html: true,
+      sub: hi(String(h.text).slice(0, 120), query),
       go: { file: h.path, line: h.line },
     }))]);
     return;
@@ -630,9 +640,10 @@ askq.addEventListener('keydown', async (e) => {
   const v = askq.value.trim();
   askpanel.hidden = false;
   if (v.startsWith('>')) {
-    const hits = await apiSearch(v.slice(1).trim()).catch(() => []);
-    askbody.innerHTML = '<h3>Search</h3>' + (hits.map(h =>
-      `<pre>${esc(h.path)}:${h.line} ${esc(String(h.text).slice(0, 160))}</pre>`).join('') || '<p>no matches</p>');
+    const query = v.slice(1).trim();
+    const hits = await apiSearch(query).catch(() => []);
+    askbody.innerHTML = '<h2>Search</h2>' + (hits.map(h =>
+      `<pre>${esc(h.path)}:${h.line} ${hi(String(h.text).slice(0, 160), query)}</pre>`).join('') || '<p>no matches</p>');
     return;
   }
   submitAsk(v);
