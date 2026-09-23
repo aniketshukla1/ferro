@@ -68,6 +68,11 @@ async function apiReindex() {
   if (invoke) return await invoke('reindex');
   await bootStats();
 }
+async function apiPrInfo() {
+  if (invoke) return { pr: null };
+  try { return await (await fetch('/api/pr-info')).json(); }
+  catch { return { pr: null }; }
+}
 
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -976,6 +981,22 @@ async function boot(reset) {
   } catch {}
   renderSidebar(allFiles);
   status();
+  try {
+    const info = await apiPrInfo();
+    const banner = $('prbanner');
+    if (info && info.pr) {
+      const pr = info.pr;
+      banner.hidden = false;
+      banner.innerHTML = `<span class="n">PR #${pr.number}</span>` +
+        `<span>${esc(pr.owner)}/${esc(pr.repo)}</span>` +
+        `<span class="mut">${esc(pr.base_ref)} ← head ${esc(String(pr.head_sha).slice(0, 8))}</span>` +
+        `<span class="mut">merge-base diff</span>`;
+      const btn = document.createElement('button');
+      btn.textContent = 'View diff';
+      btn.onclick = () => showDiff();
+      banner.appendChild(btn);
+    } else banner.hidden = true;
+  } catch {}
   setTimeout(bootStats, 800);
   if (!invoke && openBtn) openBtn.style.display = 'none';
   if (reset && currentPath) openFile(currentPath);

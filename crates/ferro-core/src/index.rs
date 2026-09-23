@@ -34,6 +34,7 @@ pub struct Index {
     root: PathBuf,
     files: RwLock<Vec<FileEntry>>,
     indexed_ms: RwLock<u128>,
+    pr: RwLock<Option<crate::pr::PrCtx>>,
 }
 
 impl Index {
@@ -45,7 +46,16 @@ impl Index {
             root,
             files: RwLock::new(files),
             indexed_ms: RwLock::new(indexed_ms),
+            pr: RwLock::new(None),
         }
+    }
+
+    pub fn set_pr(&self, ctx: crate::pr::PrCtx) {
+        *self.pr.write().unwrap() = Some(ctx);
+    }
+
+    pub fn pr_ctx(&self) -> Option<crate::pr::PrCtx> {
+        self.pr.read().unwrap().clone()
     }
 
     pub fn root(&self) -> &Path {

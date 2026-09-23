@@ -40,6 +40,7 @@ pub async fn serve(
             .route("/api/git-status", get(git_status))
             .route("/api/diff", get(diff));
     }
+    app = app.route("/api/pr-info", get(pr_info));
     let app = app
         .fallback(static_file)
         .layer(TraceLayer::new_for_http())
@@ -225,11 +226,28 @@ async fn ask(State(s): State<Arc<Index>>, Json(b): Json<AskBody>) -> impl IntoRe
 async fn diff(State(s): State<Arc<Index>>, Query(q): Query<DiffQ>) -> impl IntoResponse {
     let root = s.root().to_path_buf();
     let rel = q.path.clone();
+    // PR mode: scoped merge-base diff instead of HEAD diff.
+    if let Some(pr) = s.pr_ctx() {
+        let base = pr.base_ref.clone();
+        let out = tokio::task::spawn_blocking(move || {
+            ferro_core::pr::diff_merge_base(&root, &base, rel.as_deref())
+        })
+        .await
+        .unwrap_or_default();
+        return (StatusCode::OK, out).into_response();
+    }
     let out =
         tokio::task::spawn_blocking(move || ferro_core::git::diff_head(&root, rel.as_deref()))
             .await
             .unwrap_or_default();
     (StatusCode::OK, out).into_response()
+}
+
+async fn pr_info(State(s): State<Arc<Index>>) -> impl IntoResponse {
+    match s.pr_ctx() {
+        Some(pr) => Json(serde_json::json!({"pr": pr})).into_response(),
+        None => Json(serde_json::json!({"pr": null})).into_response(),
+    }
 }
 
 async fn static_file(uri: axum::http::Uri) -> impl IntoResponse {

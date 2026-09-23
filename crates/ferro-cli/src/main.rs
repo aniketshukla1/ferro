@@ -52,6 +52,12 @@ async fn main() -> AnyhowResult {
 }
 
 async fn serve(cli: Cli) -> AnyhowResult {
+    // PR mode: `ferro https://github.com/owner/repo/pull/N`
+    if let Some(raw) = cli.path.as_ref().and_then(|p| p.to_str()) {
+        if let Some(info) = ferro_core::pr::parse_pr_url(raw) {
+            return serve_pr(cli, info).await;
+        }
+    }
     let root = cli
         .path
         .unwrap_or_else(|| PathBuf::from("."))
@@ -62,6 +68,47 @@ async fn serve(cli: Cli) -> AnyhowResult {
     let bg = state.clone();
     tokio::spawn(async move { bg.rebuild().await });
 
+    server::serve(
+        state,
+        &cli.host,
+        cli.port,
+        cli.no_git,
+        !cli.quiet,
+        cli.no_open,
+    )
+    .await;
+    Ok(())
+}
+
+async fn serve_pr(cli: Cli, info: ferro_core::pr::PrInfo) -> AnyhowResult {
+    eprintln!(
+        "ferro: fetching PR #{} {}/{} …",
+        info.number, info.owner, info.repo
+    );
+    let work = tokio::task::spawn_blocking(move || ferro_core::pr::worktree_for_pr(&info))
+        .await
+        .map_err(|e| format!("pr fetch task: {e}"))?
+        .map_err(|e| format!("pr fetch: {e}"))?;
+    eprintln!(
+        "ferro: PR #{} head {} base {} ({})",
+        work.info.number,
+        &work.head_sha[..8.min(work.head_sha.len())],
+        work.base_ref,
+        &work.base_sha[..8.min(work.base_sha.len())]
+    );
+    let state = Arc::new(ferro_core::Index::new(work.dir.clone()));
+    state.set_pr(ferro_core::pr::PrCtx {
+        owner: work.info.owner.clone(),
+        repo: work.info.repo.clone(),
+        number: work.info.number,
+        base_ref: work.base_ref.clone(),
+        base_sha: work.base_sha.clone(),
+        head_sha: work.head_sha.clone(),
+    });
+    let bg = state.clone();
+    tokio::spawn(async move { bg.rebuild().await });
+    // Keep the ephemeral worktree alive for the serve lifetime.
+    let _keep = work;
     server::serve(
         state,
         &cli.host,

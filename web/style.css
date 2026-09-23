@@ -89,6 +89,13 @@ body.no-side #sidebar { display:none; }
 #tabs { display:flex; gap:2px; background:var(--bg1); border-bottom:1px solid var(--border);
   padding:6px 8px 0; overflow-x:auto; }
 #tabs[hidden] { display:none; }
+#prbanner { display:flex; gap:10px; align-items:center; padding:8px 12px;
+  background:color-mix(in srgb, var(--acc) 12%, var(--bg1));
+  border-bottom:1px solid var(--border); font-size:12.5px; }
+#prbanner[hidden] { display:none; }
+#prbanner .n { font-weight:800; color:var(--acc); }
+#prbanner button { margin-left:auto; background:var(--bg2); color:var(--fg);
+  border:1px solid var(--border); border-radius:6px; padding:3px 10px; cursor:pointer; }
 .tab { display:flex; gap:8px; align-items:center; padding:6px 8px 6px 12px; font-size:12.5px;
   border:1px solid transparent; border-bottom:none; border-radius:8px 8px 0 0;
   cursor:pointer; white-space:nowrap; color:var(--mut); }
