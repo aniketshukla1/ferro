@@ -473,9 +473,9 @@ const COMMANDS = [
   { name: 'theme', hint: 'cycle theme' },
   { name: 'open', hint: 'open folder (Tauri)' },
 ];
-function openPalette(preset) { pal.hidden = false; palInput.value = preset || ''; updatePalette(); setTimeout(() => palInput.focus(), 0); }
+function openPalette(preset) { pal.hidden = false; palInput.value = typeof preset === 'string' ? preset : ''; updatePalette(); setTimeout(() => palInput.focus(), 0); }
 function closePalette() { pal.hidden = true; }
-$('palette-trigger').onclick = openPalette;
+$('palette-trigger').onclick = () => openPalette();
 pal.addEventListener('click', (e) => { if (e.target === pal) closePalette(); });
 
 function renderPal(items) {
