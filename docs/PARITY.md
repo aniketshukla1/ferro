@@ -35,7 +35,7 @@ Legend: DONE · PART (partial) · TODO · SKIP (deferred with reason) · EDGE (f
 | Shift+arrows selection model in viewer | PART (click + shift-click ranges; no keyboard expansion yet) |
 | Alt+C copy ref, Alt+A copy w/ context, Alt+U usages | DONE |
 | Right-click selection menu | DONE |
-| Alt+M markdown preview, image viewer | TODO |
+| Alt+M markdown preview, image viewer | DONE (GFM + zoom/fit/bg/pixel/pan) |
 | Alt+R inline comment, batch apply (Ctrl+Enter) | TODO (with PR mode) |
 | Alt+E harness dispatch | EDGE instead — built-in `ask` + `apply_patch` |
 | F12 / Shift+F12 / call trails / hover | SKIP for now — needs LSP; regex outline covers 80% |

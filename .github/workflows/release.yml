@@ -1,0 +1,38 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release -p ferro --target ${{ matrix.target }}
+      - name: package
+        shell: bash
+        run: |
+          stage="ferro-${{ matrix.target }}"
+          mkdir -p "$stage"
+          bin="target/${{ matrix.target }}/release/ferro"
+          [ "${{ matrix.os }}" = "windows-latest" ] && bin="$bin.exe"
+          cp "$bin" "$stage/"
+          cp README.md LICENSE "$stage/"
+          tar -czf "$stage.tar.gz" "$stage"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ferro-*.tar.gz
+          generate_release_notes: true

@@ -43,6 +43,13 @@ fn cache() -> &'static Mutex<lru::LruCache<String, HlWindow>> {
     CACHE.get_or_init(|| Mutex::new(lru::LruCache::new(128.try_into().unwrap())))
 }
 
+/// Drop all cached windows. Called by the server's idle scavenger.
+pub fn clear_cache() {
+    if let Ok(mut c) = cache().lock() {
+        c.clear();
+    }
+}
+
 pub fn css() -> String {
     String::new()
 }

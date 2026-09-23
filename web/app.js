@@ -669,6 +669,16 @@ function lineAt(n) {
   return null;
 }
 
+function focusRow(n) {
+  requestAnimationFrame(() => {
+    const rows = rowsEl.children;
+    for (const r of rows) {
+      const ln = r.querySelector('.ln');
+      if (ln && +ln.textContent === n) { r.focus({ preventScroll: true }); break; }
+    }
+  });
+}
+
 function paint() {
   if (cur.mode !== 'file') return;
   if (document.body.classList.contains('wrap') && cur.total <= 2000 && wrapCache) {
@@ -685,6 +695,7 @@ function paint() {
     const inSel = cur.path === selectedFile && n >= selStart && n <= selEnd && selStart > 0;
     d.className = 'row' + (n === selectedLine && cur.path === selectedFile ? ' cur-line' : '') + (inSel && n !== selectedLine ? ' in-sel' : '');
     d.style.top = (n - 1) * ROW_H + 'px';
+    d.tabIndex = -1;
     const l = lineAt(n);
     const hasDraft = (draftLines.get(cur.path) || []).some(x => x.line === n);
     d.innerHTML = `<span class="ln">${n}</span><span>${l ? l.html : ''}</span>${hasDraft ? '<span class="dmark">◆</span>' : ''}`;
@@ -692,6 +703,18 @@ function paint() {
       if (e.shiftKey && cur.path === selectedFile && selAnchor > 0) setSelection(cur.path, selAnchor, n);
       else setSelection(cur.path, n, n);
       paint();
+    };
+    d.onkeydown = (e) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      const next = Math.min(cur.total, Math.max(1, n + step));
+      if (e.shiftKey) setSelection(cur.path, selAnchor || n, next);
+      else setSelection(cur.path, next, next);
+      ensureAround(next - 1).then(paint);
+      viewport.scrollTop = Math.max(0, (next - 6) * ROW_H);
+      paint();
+      focusRow(next);
     };
     d.oncontextmenu = (e) => { e.preventDefault(); setSelection(cur.path, n, n); paint(); openCtx(e.clientX, e.clientY); };
     frag.appendChild(d);

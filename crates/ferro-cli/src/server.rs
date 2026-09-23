@@ -1,9 +1,10 @@
 use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
+    middleware,
     response::IntoResponse,
     routing::{delete, get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use rust_embed::RustEmbed;
 use serde::Deserialize;
@@ -62,10 +63,27 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
             .route("/api/git/push", post(git_push))
             .route("/api/git/pull", post(git_pull));
     }
+    let last_active = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let app = app
         .fallback(static_file)
         .layer(TraceLayer::new_for_http())
+        .layer(middleware::from_fn(track_activity))
+        .layer(Extension(last_active.clone()))
         .with_state(state.clone());
+
+    // Idle scavenger (px0 parity): after 15s without requests, drop the
+    // highlight LRU so an idle tab settles back down.
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+        loop {
+            tick.tick().await;
+            let idle = last_active.lock().map(|t| t.elapsed()).unwrap_or_default();
+            if idle >= std::time::Duration::from_secs(15) {
+                ferro_core::highlight::clear_cache();
+                tracing::debug!("ferro idle {}s: highlight cache cleared", idle.as_secs());
+            }
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", o.host, o.port))
         .await
@@ -100,6 +118,17 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
 
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status":"ok","service":"ferro"}))
+}
+
+async fn track_activity(
+    Extension(last): Extension<Arc<std::sync::Mutex<std::time::Instant>>>,
+    req: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    if let Ok(mut t) = last.lock() {
+        *t = std::time::Instant::now();
+    }
+    next.run(req).await
 }
 
 async fn stats(State(s): State<Arc<Index>>) -> impl IntoResponse {
