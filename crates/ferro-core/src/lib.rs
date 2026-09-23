@@ -3,4 +3,4 @@ pub mod git;
 pub mod index;
 pub mod search;
 
-pub use index::{FileEntry, Index};
+pub use index::{FileEntry, FileMeta, Index, Window, WindowLine};

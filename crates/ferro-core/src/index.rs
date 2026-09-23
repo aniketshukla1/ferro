@@ -10,6 +10,25 @@ pub struct FileEntry {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct WindowLine {
+    pub n: usize,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Window {
+    pub total: usize,
+    pub start: usize,
+    pub lines: Vec<WindowLine>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileMeta {
+    pub size: u64,
+    pub total_lines: usize,
+}
+
 #[derive(Debug, Default)]
 pub struct Index {
     root: PathBuf,
@@ -19,6 +38,7 @@ pub struct Index {
 
 impl Index {
     pub fn new(root: PathBuf) -> Self {
+        let root = root.canonicalize().unwrap_or(root);
         Self {
             root,
             files: RwLock::new(Vec::new()),
@@ -79,6 +99,62 @@ impl Index {
             let _ = canonical_p;
             None
         }
+    }
+
+    /// O(n) streaming window read. Never loads the whole file into the UI.
+    /// Caps line length at 2000 chars to bound a single row.
+    pub fn read_window(&self, rel: &str, start: usize, count: usize) -> Option<Window> {
+        let p = self.safe_join(rel)?;
+        let count = count.clamp(1, 2000);
+        let f = std::fs::File::open(&p).ok()?;
+        let mut reader = std::io::BufReader::new(f);
+        let mut lines: Vec<WindowLine> = Vec::with_capacity(count.min(256));
+        let mut total = 0usize;
+        let mut buf = String::new();
+        use std::io::BufRead;
+        loop {
+            buf.clear();
+            let n = reader.read_line(&mut buf).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            // Strip trailing \n\r without allocating the whole file.
+            while buf.ends_with('\n') || buf.ends_with('\r') {
+                buf.pop();
+            }
+            if buf.len() > 2000 {
+                buf.truncate(2000);
+            }
+            if total >= start && lines.len() < count {
+                lines.push(WindowLine {
+                    n: total + 1,
+                    text: std::mem::take(&mut buf),
+                });
+                // buf was moved; reinit for next iter
+                buf = String::new();
+            }
+            total += 1;
+            // Safety cap: don't scan past 2M lines in one request.
+            if total > 2_000_000 {
+                break;
+            }
+        }
+        Some(Window {
+            total,
+            start,
+            lines,
+        })
+    }
+
+    pub fn file_meta(&self, rel: &str) -> Option<FileMeta> {
+        let p = self.safe_join(rel)?;
+        let md = std::fs::metadata(&p).ok()?;
+        // Fast newline count on bytes to avoid UTF-8 decode of huge files.
+        let total_lines = count_lines_fast(&p);
+        Some(FileMeta {
+            size: md.len(),
+            total_lines,
+        })
     }
 }
 
@@ -143,4 +219,43 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+}
+
+fn count_lines_fast(p: &Path) -> usize {
+    let Ok(bytes) = std::fs::read(p) else {
+        return 0;
+    };
+    if bytes.is_empty() {
+        return 0;
+    }
+    let mut n = bytes.iter().filter(|&&b| b == b'\n').count();
+    if !bytes.ends_with(b"\n") {
+        n += 1;
+    }
+    n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn window_slices_without_full_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let fp = dir.path().join("big.txt");
+        let mut f = std::fs::File::create(&fp).unwrap();
+        for i in 1..=5000 {
+            writeln!(f, "line {i}").unwrap();
+        }
+        let idx = Index::new(dir.path().to_path_buf());
+        let w = idx.read_window("big.txt", 100, 10).unwrap();
+        assert_eq!(w.total, 5000);
+        assert_eq!(w.start, 100);
+        assert_eq!(w.lines.len(), 10);
+        assert_eq!(w.lines[0].n, 101);
+        assert_eq!(w.lines[0].text, "line 101");
+        let m = idx.file_meta("big.txt").unwrap();
+        assert_eq!(m.total_lines, 5000);
+    }
 }

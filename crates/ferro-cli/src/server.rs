@@ -24,6 +24,8 @@ pub async fn serve(state: Arc<Index>, addr: &str) {
         .route("/api/fuzzy", get(fuzzy))
         .route("/api/search", get(search))
         .route("/api/file", get(read_file))
+        .route("/api/file-meta", get(file_meta))
+        .route("/api/file-window", get(file_window))
         .route("/api/git-status", get(git_status))
         .route("/api/diff", get(diff))
         .fallback(static_file)
@@ -80,6 +82,36 @@ async fn search(State(s): State<Arc<Index>>, Query(q): Query<Q>) -> impl IntoRes
 #[derive(Deserialize)]
 struct FileQ {
     path: String,
+}
+
+#[derive(Deserialize)]
+struct WindowQ {
+    path: String,
+    start: Option<usize>,
+    count: Option<usize>,
+}
+
+async fn file_meta(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+    match s.file_meta(&q.path) {
+        Some(m) => {
+            Json(serde_json::json!({"size": m.size, "total_lines": m.total_lines})).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "not found".to_string()).into_response(),
+    }
+}
+
+async fn file_window(State(s): State<Arc<Index>>, Query(q): Query<WindowQ>) -> impl IntoResponse {
+    let start = q.start.unwrap_or(0);
+    let count = q.count.unwrap_or(200).clamp(1, 2000);
+    let s2 = s.clone();
+    let path = q.path.clone();
+    let out = tokio::task::spawn_blocking(move || s2.read_window(&path, start, count))
+        .await
+        .unwrap_or(None);
+    match out {
+        Some(w) => Json(w).into_response(),
+        None => (StatusCode::NOT_FOUND, "not found".to_string()).into_response(),
+    }
 }
 
 async fn read_file(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl IntoResponse {

@@ -23,6 +23,8 @@ pub fn run() {
             commands::fuzzy,
             commands::grep,
             commands::read_file,
+            commands::file_meta,
+            commands::read_window,
             commands::git_status,
             commands::git_diff,
             commands::set_root,
