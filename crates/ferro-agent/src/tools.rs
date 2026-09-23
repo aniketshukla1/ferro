@@ -237,7 +237,26 @@ pub fn dispatch(index: &Index, sandbox: &Sandbox, call: &ToolCall) -> ToolResult
             let path = arg_str(&call.args, "path");
             ToolResult::ok(ferro_core::git::diff_head(index.root(), path.as_deref()))
         }
-        "apply_patch" => ToolResult::err("apply_patch lands in P2-3 (write tools disabled)"),
+        "apply_patch" => {
+            let patch = call
+                .args
+                .get("patch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match crate::patch::apply(index.root(), sandbox, patch) {
+                Ok(rep) => ToolResult::ok(format!(
+                    "applied to: {}\ncreated: {}\n{}",
+                    rep.files.join(", "),
+                    if rep.created.is_empty() {
+                        "(none)".into()
+                    } else {
+                        rep.created.join(", ")
+                    },
+                    rep.status_after
+                )),
+                Err(e) => ToolResult::err(e),
+            }
+        }
         other => ToolResult::err(format!("unknown tool: {other}")),
     }
 }
