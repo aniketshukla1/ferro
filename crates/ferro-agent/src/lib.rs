@@ -6,7 +6,7 @@ pub mod review;
 pub mod session;
 pub mod tools;
 
-pub use agent::{Agent, Step, Transcript};
+pub use agent::{Agent, AgentEvent, Step, Transcript};
 pub use patch::{normalize, revert, touched_files, ApplyReport};
 pub use policy::{Access, Sandbox, SandboxError};
 pub use provider::{LlmClient, OpenAiCompat, ProviderError};

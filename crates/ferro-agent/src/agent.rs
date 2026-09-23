@@ -17,6 +17,28 @@ pub struct Step {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentEvent {
+    Thought {
+        text: String,
+    },
+    ToolStart {
+        name: String,
+        args: serde_json::Value,
+    },
+    ToolResult {
+        name: String,
+        ok: bool,
+        output: String,
+        truncated: bool,
+    },
+    Final {
+        text: String,
+        truncated: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Transcript {
     pub steps: Vec<Step>,
     pub final_text: String,
@@ -51,6 +73,19 @@ impl<C: LlmClient> Agent<C> {
     }
 
     pub async fn run(&self, prompt: &str) -> Transcript {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let t = self.run_stream(prompt, tx).await;
+        // Drain any leftover events (all consumed into the transcript already).
+        while rx.try_recv().is_ok() {}
+        t
+    }
+
+    /// Same loop as `run`, but emits live events as each step unfolds.
+    pub async fn run_stream(
+        &self,
+        prompt: &str,
+        tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+    ) -> Transcript {
         let defs = tools::registry();
         let mut messages = vec![
             ChatMessage {
@@ -67,21 +102,34 @@ impl<C: LlmClient> Agent<C> {
             },
         ];
         let mut steps = Vec::new();
+        let send = |e: AgentEvent| {
+            let _ = tx.send(e);
+        };
         for _ in 0..self.max_steps.max(1) {
             let turn = match self.client.chat(&messages, &defs).await {
                 Ok(t) => t,
                 Err(e) => {
+                    let final_text = format!("provider error: {e}");
+                    send(AgentEvent::Final {
+                        text: final_text.clone(),
+                        truncated: true,
+                    });
                     return Transcript {
                         steps,
-                        final_text: format!("provider error: {e}"),
+                        final_text,
                         truncated: true,
                     };
                 }
             };
             if turn.tool_calls.is_empty() {
+                let final_text = turn.content.unwrap_or_default();
+                send(AgentEvent::Final {
+                    text: final_text.clone(),
+                    truncated: false,
+                });
                 return Transcript {
                     steps,
-                    final_text: turn.content.unwrap_or_default(),
+                    final_text,
                     truncated: false,
                 };
             }
@@ -92,6 +140,11 @@ impl<C: LlmClient> Agent<C> {
                 tool_calls: Some(turn.tool_calls.clone()),
                 tool_call_id: None,
             });
+            if let Some(thought) = turn.content.clone() {
+                send(AgentEvent::Thought {
+                    text: thought.clone(),
+                });
+            }
             let mut step = Step {
                 thought: turn.content,
                 calls: Vec::new(),
@@ -101,11 +154,21 @@ impl<C: LlmClient> Agent<C> {
                     serde_json::from_str(&wc.function.arguments).unwrap_or(serde_json::json!({}));
                 let call = ToolCall {
                     name: wc.function.name.clone(),
-                    args,
+                    args: args.clone(),
                 };
+                send(AgentEvent::ToolStart {
+                    name: call.name.clone(),
+                    args,
+                });
                 // Sandbox gate lives in dispatch via check; resolve write paths here.
                 let _ = self.sandbox.check(Access::Read);
                 let result = tools::dispatch(&self.index, &self.sandbox, &call);
+                send(AgentEvent::ToolResult {
+                    name: call.name.clone(),
+                    ok: result.ok,
+                    output: result.output.chars().take(2000).collect(),
+                    truncated: result.truncated,
+                });
                 messages.push(ChatMessage {
                     role: "tool".into(),
                     content: Some(result.output.clone()),
@@ -116,9 +179,14 @@ impl<C: LlmClient> Agent<C> {
             }
             steps.push(step);
         }
+        let final_text = "(max steps reached — answer may be incomplete)".to_string();
+        send(AgentEvent::Final {
+            text: final_text.clone(),
+            truncated: true,
+        });
         Transcript {
             steps,
-            final_text: "(max steps reached — answer may be incomplete)".into(),
+            final_text,
             truncated: true,
         }
     }
@@ -307,5 +375,34 @@ mod tests {
             "one\ntwo\n"
         );
         assert!(t.final_text.contains("fixed"));
+    }
+
+    #[tokio::test]
+    async fn stream_emits_ordered_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = Arc::new(Index::new(dir.path().to_path_buf()));
+        let sb = Sandbox::readonly(idx.root().to_path_buf());
+        let agent = Agent {
+            index: idx,
+            sandbox: sb,
+            client: Arc::new(Mock {
+                calls: AtomicUsize::new(0),
+            }),
+            max_steps: 4,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let t = agent.run_stream("is the tree clean?", tx).await;
+        drop(agent);
+        let mut kinds = vec![];
+        while let Some(ev) = rx.recv().await {
+            kinds.push(match ev {
+                AgentEvent::Thought { .. } => "thought",
+                AgentEvent::ToolStart { .. } => "start",
+                AgentEvent::ToolResult { .. } => "result",
+                AgentEvent::Final { .. } => "final",
+            });
+        }
+        assert_eq!(kinds, vec!["thought", "start", "result", "final"]);
+        assert!(t.final_text.contains("clean"));
     }
 }

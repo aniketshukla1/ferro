@@ -9,6 +9,7 @@ use axum::{
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use std::sync::Arc;
+use tokio_stream::StreamExt as _;
 use tower_http::trace::TraceLayer;
 
 use ferro_core::Index;
@@ -39,7 +40,8 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
         .route("/api/file-meta", get(file_meta))
         .route("/api/file-window", get(file_window))
         .route("/api/highlight", get(highlight))
-        .route("/api/ask", post(ask));
+        .route("/api/ask", post(ask))
+        .route("/api/ask/stream", post(ask_stream));
     if !o.no_git {
         app = app
             .route("/api/git-status", get(git_status))
@@ -281,6 +283,42 @@ async fn ask(State(s): State<Arc<Index>>, Json(b): Json<AskBody>) -> impl IntoRe
     let session = ferro_agent::log_ask(s.root(), &id, &b.question, &t, &[]).ok();
     let _ = session;
     Json(serde_json::json!({"id": id, "transcript": t})).into_response()
+}
+
+/// POST /api/ask/stream — same agent, step-level SSE while it works.
+/// Events: {"kind":"thought"|"tool_start"|"tool_result"|"final", ...}.
+/// Falls back to a single JSON error when no provider is configured.
+async fn ask_stream(State(s): State<Arc<Index>>, Json(b): Json<AskBody>) -> impl IntoResponse {
+    use axum::response::sse::{Event, Sse};
+    if b.question.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty question".to_string()).into_response();
+    }
+    let provider = match ferro_agent::OpenAiCompat::from_env(None, None, None) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::SERVICE_UNAVAILABLE, format!("no provider: {e}")).into_response()
+        }
+    };
+    let sandbox = ferro_agent::Sandbox::readonly(s.root().to_path_buf());
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent = ferro_agent::Agent {
+        index: s.clone(),
+        sandbox,
+        client: Arc::new(provider),
+        max_steps: b.max_steps.unwrap_or(8).clamp(1, 16),
+    };
+    let question = b.question.clone();
+    let root = s.root().to_path_buf();
+    tokio::spawn(async move {
+        let t = agent.run_stream(&question, tx).await;
+        let id = ferro_agent::new_id();
+        let _ = ferro_agent::log_ask(&root, &id, &question, &t, &[]);
+    });
+    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map(|ev| {
+        let data = serde_json::to_string(&ev).unwrap_or_default();
+        Ok::<_, std::convert::Infallible>(Event::default().data(data))
+    });
+    Sse::new(stream).into_response()
 }
 
 async fn diff(State(s): State<Arc<Index>>, Query(q): Query<DiffQ>) -> impl IntoResponse {

@@ -13,6 +13,7 @@ path = "src/main.rs"
 ferro-core = { path = "../ferro-core" }
 ferro-agent = { path = "../ferro-agent" }
 tokio.workspace = true
+tokio-stream = "0.1"
 axum = "0.8"
 tower-http = { version = "0.6", features = ["trace", "cors", "fs", "compression-gzip"] }
 serde = { version = "1", features = ["derive"] }

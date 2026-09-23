@@ -1270,19 +1270,82 @@ document.addEventListener('click', async (e) => {
 async function submitAsk(question) {
   askpanel.hidden = false;
   askbody.innerHTML = '<p>thinking…</p>';
-  try {
-    const res = await apiAsk(question);
-    const t = res.transcript;
-    let html = `<h2>Answer</h2>${md(t.final_text || '(no answer)')}`;
-    (t.steps || []).forEach((s, i) => {
-      const calls = (s.calls || []).map(([call, result]) =>
-        `<pre>$ ${esc(call.name)} ${esc(JSON.stringify(call.args))}\n${esc(String(result.output).slice(0, 2000))}</pre>`).join('');
-      html += `<details><summary>Step ${i + 1}${s.thought ? ' — ' + esc(s.thought).slice(0, 80) : ''}</summary>${calls}</details>`;
-    });
-    askbody.innerHTML = html;
-  } catch (err) {
-    askbody.innerHTML = `<p>ask failed: ${esc(err.message || err)}</p><p>Set GEMINI_API_KEY where the server/desktop runs.</p>`;
+  // Tauri invoke has no streaming: single JSON round-trip.
+  if (invoke) {
+    try {
+      const res = await apiAsk(question);
+      renderTranscript(res.transcript);
+    } catch (err) {
+      askbody.innerHTML = `<p>ask failed: ${esc(err.message || err)}</p><p>Set GEMINI_API_KEY where the desktop runs.</p>`;
+    }
+    return;
   }
+  // Browser: step-level SSE stream with JSON fallback.
+  try {
+    const r = await fetch('/api/ask/stream', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question, max_steps: askSteps }) });
+    if (!r.ok || !r.body) throw new Error(await r.text());
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', steps = [], cur = null, finalText = '';
+    askbody.innerHTML = '<h2>Answer</h2><div id="live"></div>';
+    const live = () => askbody.querySelector('#live');
+    const paintLive = () => {
+      let html = '';
+      steps.forEach((s, i) => {
+        html += `<details open><summary>Step ${i + 1}${s.thought ? ' — ' + esc(s.thought).slice(0, 80) : ''}</summary>` +
+          s.calls.map(([n, a, o]) => `<pre>$ ${esc(n)} ${esc(JSON.stringify(a))}\n${esc(String(o).slice(0, 1500))}</pre>`).join('') + '</details>';
+      });
+      if (cur) html += `<details open><summary>Step ${steps.length + 1}${cur.thought ? ' — ' + esc(cur.thought).slice(0, 80) : ''}</summary>` +
+        cur.calls.map(([n, a, o]) => `<pre>$ ${esc(n)} ${esc(JSON.stringify(a))}\n${esc(String(o).slice(0, 1500))}</pre>`).join('') + '</details>';
+      live().innerHTML = html;
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const p of parts) {
+        const line = p.split('\n').find(l => l.startsWith('data:'));
+        if (!line) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+        if (ev.kind === 'thought') { if (!cur) cur = { thought: '', calls: [] }; cur.thought = (cur.thought ? cur.thought + ' ' : '') + ev.text; }
+        else if (ev.kind === 'tool_start') { if (!cur) cur = { thought: '', calls: [] }; cur.calls.push([ev.name, ev.args, '…']); }
+        else if (ev.kind === 'tool_result') {
+          if (cur) {
+            const ix = cur.calls.findIndex(c => c[0] === ev.name && c[2] === '…');
+            if (ix >= 0) cur.calls[ix][2] = ev.output + (ev.truncated ? '\n… (truncated)' : '');
+            else cur.calls.push([ev.name, {}, ev.output]);
+            steps.push(cur); cur = null;
+          }
+        }
+        else if (ev.kind === 'final') { finalText = ev.text; if (cur) { steps.push(cur); cur = null; } }
+        paintLive();
+      }
+    }
+    askbody.innerHTML = `<h2>Answer</h2>${md(finalText || '(no answer)')}` +
+      steps.map((s, i) => `<details><summary>Step ${i + 1}${s.thought ? ' — ' + esc(s.thought).slice(0, 80) : ''}</summary>` +
+        s.calls.map(([n, a, o]) => `<pre>$ ${esc(n)} ${esc(JSON.stringify(a))}\n${esc(String(o).slice(0, 2000))}</pre>`).join('') + '</details>').join('');
+  } catch (err) {
+    // Fallback: classic JSON ask.
+    try {
+      const res = await apiAsk(question);
+      renderTranscript(res.transcript);
+    } catch (e2) {
+      askbody.innerHTML = `<p>ask failed: ${esc(err.message || err)}</p><p>Set GEMINI_API_KEY where the server runs.</p>`;
+    }
+  }
+}
+function renderTranscript(t) {
+  let html = `<h2>Answer</h2>${md(t.final_text || '(no answer)')}`;
+  (t.steps || []).forEach((s, i) => {
+    html += `<h2>Step ${i + 1}${s.thought ? ' — ' + esc(s.thought).slice(0, 80) : ''}</h2>`;
+    (s.calls || []).forEach(([call, result]) => {
+      html += `<pre>$ ${esc(call.name)} ${esc(JSON.stringify(call.args))}\n${esc(String(result.output).slice(0, 2000))}</pre>`;
+    });
+  });
+  askbody.innerHTML = html;
 }
 askq.addEventListener('keydown', async (e) => {
   if (e.key !== 'Enter' || !askq.value.trim()) return;
