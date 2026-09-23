@@ -4,6 +4,7 @@ const openBtn = $('open'), askq = $('askq'), themeBtn = $('theme-btn');
 const viewport = $('viewport'), spacer = $('spacer'), rowsEl = $('rows'), plainEl = $('plain');
 const askpanel = $('askpanel'), askbody = $('askbody'), askclose = $('askclose');
 const filebar = $('filebar'), fbPath = $('filebar-path'), fbMeta = $('filebar-meta'), fbDirty = $('filebar-dirty');
+const diffview = $('diffview');
 const pal = $('palette'), palInput = $('palette-input'), palRes = $('palette-results');
 const sideCount = $('side-count'), reindexBtn = $('reindex');
 let allFiles = [];
@@ -128,10 +129,70 @@ function status() {
 const ROW_H = 20, OVERSCAN = 24, WIN = 200;
 const cur = { path: null, total: 0, cache: new Map(), mode: 'plain', pending: new Set() };
 
-function showFileMode() { cur.mode = 'file'; plainEl.hidden = true; askpanel.hidden = true; viewport.hidden = false; filebar.hidden = false; }
+function showFileMode() { cur.mode = 'file'; plainEl.hidden = true; askpanel.hidden = true; diffview.hidden = true; viewport.hidden = false; filebar.hidden = false; }
 function showPlainMode(text) {
-  cur.mode = 'plain'; viewport.hidden = true; askpanel.hidden = true; filebar.hidden = true; plainEl.hidden = false;
+  cur.mode = 'plain'; viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; plainEl.hidden = false;
   if (text !== undefined) plainEl.textContent = text;
+}
+function showDiffMode() {
+  cur.mode = 'diff'; viewport.hidden = true; askpanel.hidden = true; plainEl.hidden = true; filebar.hidden = true; diffview.hidden = false;
+}
+
+/* ---------- unified diff render ---------- */
+function parseDiff(text) {
+  const files = [];
+  let cur_f = null, cur_h = null;
+  for (const raw of String(text).split('\n')) {
+    if (raw.startsWith('diff --git ')) {
+      const m = raw.match(/ b\/(.+)$/);
+      cur_f = { file: m ? m[1] : raw, hunks: [] };
+      files.push(cur_f); cur_h = null;
+    } else if (raw.startsWith('@@ ')) {
+      const m = raw.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      cur_h = { header: raw, lines: [], o: m ? +m[1] : 0, n: m ? +m[2] : 0 };
+      cur_f?.hunks.push(cur_h);
+    } else if (cur_h && (raw.startsWith('+') || raw.startsWith('-') || raw.startsWith(' '))) {
+      const t = raw[0] === '+' ? 'add' : raw[0] === '-' ? 'del' : 'ctx';
+      const line = { t, text: raw.slice(1), o: null, n: null };
+      if (t === 'del' || t === 'ctx') line.o = cur_h.o++;
+      if (t === 'add' || t === 'ctx') line.n = cur_h.n++;
+      cur_h.lines.push(line);
+    }
+  }
+  return files;
+}
+function renderDiff(text) {
+  showDiffMode();
+  const files = parseDiff(text);
+  diffview.innerHTML = '';
+  if (!files.length) { diffview.innerHTML = '<div class="d-empty">Working tree clean — no diff vs HEAD.</div>'; return; }
+  const frag = document.createDocumentFragment();
+  for (const f of files) {
+    const box = document.createElement('div');
+    box.className = 'd-file';
+    const adds = f.hunks.flatMap(h => h.lines).filter(l => l.t === 'add').length;
+    const dels = f.hunks.flatMap(h => h.lines).filter(l => l.t === 'del').length;
+    box.innerHTML = `<div class="d-fhead">${esc(f.file)} <span style="color:var(--green)">+${adds}</span> <span style="color:var(--red)">−${dels}</span></div>`;
+    for (const h of f.hunks) {
+      const hd = document.createElement('div');
+      hd.className = 'd-hunk'; hd.textContent = h.header;
+      box.appendChild(hd);
+      for (const l of h.lines) {
+        const d = document.createElement('div');
+        d.className = 'd-line d-' + l.t;
+        const sgn = l.t === 'add' ? '+' : l.t === 'del' ? '−' : ' ';
+        d.innerHTML = `<span class="g">${l.o ?? ''}</span><span class="g">${l.n ?? ''}</span><span class="sgn">${sgn}</span><span>${esc(l.text)}</span>`;
+        box.appendChild(d);
+      }
+    }
+    frag.appendChild(box);
+  }
+  diffview.appendChild(frag);
+}
+async function showDiff() {
+  const t = await apiDiff().catch(e => String(e));
+  renderDiff(String(t).slice(0, 500000));
+  currentPath = null; status();
 }
 
 async function openFile(path) {
@@ -310,8 +371,7 @@ async function runPal(it) {
     viewport.scrollTop = Math.max(0, (go.line - 10) * ROW_H);
     paint();
   } else if (go.cmd === 'diff') {
-    showPlainMode((await apiDiff().catch(e => String(e))).slice(0, 200000) || '(clean)');
-    currentPath = null; status();
+    showDiff();
   } else if (go.cmd === 'ask' || go.cmd === 'search') {
     askq.value = go.cmd === 'ask' ? (go.arg || '') : '>' + (go.arg || '');
     askq.focus();
@@ -372,10 +432,7 @@ document.addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); pal.hidden ? openPalette() : closePalette(); }
   else if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); pal.hidden ? openPalette() : closePalette(); }
   else if (e.key === 'Escape' && !pal.hidden) closePalette();
-  else if (mod && e.key.toLowerCase() === 'd') {
-    e.preventDefault();
-    apiDiff().then(t => { showPlainMode(String(t).slice(0, 200000) || '(clean)'); currentPath = null; status(); });
-  }
+  else if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); showDiff(); }
   else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); pickFolder(); }
 });
 
