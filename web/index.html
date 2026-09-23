@@ -30,7 +30,7 @@
   <section id="view">
     <div id="prbanner" hidden></div>
     <div id="tabs" hidden></div>
-    <div id="filebar" hidden><span id="filebar-path"></span><span id="filebar-meta"></span><span id="filebar-dirty" hidden>●</span><button id="ol-toggle" title="Symbol outline (Ctrl+Shift+O)" aria-label="Toggle symbol outline">≡</button></div>
+    <div id="filebar" hidden><span id="filebar-path"></span><span id="filebar-meta"></span><span id="filebar-dirty" hidden>●</span><span id="draft-count" hidden></span><button id="ol-toggle" title="Symbol outline (Ctrl+Shift+O)" aria-label="Toggle symbol outline">≡</button></div>
     <div id="content">
       <div id="askpanel" hidden><button id="askclose" aria-label="Close ask panel">×</button><div id="askbody"></div></div>
       <div id="diffview" hidden></div>
@@ -52,6 +52,13 @@
     </div></div>
     <div id="viewport" hidden><div id="spacer"><div id="rows"></div></div></div>
     <div id="findbar" hidden><input id="find-input" placeholder="Find in file" aria-label="Find in file"/><span class="cnt" id="find-count"></span></div>
+    <div id="compose" hidden>
+      <div id="compose-box">
+        <div id="compose-title">Comment</div>
+        <textarea id="compose-text" placeholder="Write a review comment…" aria-label="Review comment"></textarea>
+        <div class="compose-row"><span class="mut">Ctrl+Enter save · Esc cancel</span><button id="compose-save">Save draft</button></div>
+      </div>
+    </div>
     <div id="ctxmenu" hidden></div>
     <pre id="plain">Select a file, or press Ctrl+K to jump anywhere.</pre>
     </div>

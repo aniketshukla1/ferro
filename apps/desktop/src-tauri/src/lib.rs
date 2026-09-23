@@ -31,6 +31,11 @@ pub fn run() {
             commands::set_root,
             commands::reindex,
             commands::pick_folder,
+            commands::open_pr,
+            commands::draft_add,
+            commands::draft_list,
+            commands::draft_delete,
+            commands::review_submit,
             commands::ask,
         ])
         .run(tauri::generate_context!())

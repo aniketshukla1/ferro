@@ -5,12 +5,15 @@ use tauri::State;
 
 pub struct CoreState {
     inner: RwLock<Arc<Index>>,
+    /// Keeps a PR worktree's tempdir alive while reviewed.
+    pr_hold: RwLock<Option<ferro_core::pr::PrWorktree>>,
 }
 
 impl CoreState {
     pub fn new(root: PathBuf) -> Self {
         Self {
             inner: RwLock::new(Arc::new(Index::new(root))),
+            pr_hold: RwLock::new(None),
         }
     }
 
@@ -198,4 +201,85 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String
         .set_title("Open folder in Ferro")
         .blocking_pick_folder();
     Ok(dir.map(|p| p.to_string()))
+}
+
+#[tauri::command]
+pub async fn open_pr(
+    state: State<'_, CoreState>,
+    url: String,
+) -> Result<serde_json::Value, String> {
+    let info = ferro_core::pr::parse_pr_url(&url).ok_or("not a GitHub PR URL")?;
+    let work = tokio::task::spawn_blocking(move || ferro_core::pr::worktree_for_pr(&info))
+        .await
+        .map_err(|e| e.to_string())??;
+    let stats = {
+        let idx = state.set_root(work.dir.clone());
+        idx.rebuild().await;
+        idx.set_pr(ferro_core::pr::PrCtx {
+            owner: work.info.owner.clone(),
+            repo: work.info.repo.clone(),
+            number: work.info.number,
+            base_ref: work.base_ref.clone(),
+            base_sha: work.base_sha.clone(),
+            head_sha: work.head_sha.clone(),
+        });
+        let (n, ms) = idx.stats();
+        serde_json::json!({
+            "files": n, "indexed_ms": ms, "root": idx.root().to_string_lossy(),
+            "pr": idx.pr_ctx(),
+        })
+    };
+    *state.pr_hold.write().unwrap() = Some(work);
+    Ok(stats)
+}
+
+#[tauri::command]
+pub async fn draft_add(
+    path: String,
+    line: usize,
+    body: String,
+) -> Result<ferro_agent::review::Draft, String> {
+    if path.is_empty() || line == 0 || body.trim().is_empty() {
+        return Err("path, line>0 and body required".into());
+    }
+    Ok(ferro_agent::drafts().add(path, line, body))
+}
+
+#[tauri::command]
+pub async fn draft_list() -> Result<Vec<ferro_agent::review::Draft>, String> {
+    Ok(ferro_agent::drafts().list())
+}
+
+#[tauri::command]
+pub async fn draft_delete(id: String) -> Result<(), String> {
+    if ferro_agent::drafts().remove(&id) {
+        Ok(())
+    } else {
+        Err("no such draft".into())
+    }
+}
+
+#[tauri::command]
+pub async fn review_submit(
+    state: State<'_, CoreState>,
+    event: Option<String>,
+    body: Option<String>,
+) -> Result<String, String> {
+    let idx = state.get();
+    let pr = idx.pr_ctx().ok_or("not in PR mode")?;
+    let drafts = ferro_agent::drafts().list();
+    let out = tokio::task::spawn_blocking(move || {
+        ferro_agent::submit_review(
+            &pr.owner,
+            &pr.repo,
+            pr.number,
+            &event.unwrap_or_else(|| "comment".into()),
+            &body.unwrap_or_default(),
+            &drafts,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    ferro_agent::drafts().clear();
+    Ok(out)
 }

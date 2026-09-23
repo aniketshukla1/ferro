@@ -36,7 +36,6 @@ pub struct Index {
     indexed_ms: RwLock<u128>,
     pr: RwLock<Option<crate::pr::PrCtx>>,
 }
-
 impl Index {
     pub fn new(root: PathBuf) -> Self {
         let root = root.canonicalize().unwrap_or(root);

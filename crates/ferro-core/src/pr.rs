@@ -138,7 +138,13 @@ pub fn worktree_for_pr(info: &PrInfo) -> Result<PrWorktree, String> {
     let base = base_ref(info, &dir);
     git(
         &dir,
-        &["fetch", "--depth", "100", "origin", &format!("{base}:{base}")],
+        &[
+            "fetch",
+            "--depth",
+            "100",
+            "origin",
+            &format!("{base}:{base}"),
+        ],
     )
     .map_err(|e| format!("fetch base {base} failed: {e}"))?;
     git(&dir, &["checkout", "-q", "pr-head"])?;

@@ -513,7 +513,8 @@ function paint() {
     d.className = 'row' + (n === selectedLine && cur.path === selectedFile ? ' cur-line' : '') + (inSel && n !== selectedLine ? ' in-sel' : '');
     d.style.top = (n - 1) * ROW_H + 'px';
     const l = lineAt(n);
-    d.innerHTML = `<span class="ln">${n}</span><span>${l ? l.html : ''}</span>`;
+    const hasDraft = (draftLines.get(cur.path) || []).some(x => x.line === n);
+    d.innerHTML = `<span class="ln">${n}</span><span>${l ? l.html : ''}</span>${hasDraft ? '<span class="dmark">◆</span>' : ''}`;
     d.onclick = (e) => {
       if (e.shiftKey && cur.path === selectedFile && selAnchor > 0) setSelection(cur.path, selAnchor, n);
       else setSelection(cur.path, n, n);
@@ -663,7 +664,94 @@ findInput.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') { findbar.hidden = true; selectedLine = 0; paint(); }
 });
 
-/* ---------- context menu ---------- */
+/* ---------- review drafts (Alt+R) ---------- */
+const composeEl = $('compose'), composeText = $('compose-text'), composeTitle = $('compose-title');
+let prInfo = null;
+let draftLines = new Map();
+
+async function apiDrafts() {
+  if (invoke) return await invoke('draft_list');
+  return await (await fetch('/api/review/drafts')).json();
+}
+async function refreshDrafts() {
+  let all = [];
+  try { all = await apiDrafts(); } catch { all = []; }
+  draftLines = new Map();
+  for (const d of all) {
+    if (!draftLines.has(d.path)) draftLines.set(d.path, []);
+    draftLines.get(d.path).push(d);
+  }
+  const n = (draftLines.get(cur.path) || []).length;
+  const badge = $('draft-count');
+  badge.hidden = cur.mode !== 'file' || n === 0;
+  badge.textContent = n ? `${n} draft${n > 1 ? 's' : ''}` : '';
+  if (cur.mode === 'file') paint();
+  return all;
+}
+function openCompose() {
+  if (!prInfo) { $('st-line').textContent = 'drafts need PR mode: ferro <pr-url>'; return; }
+  if (cur.mode !== 'file' || !cur.path || !selStart) { $('st-line').textContent = 'select a line first'; return; }
+  composeTitle.textContent = `Comment on ${cur.path}:${selStart}${selEnd !== selStart ? '-' + selEnd : ''}`;
+  composeText.value = '';
+  composeEl.hidden = false;
+  setTimeout(() => composeText.focus(), 0);
+}
+async function saveCompose() {
+  const body = composeText.value.trim();
+  if (!body) return;
+  const payload = { path: cur.path, line: selStart, body };
+  try {
+    if (invoke) await invoke('draft_add', payload);
+    else {
+      const r = await fetch('/api/review/drafts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+      if (!r.ok) throw new Error(await r.text());
+    }
+    composeEl.hidden = true;
+    await refreshDrafts();
+    $('st-line').textContent = 'draft saved';
+  } catch (err) {
+    $('st-line').textContent = 'draft failed: ' + (err.message || err);
+  }
+}
+$('compose-save').onclick = saveCompose;
+composeText.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); saveCompose(); }
+  else if (e.key === 'Escape') composeEl.hidden = true;
+});
+async function submitReview(event) {
+  askpanel.hidden = false;
+  askbody.innerHTML = '<p>submitting…</p>';
+  try {
+    let out;
+    if (invoke) out = await invoke('review_submit', { event, body: '' });
+    else {
+      const r = await fetch('/api/review/submit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ event, body: '' }) });
+      const t = await r.text();
+      if (!r.ok) throw new Error(t);
+      out = t;
+    }
+    askbody.innerHTML = `<h2>Review submitted (${esc(event)})</h2><pre>${esc(String(out).slice(0, 2000))}</pre>`;
+    await refreshDrafts();
+  } catch (err) {
+    askbody.innerHTML = `<p>submit failed: ${esc(err.message || err)}</p>`;
+  }
+}
+async function listDrafts() {
+  const all = await refreshDrafts();
+  askpanel.hidden = false;
+  if (!all.length) { askbody.innerHTML = '<p>no drafts yet — Alt+R on a line</p>'; return; }
+  askbody.innerHTML = '<h2>Drafts</h2>' + all.map(d =>
+    `<pre data-draft="${esc(d.id)}">${esc(d.path)}:${d.line} — ${esc(d.body)}  [× ${esc(d.id)}]</pre>`).join('') +
+    '<p>Delete: click a draft, or submit below.</p>' +
+    ['comment', 'approve', 'request-changes'].map(e => `<button data-submit="${e}">Submit ${e}</button> `).join('');
+  askbody.querySelectorAll('button[data-submit]').forEach(b => b.onclick = () => submitReview(b.dataset.submit));
+  askbody.querySelectorAll('pre[data-draft]').forEach(p => p.onclick = async () => {
+    const id = p.dataset.draft;
+    if (invoke) await invoke('draft_delete', { id });
+    else await fetch('/api/review/drafts/' + encodeURIComponent(id), { method: 'DELETE' });
+    listDrafts();
+  });
+}
 const ctxmenu = $('ctxmenu');
 function openCtx(x, y) {
   ctxmenu.innerHTML = '';
@@ -791,6 +879,12 @@ async function updatePalette() {
   if (v.startsWith('>')) {
     const query = v.slice(1).trim();
     const cmds = COMMANDS.filter(c => c.name.startsWith(query)).map(c => ({ k: 'cmd', label: c.name, sub: c.hint, go: { cmd: c.name, arg: query.slice(c.name.length).trim() } }));
+    if (prInfo && 'drafts'.startsWith(query)) cmds.unshift({ k: 'cmd', label: 'drafts', sub: 'list review drafts', go: { cmd: 'drafts' } });
+    if (prInfo && 'submit'.startsWith(query)) {
+      for (const ev of ['comment', 'approve', 'request-changes']) {
+        cmds.unshift({ k: 'cmd', label: `submit ${ev}`, sub: 'post review to GitHub', go: { cmd: 'submit', arg: ev } });
+      }
+    }
     if (!query) { renderPal(cmds); return; }
     if (query.startsWith('ask ')) { renderPal([{ k: 'ask', label: query.slice(4), sub: 'ask agent', go: { cmd: 'ask', arg: query.slice(4) } }]); return; }
     const hits = await apiSearch(query).catch(() => []);
@@ -840,6 +934,10 @@ async function runPal(it) {
     paint();
   } else if (go.cmd === 'diff') {
     showDiff();
+  } else if (go.cmd === 'drafts') {
+    listDrafts();
+  } else if (go.cmd === 'submit') {
+    submitReview(go.arg || 'comment');
   } else if (go.cmd === 'ask' || go.cmd === 'search') {
     askq.value = go.cmd === 'ask' ? (go.arg || '') : '>' + (go.arg || '');
     askq.focus();
@@ -947,6 +1045,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.altKey && !mod && k === 'c') { e.preventDefault(); copyRef(); }
   else if (e.altKey && !mod && k === 'a') { e.preventDefault(); copyWithContext(); }
   else if (e.altKey && !mod && k === 'u') { e.preventDefault(); findUsages(); }
+  else if (e.altKey && !mod && k === 'r') { e.preventDefault(); openCompose(); }
   else if (e.altKey && k === 'z') { e.preventDefault(); toggleWrap(); }
   else if (e.altKey && !mod && e.key === 'ArrowLeft') { e.preventDefault(); goHistory(-1); }
   else if (e.altKey && !mod && e.key === 'ArrowRight') { e.preventDefault(); goHistory(1); }
@@ -983,6 +1082,7 @@ async function boot(reset) {
   status();
   try {
     const info = await apiPrInfo();
+    prInfo = info && info.pr ? info.pr : null;
     const banner = $('prbanner');
     if (info && info.pr) {
       const pr = info.pr;
@@ -996,6 +1096,7 @@ async function boot(reset) {
       btn.onclick = () => showDiff();
       banner.appendChild(btn);
     } else banner.hidden = true;
+    await refreshDrafts().catch(() => []);
   } catch {}
   setTimeout(bootStats, 800);
   if (!invoke && openBtn) openBtn.style.display = 'none';

@@ -1,8 +1,8 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use rust_embed::RustEmbed;
@@ -41,6 +41,10 @@ pub async fn serve(
             .route("/api/diff", get(diff));
     }
     app = app.route("/api/pr-info", get(pr_info));
+    app = app
+        .route("/api/review/drafts", get(review_list).post(review_add))
+        .route("/api/review/drafts/{id}", delete(review_delete))
+        .route("/api/review/submit", post(review_submit));
     let app = app
         .fallback(static_file)
         .layer(TraceLayer::new_for_http())
@@ -247,6 +251,71 @@ async fn pr_info(State(s): State<Arc<Index>>) -> impl IntoResponse {
     match s.pr_ctx() {
         Some(pr) => Json(serde_json::json!({"pr": pr})).into_response(),
         None => Json(serde_json::json!({"pr": null})).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DraftBody {
+    path: String,
+    line: usize,
+    body: String,
+}
+
+async fn review_list() -> impl IntoResponse {
+    Json(ferro_agent::drafts().list())
+}
+
+async fn review_add(Json(b): Json<DraftBody>) -> impl IntoResponse {
+    if b.path.is_empty() || b.line == 0 || b.body.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "path, line>0 and body required".to_string(),
+        )
+            .into_response();
+    }
+    Json(ferro_agent::drafts().add(b.path, b.line, b.body)).into_response()
+}
+
+async fn review_delete(Path(id): Path<String>) -> impl IntoResponse {
+    if ferro_agent::drafts().remove(&id) {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "no such draft".to_string()).into_response()
+    }
+}
+
+#[derive(Deserialize)]
+struct SubmitBody {
+    event: Option<String>,
+    body: Option<String>,
+}
+
+async fn review_submit(
+    State(s): State<Arc<Index>>,
+    Json(b): Json<SubmitBody>,
+) -> impl IntoResponse {
+    let Some(pr) = s.pr_ctx() else {
+        return (StatusCode::BAD_REQUEST, "not in PR mode".to_string()).into_response();
+    };
+    let drafts = ferro_agent::drafts().list();
+    let out = tokio::task::spawn_blocking(move || {
+        ferro_agent::submit_review(
+            &pr.owner,
+            &pr.repo,
+            pr.number,
+            &b.event.unwrap_or_else(|| "comment".into()),
+            &b.body.unwrap_or_default(),
+            &drafts,
+        )
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match out {
+        Ok(resp) => {
+            ferro_agent::drafts().clear();
+            (StatusCode::OK, resp).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
     }
 }
 
