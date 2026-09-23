@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="tokyo">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -8,20 +8,36 @@
 </head>
 <body>
 <header>
-  <strong>ferro</strong>
-  <span id="stats">indexing…</span>
-  <input id="q" placeholder="Ctrl+P fuzzy · >search · Ctrl+D diff · Ctrl+O folder" autocomplete="off"/>
-  <input id="askq" placeholder="Ask agent… (Enter)" autocomplete="off"/>
+  <div class="logo"><span class="mark"></span>ferro</div>
+  <button id="palette-trigger" title="Command palette"><span class="mut">Search files, commands…</span><kbd>Ctrl K</kbd></button>
+  <input id="askq" placeholder="Ask agent… (Enter)" autocomplete="off" spellcheck="false"/>
+  <button id="theme-btn" title="Cycle theme">◐</button>
   <button id="open" title="Open folder (Tauri)">Open</button>
 </header>
+<div id="palette" hidden>
+  <div id="palette-box">
+    <input id="palette-input" placeholder="Type to fuzzy-find files · > for search · :line · ? help" autocomplete="off" spellcheck="false"/>
+    <div id="palette-results"></div>
+    <div id="palette-hint">↑↓ navigate · Enter open · Esc close</div>
+  </div>
+</div>
 <main>
-  <aside id="files"></aside>
+  <aside id="sidebar">
+    <div id="side-head"><span>FILES</span><span id="side-count"></span><button id="reindex" title="Rebuild index">↻</button></div>
+    <div id="files"></div>
+  </aside>
   <section id="view">
+    <div id="filebar" hidden><span id="filebar-path"></span><span id="filebar-meta"></span><span id="filebar-dirty" hidden>●</span></div>
     <div id="askpanel" hidden><button id="askclose">×</button><div id="askbody"></div></div>
     <div id="viewport" hidden><div id="spacer"><div id="rows"></div></div></div>
-    <pre id="plain">Select a file. Press Ctrl+P to fuzzy-find.</pre>
+    <pre id="plain">Select a file, or press Ctrl+K to jump anywhere.</pre>
   </section>
 </main>
+<footer id="status">
+  <span id="st-backend"></span><span id="st-files"></span><span id="st-index"></span>
+  <span class="spacer"></span>
+  <span id="st-branch"></span><span id="st-file"></span><span id="st-line"></span>
+</footer>
 <script type="module" src="app.js"></script>
 </body>
 </html>

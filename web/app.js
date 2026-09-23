@@ -1,28 +1,20 @@
-const q = document.getElementById('q');
-const filesEl = document.getElementById('files');
-const statsEl = document.getElementById('stats');
-const openBtn = document.getElementById('open');
-const askq = document.getElementById('askq');
-const askpanel = document.getElementById('askpanel');
-const askbody = document.getElementById('askbody');
-const askclose = document.getElementById('askclose');
-const viewport = document.getElementById('viewport');
-const spacer = document.getElementById('spacer');
-const rowsEl = document.getElementById('rows');
-const plainEl = document.getElementById('plain');
+const $ = (id) => document.getElementById(id);
+const q = null, filesEl = $('files');
+const openBtn = $('open'), askq = $('askq'), themeBtn = $('theme-btn');
+const viewport = $('viewport'), spacer = $('spacer'), rowsEl = $('rows'), plainEl = $('plain');
+const askpanel = $('askpanel'), askbody = $('askbody'), askclose = $('askclose');
+const filebar = $('filebar'), fbPath = $('filebar-path'), fbMeta = $('filebar-meta'), fbDirty = $('filebar-dirty');
+const pal = $('palette'), palInput = $('palette-input'), palRes = $('palette-results');
+const sideCount = $('side-count'), reindexBtn = $('reindex');
 let allFiles = [];
+let gitMap = new Map(), gitBranch = '';
+let currentPath = null;
 
-// Dual backend: Tauri (window.__TAURI__.core.invoke) or HTTP (ferro serve).
 const tauriInvoke = window?.__TAURI__?.core?.invoke ?? null;
 const backend = tauriInvoke ? 'tauri' : 'http';
 const invoke = tauriInvoke;
 
-const ROW_H = 20;
-const OVERSCAN = 24;
-const WIN = 200;
-
-const cur = { path: null, total: 0, cache: new Map(), mode: 'plain', pending: new Set() };
-
+/* ---------- backend ---------- */
 async function apiStats() {
   if (invoke) return await invoke('get_stats');
   return await (await fetch('/api/stats')).json();
@@ -32,12 +24,12 @@ async function apiFiles() {
   return await (await fetch('/api/files')).json();
 }
 async function apiFuzzy(v) {
-  if (invoke) return await invoke('fuzzy', { q: v, limit: 50 });
-  return await (await fetch('/api/fuzzy?q=' + encodeURIComponent(v) + '&limit=50')).json();
+  if (invoke) return await invoke('fuzzy', { q: v, limit: 9 });
+  return await (await fetch('/api/fuzzy?q=' + encodeURIComponent(v) + '&limit=9')).json();
 }
 async function apiSearch(v) {
-  if (invoke) return await invoke('grep', { q: v, limit: 50 });
-  return await (await fetch('/api/search?q=' + encodeURIComponent(v) + '&limit=50')).json();
+  if (invoke) return await invoke('grep', { q: v, limit: 30 });
+  return await (await fetch('/api/search?q=' + encodeURIComponent(v) + '&limit=30')).json();
 }
 async function apiMeta(path) {
   if (invoke) return await invoke('file_meta', { path });
@@ -59,95 +51,144 @@ async function apiDiff() {
   if (invoke) return await invoke('git_diff', { path: null });
   return await (await fetch('/api/diff')).text();
 }
+async function apiGitStatus() {
+  if (invoke) return await invoke('git_status');
+  return await (await fetch('/api/git-status')).text();
+}
 async function apiAsk(question) {
   if (invoke) return await invoke('ask', { question, maxSteps: 8 });
-  const r = await fetch('/api/ask', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ question }) });
+  const r = await fetch('/api/ask', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question }) });
   if (!r.ok) throw new Error(await r.text());
   return await r.json();
+}
+async function apiReindex() {
+  if (invoke) return await invoke('reindex');
+  await bootStats();
 }
 
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function showFileMode() {
-  cur.mode = 'file';
-  plainEl.hidden = true;
-  viewport.hidden = false;
+/* ---------- themes ---------- */
+const THEMES = ['tokyo', 'paper', 'mocha'];
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem('ferro-theme', t); } catch {}
 }
-function showPlainMode() {
-  cur.mode = 'plain';
-  viewport.hidden = true;
-  plainEl.hidden = false;
+setTheme((() => { try { return localStorage.getItem('ferro-theme') || 'tokyo'; } catch { return 'tokyo'; } })());
+themeBtn.onclick = () => {
+  const cur = document.documentElement.dataset.theme || 'tokyo';
+  setTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
+};
+
+/* ---------- sidebar ---------- */
+const EXT_COLORS = { rs:'#ff8c1a', py:'#7aa2f7', js:'#e0af68', ts:'#7aa2f7', tsx:'#7aa2f7', go:'#66d9e8', md:'#9ece6a', json:'#bb9af7', toml:'#8b93a7', css:'#bb9af7', html:'#f7768e', sh:'#9ece6a', sql:'#66d9e8' };
+function extOf(p) { const i = p.lastIndexOf('.'); return i < 0 ? '' : p.slice(i + 1).toLowerCase(); }
+function renderSidebar(list) {
+  filesEl.innerHTML = '';
+  sideCount.textContent = list.length;
+  for (const f of list.slice(0, 400)) {
+    const p = (typeof f === 'string') ? f : f.path;
+    const d = document.createElement('div');
+    d.className = 'f' + (p === currentPath ? ' current' : '');
+    const slash = p.lastIndexOf('/');
+    const dir = slash < 0 ? '' : p.slice(0, slash);
+    const nm = slash < 0 ? p : p.slice(slash + 1);
+    const st = gitMap.get(p) || '';
+    d.innerHTML = `<span class="dot" style="background:${EXT_COLORS[extOf(p)] || 'var(--mut)'}"></span>` +
+      `<span class="nm" title="${esc(p)}">${esc(nm)}</span>` +
+      (st ? `<span class="badge ${esc(st[0])}">${esc(st[0])}</span>` : '') +
+      (dir ? `<span class="dir">${esc(dir.split('/').pop())}</span>` : '');
+    d.onclick = () => openFile(p);
+    filesEl.appendChild(d);
+  }
+}
+
+function parseGitStatus(text) {
+  gitMap = new Map(); gitBranch = '';
+  for (const line of String(text).split('\n')) {
+    if (line.startsWith('## ')) { gitBranch = line.slice(3).split('...')[0]; continue; }
+    if (line.length > 3) {
+      const xy = line.slice(0, 2).trim() || 'M';
+      const p = line.slice(3).trim().replace(/^"(.+)"$/, '$1');
+      if (p) gitMap.set(p, xy);
+    }
+  }
+}
+
+/* ---------- status bar ---------- */
+function status() {
+  $('st-backend').textContent = backend;
+  $('st-branch').textContent = gitBranch ? '⎇ ' + gitBranch : '';
+  $('st-file').textContent = currentPath || '';
+}
+
+/* ---------- virtual viewer ---------- */
+const ROW_H = 20, OVERSCAN = 24, WIN = 200;
+const cur = { path: null, total: 0, cache: new Map(), mode: 'plain', pending: new Set() };
+
+function showFileMode() { cur.mode = 'file'; plainEl.hidden = true; askpanel.hidden = true; viewport.hidden = false; filebar.hidden = false; }
+function showPlainMode(text) {
+  cur.mode = 'plain'; viewport.hidden = true; askpanel.hidden = true; filebar.hidden = true; plainEl.hidden = false;
+  if (text !== undefined) plainEl.textContent = text;
 }
 
 async function openFile(path) {
+  currentPath = path;
   showFileMode();
-  cur.path = path;
-  cur.cache.clear();
-  cur.pending.clear();
+  cur.path = path; cur.cache.clear(); cur.pending.clear();
+  renderSidebar(allFiles);
   let meta;
-  try {
-    meta = await apiMeta(path);
-  } catch {
-    showPlainMode();
-    plainEl.textContent = 'cannot open ' + path;
-    return;
-  }
+  try { meta = await apiMeta(path); }
+  catch { showPlainMode('cannot open ' + path); return; }
   cur.total = meta.total_lines || 0;
   spacer.style.height = Math.max(1, cur.total) * ROW_H + 'px';
   viewport.scrollTop = 0;
+  fbPath.textContent = path;
+  const st = gitMap.get(path);
+  fbDirty.hidden = !st;
+  fbDirty.title = st ? 'modified (' + st + ')' : '';
+  fbMeta.textContent = `${cur.total.toLocaleString()} lines · ${(meta.size / 1024).toFixed(1)} KB`;
+  $('st-line').textContent = 'Ln 1';
+  status();
   await ensureAround(0);
   paint();
 }
 
 async function ensureAround(first) {
   if (!cur.path) return;
-  const start = Math.max(0, first - OVERSCAN);
-  // Align fetches to 100-line blocks to maximize cache hits.
-  const aligned = Math.floor(start / 100) * 100;
-  const key = aligned;
-  if (cur.cache.has(key) || cur.pending.has(key)) return;
-  cur.pending.add(key);
+  const aligned = Math.floor(Math.max(0, first - OVERSCAN) / 100) * 100;
+  if (cur.cache.has(aligned) || cur.pending.has(aligned)) return;
+  cur.pending.add(aligned);
   try {
     let win;
     try {
       win = await apiHighlight(cur.path, aligned, WIN);
-      // Normalize to {total, start, lines:[{n, html}]}; fallback shape handled below.
-      if (!win.lines && win.total === undefined) throw new Error('bad hl');
+      if (!win.lines) throw new Error('bad hl');
     } catch {
       const raw = await apiWindow(cur.path, aligned, WIN);
       win = { total: raw.total, start: raw.start, lines: raw.lines.map(l => ({ n: l.n, html: esc(l.text) })) };
     }
     cur.total = win.total || cur.total;
     spacer.style.height = Math.max(1, cur.total) * ROW_H + 'px';
-    cur.cache.set(key, win);
-    // Keep cache bounded: last 8 windows (~1600 lines).
-    if (cur.cache.size > 8) {
-      const oldest = cur.cache.keys().next().value;
-      cur.cache.delete(oldest);
-    }
-  } finally {
-    cur.pending.delete(key);
-  }
+    cur.cache.set(aligned, win);
+    if (cur.cache.size > 8) cur.cache.delete(cur.cache.keys().next().value);
+  } finally { cur.pending.delete(aligned); }
 }
 
 function lineAt(n) {
-  for (const win of cur.cache.values()) {
-    for (const l of win.lines) {
+  for (const win of cur.cache.values())
+    for (const l of win.lines)
       if (l.n === n) return l;
-    }
-  }
   return null;
 }
 
-let paintQueued = false;
 function paint() {
   if (cur.mode !== 'file') return;
   const first = Math.max(1, Math.floor(viewport.scrollTop / ROW_H) + 1);
   const visible = Math.ceil(viewport.clientHeight / ROW_H) + 1;
-  const from = Math.max(1, first - OVERSCAN);
-  const to = Math.min(cur.total, first + visible + OVERSCAN);
+  const from = Math.max(1, first - OVERSCAN), to = Math.min(cur.total, first + visible + OVERSCAN);
   rowsEl.innerHTML = '';
   const frag = document.createDocumentFragment();
   for (let n = from; n <= to; n++) {
@@ -159,94 +200,130 @@ function paint() {
     frag.appendChild(d);
   }
   rowsEl.appendChild(frag);
+  $('st-line').textContent = 'Ln ' + first.toLocaleString() + ' / ' + cur.total.toLocaleString();
   ensureAround(first - 1);
 }
 
-let scrollRaf = false;
+let scrollRaf = false, paintQueued = false;
 viewport.addEventListener('scroll', () => {
   if (scrollRaf) return;
   scrollRaf = true;
   requestAnimationFrame(() => {
-    scrollRaf = false;
-    paint();
-    // Re-paint after pending fetch resolves.
-    setTimeout(() => { if (!paintQueued) { paintQueued = true; setTimeout(() => { paintQueued = false; paint(); }, 120); } }, 50);
+    scrollRaf = false; paint();
+    setTimeout(() => {
+      if (!paintQueued) { paintQueued = true; setTimeout(() => { paintQueued = false; paint(); }, 120); }
+    }, 50);
   });
 });
 
-async function boot() {
-  const s = await apiStats().catch(() => ({ files: 0, indexed_ms: 0, root: '' }));
-  statsEl.textContent = `[${backend}] ${s.files} files · ${s.indexed_ms}ms · ${s.root}`;
-  allFiles = await apiFiles().catch(() => []);
-  render(allFiles.slice(0, 200));
-  setTimeout(bootStats, 800);
-  if (!invoke && openBtn) openBtn.style.display = 'none';
-}
-async function bootStats() {
-  try {
-    const s = await apiStats();
-    statsEl.textContent = `[${backend}] ${s.files} files · ${s.indexed_ms}ms · ${s.root}`;
-  } catch {}
-}
-function render(list) {
-  filesEl.innerHTML = '';
-  for (const f of list) {
+/* ---------- palette ---------- */
+let palItems = [], palActive = 0;
+const COMMANDS = [
+  { name: 'search', hint: '>query — content search' },
+  { name: 'diff', hint: 'show diff vs HEAD' },
+  { name: 'ask', hint: '>ask question — agent' },
+  { name: 'reindex', hint: 'rebuild file index' },
+  { name: 'theme', hint: 'cycle theme' },
+  { name: 'open', hint: 'open folder (Tauri)' },
+];
+function openPalette() { pal.hidden = false; palInput.value = ''; renderPal([]); setTimeout(() => palInput.focus(), 0); }
+function closePalette() { pal.hidden = true; }
+$('palette-trigger').onclick = openPalette;
+pal.addEventListener('click', (e) => { if (e.target === pal) closePalette(); });
+
+function renderPal(items) {
+  palItems = items; palActive = 0;
+  palRes.innerHTML = '';
+  items.slice(0, 12).forEach((it, i) => {
     const d = document.createElement('div');
-    d.className = 'f';
-    d.textContent = (typeof f === 'string') ? f : f.path;
-    d.onclick = () => openFile((typeof f === 'string') ? f : f.path);
-    filesEl.appendChild(d);
-  }
+    d.className = 'pr' + (i === 0 ? ' active' : '');
+    d.innerHTML = `<span class="k">${esc(it.k)}</span><span>${esc(it.label)}</span>${it.sub ? `<span class="s">${esc(it.sub)}</span>` : ''}`;
+    d.onclick = () => runPal(it);
+    palRes.appendChild(d);
+  });
 }
-let deb = null;
-q.addEventListener('input', () => {
-  clearTimeout(deb);
-  deb = setTimeout(async () => {
-    const v = q.value.trim();
-    if (!v) { render(allFiles.slice(0, 200)); return; }
-    if (v.startsWith('>') || v.startsWith('/')) {
-      const query = v.replace(/^>\s?\/\s?/, '').replace(/^>/, '').replace(/^\//, '');
-      const hits = await apiSearch(query);
-      filesEl.innerHTML = '';
-      for (const h of hits) {
-        const d = document.createElement('div');
-        d.className = 'f';
-        d.textContent = `${h.path}:${h.line} ${String(h.text).slice(0, 120)}`;
-        d.onclick = () => openFile(h.path);
-        filesEl.appendChild(d);
-      }
-      return;
+function markPalActive() {
+  [...palRes.children].forEach((c, i) => c.classList.toggle('active', i === palActive));
+  palRes.children[palActive]?.scrollIntoView({ block: 'nearest' });
+}
+
+let palDeb = null;
+palInput.addEventListener('input', () => {
+  clearTimeout(palDeb);
+  palDeb = setTimeout(updatePalette, 70);
+});
+palInput.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); palActive = Math.min(palItems.length - 1, palActive + 1); markPalActive(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); palActive = Math.max(0, palActive - 1); markPalActive(); }
+  else if (e.key === 'Enter') { const it = palItems[palActive]; if (it) { closePalette(); runPal(it); } }
+  else if (e.key === 'Escape') closePalette();
+});
+
+async function updatePalette() {
+  const v = palInput.value;
+  if (v.startsWith(':')) {
+    const n = parseInt(v.slice(1), 10);
+    renderPal(Number.isFinite(n) && cur.path
+      ? [{ k: 'line', label: `${cur.path}:${n}`, sub: 'go to line', go: { line: n } }]
+      : []);
+    return;
+  }
+  if (v === '?') {
+    renderPal([
+      { k: 'keys', label: 'Ctrl+K palette · Ctrl+D diff · Ctrl+O folder · Esc close', go: null },
+      ...COMMANDS.map(c => ({ k: 'cmd', label: c.name, sub: c.hint, go: { cmd: c.name } })),
+    ]);
+    return;
+  }
+  if (v.startsWith('>')) {
+    const query = v.slice(1).trim();
+    const cmds = COMMANDS.filter(c => c.name.startsWith(query)).map(c => ({ k: 'cmd', label: c.name, sub: c.hint, go: { cmd: c.name, arg: query.slice(c.name.length).trim() } }));
+    if (!query) { renderPal(cmds); return; }
+    if (query.startsWith('ask ')) { renderPal([{ k: 'ask', label: query.slice(4), sub: 'ask agent', go: { cmd: 'ask', arg: query.slice(4) } }]); return; }
+    const hits = await apiSearch(query).catch(() => []);
+    renderPal([...cmds, ...hits.slice(0, 9).map(h => ({
+      k: 'grep', label: `${h.path}:${h.line}`, sub: String(h.text).slice(0, 60),
+      go: { file: h.path, line: h.line },
+    }))]);
+    return;
+  }
+  if (!v.trim()) {
+    renderPal(allFiles.slice(0, 9).map(f => {
+      const p = typeof f === 'string' ? f : f.path;
+      return { k: 'file', label: p, go: { file: p } };
+    }));
+    return;
+  }
+  const res = await apiFuzzy(v).catch(() => []);
+  renderPal(res.map(r => ({ k: 'file', label: r.path, sub: String(r.score), go: { file: r.path } })));
+}
+
+async function runPal(it) {
+  const go = it.go || {};
+  if (go.file) {
+    await openFile(go.file);
+    if (go.line) {
+      viewport.scrollTop = Math.max(0, (go.line - 10) * ROW_H);
+      paint();
     }
-    const res = await apiFuzzy(v);
-    render(res.map(r => r.path));
-  }, 60);
-});
-document.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') { e.preventDefault(); q.focus(); q.select(); }
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
-    e.preventDefault();
-    apiDiff().then(t => { showPlainMode(); plainEl.textContent = String(t).slice(0, 200000) || '(clean)'; });
-  }
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
-    e.preventDefault();
-    pickFolder();
-  }
-});
-async function pickFolder() {
-  if (!invoke) return;
-  const dir = await invoke('pick_folder');
-  if (dir) {
-    const s = await invoke('set_root', { path: dir });
-    statsEl.textContent = `[${backend}] ${s.files} files · ${s.indexed_ms}ms · ${s.root}`;
-    allFiles = await apiFiles();
-    render(allFiles.slice(0, 200));
-  }
+  } else if (go.line && cur.path) {
+    viewport.scrollTop = Math.max(0, (go.line - 10) * ROW_H);
+    paint();
+  } else if (go.cmd === 'diff') {
+    showPlainMode((await apiDiff().catch(e => String(e))).slice(0, 200000) || '(clean)');
+    currentPath = null; status();
+  } else if (go.cmd === 'ask' || go.cmd === 'search') {
+    askq.value = go.cmd === 'ask' ? (go.arg || '') : '>' + (go.arg || '');
+    askq.focus();
+    if (go.cmd === 'ask' && go.arg) submitAsk(go.arg);
+  } else if (go.cmd === 'reindex') {
+    await apiReindex(); await bootStats();
+  } else if (go.cmd === 'theme') themeBtn.onclick();
+  else if (go.cmd === 'open') pickFolder();
 }
-if (openBtn) openBtn.onclick = pickFolder;
-askclose.onclick = () => { askpanel.hidden = true; };
-askq.addEventListener('keydown', async (e) => {
-  if (e.key !== 'Enter' || !askq.value.trim()) return;
-  const question = askq.value.trim();
+
+/* ---------- ask ---------- */
+async function submitAsk(question) {
   askpanel.hidden = false;
   askbody.innerHTML = '<p>thinking…</p>';
   try {
@@ -263,5 +340,65 @@ askq.addEventListener('keydown', async (e) => {
   } catch (err) {
     askbody.innerHTML = `<p>ask failed: ${esc(err.message || err)}</p><p>Set GEMINI_API_KEY where the server/desktop runs.</p>`;
   }
+}
+askq.addEventListener('keydown', async (e) => {
+  if (e.key !== 'Enter' || !askq.value.trim()) return;
+  const v = askq.value.trim();
+  askpanel.hidden = false;
+  if (v.startsWith('>')) {
+    const hits = await apiSearch(v.slice(1).trim()).catch(() => []);
+    askbody.innerHTML = '<h3>Search</h3>' + (hits.map(h =>
+      `<pre>${esc(h.path)}:${h.line} ${esc(String(h.text).slice(0, 160))}</pre>`).join('') || '<p>no matches</p>');
+    return;
+  }
+  submitAsk(v);
 });
-boot();
+askclose.onclick = () => { askpanel.hidden = true; };
+
+/* ---------- misc ---------- */
+async function pickFolder() {
+  if (!invoke) return;
+  const dir = await invoke('pick_folder');
+  if (dir) {
+    await invoke('set_root', { path: dir });
+    await boot(true);
+  }
+}
+if (openBtn) openBtn.onclick = pickFolder;
+reindexBtn.onclick = async () => { await apiReindex(); await boot(true); };
+
+document.addEventListener('keydown', (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); pal.hidden ? openPalette() : closePalette(); }
+  else if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); pal.hidden ? openPalette() : closePalette(); }
+  else if (e.key === 'Escape' && !pal.hidden) closePalette();
+  else if (mod && e.key.toLowerCase() === 'd') {
+    e.preventDefault();
+    apiDiff().then(t => { showPlainMode(String(t).slice(0, 200000) || '(clean)'); currentPath = null; status(); });
+  }
+  else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); pickFolder(); }
+});
+
+/* ---------- boot ---------- */
+async function bootStats() {
+  try {
+    const s = await apiStats();
+    $('st-backend').textContent = backend;
+    $('st-files').textContent = `${s.files} files`;
+    $('st-index').textContent = `${s.indexed_ms}ms`;
+  } catch {}
+}
+async function boot(reset) {
+  const s = await apiStats().catch(() => ({ files: 0, indexed_ms: 0, root: '' }));
+  allFiles = await apiFiles().catch(() => []);
+  try {
+    const g = await apiGitStatus();
+    parseGitStatus(g);
+  } catch {}
+  renderSidebar(allFiles);
+  status();
+  setTimeout(bootStats, 800);
+  if (!invoke && openBtn) openBtn.style.display = 'none';
+  if (reset) { currentPath = null; showPlainMode('Select a file, or press Ctrl+K to jump anywhere.'); }
+}
+boot(false);
