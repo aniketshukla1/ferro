@@ -504,11 +504,17 @@ function paint() {
   const frag = document.createDocumentFragment();
   for (let n = from; n <= to; n++) {
     const d = document.createElement('div');
-    d.className = 'row' + (n === selectedLine && cur.path === selectedFile ? ' cur-line' : '');
+    const inSel = cur.path === selectedFile && n >= selStart && n <= selEnd && selStart > 0;
+    d.className = 'row' + (n === selectedLine && cur.path === selectedFile ? ' cur-line' : '') + (inSel && n !== selectedLine ? ' in-sel' : '');
     d.style.top = (n - 1) * ROW_H + 'px';
     const l = lineAt(n);
     d.innerHTML = `<span class="ln">${n}</span><span>${l ? l.html : ''}</span>`;
-    d.onclick = () => { selectedFile = cur.path; selectedLine = n; paint(); };
+    d.onclick = (e) => {
+      if (e.shiftKey && cur.path === selectedFile && selAnchor > 0) setSelection(cur.path, selAnchor, n);
+      else setSelection(cur.path, n, n);
+      paint();
+    };
+    d.oncontextmenu = (e) => { e.preventDefault(); setSelection(cur.path, n, n); paint(); openCtx(e.clientX, e.clientY); };
     frag.appendChild(d);
   }
   rowsEl.appendChild(frag);
@@ -518,7 +524,56 @@ function paint() {
 
 /* ---------- selection, wrap, find ---------- */
 let selectedFile = null, selectedLine = 0;
+let selAnchor = 0, selStart = 0, selEnd = 0;
 let wrapCache = null;
+
+function setSelection(file, anchor, focus) {
+  selectedFile = file;
+  selAnchor = anchor;
+  const a = Math.min(anchor, focus), b = Math.max(anchor, focus);
+  selStart = a; selEnd = b;
+  selectedLine = focus;
+  const total = selEnd - selStart + 1;
+  $('st-line').textContent = total > 1
+    ? `${file.split('/').pop()}:${selStart}-${selEnd} (${total} lines)`
+    : `Ln ${focus.toLocaleString()} / ${cur.total.toLocaleString()}`;
+}
+function selRef() {
+  if (!selectedFile || !selStart) return null;
+  return selStart === selEnd
+    ? `@${selectedFile}:${selStart}`
+    : `@${selectedFile}:${selStart}-${selEnd}`;
+}
+async function copyRef() {
+  const ref = selRef();
+  if (!ref) return;
+  try { await navigator.clipboard.writeText(ref); } catch {}
+  $('st-line').textContent = `copied ${ref}`;
+}
+async function copyWithContext() {
+  if (!selectedFile || !selStart) return;
+  let win;
+  try {
+    if (invoke) win = await invoke('read_window', { path: selectedFile, start: selStart - 1, count: selEnd - selStart + 1 });
+    else win = await (await fetch(`/api/file-window?path=${encodeURIComponent(selectedFile)}&start=${selStart - 1}&count=${selEnd - selStart + 1}`)).json();
+  } catch { return; }
+  const body = win.lines.map(l => l.text).join('\n');
+  const ref = selRef();
+  try { await navigator.clipboard.writeText(`${ref}\n\`\`\`\n${body}\n\`\`\``); } catch {}
+  $('st-line').textContent = `copied ${ref} + context`;
+}
+async function findUsages() {
+  if (!selectedFile || !selStart) return;
+  let win;
+  try {
+    if (invoke) win = await invoke('read_window', { path: selectedFile, start: selStart - 1, count: 1 });
+    else win = await (await fetch(`/api/file-window?path=${encodeURIComponent(selectedFile)}&start=${selStart - 1}&count=1`)).json();
+  } catch { return; }
+  const line = win.lines[0]?.text || '';
+  const m = line.match(/[A-Za-z_]\w*/);
+  if (!m) return;
+  openPalette('>' + m[0]);
+}
 
 async function renderWrapped() {
   if (!wrapCache) {
@@ -533,9 +588,14 @@ async function renderWrapped() {
   wrapCache.slice(0, 2000).forEach((text, i) => {
     const n = i + 1;
     const d = document.createElement('div');
-    d.className = 'row' + (n === selectedLine && cur.path === selectedFile ? ' cur-line' : '');
+    const inSel = cur.path === selectedFile && n >= selStart && n <= selEnd && selStart > 0;
+    d.className = 'row' + (n === selectedLine && cur.path === selectedFile ? ' cur-line' : '') + (inSel && n !== selectedLine ? ' in-sel' : '');
     d.innerHTML = `<span class="ln">${n}</span><span>${esc(text)}</span>`;
-    d.onclick = () => { selectedFile = cur.path; selectedLine = n; renderWrapped(); };
+    d.onclick = (e) => {
+      if (e.shiftKey && cur.path === selectedFile && selAnchor > 0) setSelection(cur.path, selAnchor, n);
+      else setSelection(cur.path, n, n);
+      renderWrapped();
+    };
     frag.appendChild(d);
   });
   rowsEl.appendChild(frag);
@@ -587,7 +647,7 @@ function jumpFind() {
   if (!findLines.length) return;
   const n = findLines[findIx];
   findCount.textContent = `${findIx + 1}/${findLines.length}`;
-  selectedFile = cur.path; selectedLine = n;
+  setSelection(cur.path, n, n);
   ensureAround(n - 1).then(paint);
   viewport.scrollTop = Math.max(0, (n - 6) * ROW_H);
   paint();
@@ -596,6 +656,33 @@ findInput.addEventListener('input', () => { clearTimeout(findInput._d); findInpu
 findInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); if (findLines.length) { findIx = (findIx + (e.shiftKey ? -1 : 1) + findLines.length) % findLines.length; jumpFind(); } }
   else if (e.key === 'Escape') { findbar.hidden = true; selectedLine = 0; paint(); }
+});
+
+/* ---------- context menu ---------- */
+const ctxmenu = $('ctxmenu');
+function openCtx(x, y) {
+  ctxmenu.innerHTML = '';
+  const items = [
+    ['Copy ref', 'Alt+C', copyRef],
+    ['Copy with context', 'Alt+A', copyWithContext],
+    ['Find usages', 'Alt+U', findUsages],
+    ['Ask about selection', '', () => {
+      const ref = selRef();
+      if (ref) { askq.value = `Explain ${ref}`; askq.focus(); }
+    }],
+  ];
+  for (const [label, key, fn] of items) {
+    const b = document.createElement('button');
+    b.innerHTML = `${esc(label)}${key ? ` <kbd>${esc(key)}</kbd>` : ''}`;
+    b.onclick = () => { ctxmenu.hidden = true; fn(); };
+    ctxmenu.appendChild(b);
+  }
+  ctxmenu.hidden = false;
+  ctxmenu.style.left = Math.min(x, innerWidth - 220) + 'px';
+  ctxmenu.style.top = Math.min(y, innerHeight - 180) + 'px';
+}
+document.addEventListener('click', (e) => {
+  if (!ctxmenu.hidden && !e.target.closest?.('#ctxmenu')) ctxmenu.hidden = true;
 });
 
 let scrollRaf = false, paintQueued = false;
@@ -852,6 +939,9 @@ document.addEventListener('keydown', (e) => {
   else if (mod && k === 'b') { e.preventDefault(); document.body.classList.toggle('no-side'); }
   else if (mod && k === 'g') { e.preventDefault(); openPalette(':'); }
   else if (mod && k === 'f') { e.preventDefault(); openFind(); }
+  else if (e.altKey && !mod && k === 'c') { e.preventDefault(); copyRef(); }
+  else if (e.altKey && !mod && k === 'a') { e.preventDefault(); copyWithContext(); }
+  else if (e.altKey && !mod && k === 'u') { e.preventDefault(); findUsages(); }
   else if (e.altKey && k === 'z') { e.preventDefault(); toggleWrap(); }
   else if (e.altKey && !mod && e.key === 'ArrowLeft') { e.preventDefault(); goHistory(-1); }
   else if (e.altKey && !mod && e.key === 'ArrowRight') { e.preventDefault(); goHistory(1); }

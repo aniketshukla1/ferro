@@ -25,16 +25,16 @@ Legend: DONE · PART (partial) · TODO · SKIP (deferred with reason) · EDGE (f
 | Ctrl+P / Ctrl+K palette, fuzzy files | DONE |
 | Ctrl+Shift+F workspace search | DONE (`>`, blended while typing) |
 | Ctrl+Shift+O outline | DONE (panel; regex, no LSP) |
-| Ctrl+F find in file | TODO |
-| Ctrl+G jump to line | PART (`:line` in palette; no Ctrl+G) |
+| Ctrl+F find in file | DONE |
+| Ctrl+G jump to line | DONE (palette `:`) |
 | Ctrl+, settings | TODO (with settings system) |
-| Ctrl+B sidebar toggle | TODO |
-| Ctrl+Shift+R refresh | TODO (button exists) |
-| Tabs: W / Shift+T reopen / Ctrl+Tab / Alt+1-9 | PART (W only; no reopen stack, cycling, numeric) |
-| Alt+Z word wrap, Home/End, Alt+Left/Right history | TODO |
-| Shift+arrows selection model in viewer | TODO (rows not selectable) |
-| Alt+C copy ref, Alt+A copy w/ context, Alt+U usages | TODO |
-| Right-click selection menu | TODO |
+| Ctrl+B sidebar toggle | DONE |
+| Ctrl+Shift+R refresh | DONE |
+| Tabs: W / Shift+T reopen / Ctrl+Tab / Alt+1-9 | DONE |
+| Alt+Z word wrap, Home/End, Alt+Left/Right history | DONE (wrap ≤2k lines; history; Home/End native scroll) |
+| Shift+arrows selection model in viewer | PART (click + shift-click ranges; no keyboard expansion yet) |
+| Alt+C copy ref, Alt+A copy w/ context, Alt+U usages | DONE |
+| Right-click selection menu | DONE |
 | Alt+M markdown preview, image viewer | TODO |
 | Alt+R inline comment, batch apply (Ctrl+Enter) | TODO (with PR mode) |
 | Alt+E harness dispatch | EDGE instead — built-in `ask` + `apply_patch` |

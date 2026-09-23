@@ -131,6 +131,15 @@ mark { background:color-mix(in srgb, var(--acc) 32%, transparent); color:inherit
 .row:hover { background:var(--bg2); }
 .row .ln { position:absolute; left:0; width:50px; text-align:right; color:var(--mut); user-select:none; }
 .row.cur-line { background:var(--sel); }
+.row.in-sel { background:color-mix(in srgb, var(--acc) 16%, transparent); }
+/* context menu */
+#ctxmenu { position:fixed; z-index:60; background:var(--bg1); border:1px solid var(--border);
+  border-radius:8px; padding:4px; min-width:200px; box-shadow:0 12px 32px rgba(0,0,0,.5); }
+#ctxmenu[hidden] { display:none; }
+#ctxmenu button { display:block; width:100%; text-align:left; background:none; border:none;
+  color:var(--fg); padding:7px 10px; border-radius:6px; cursor:pointer; font-size:12.5px; }
+#ctxmenu button:hover { background:var(--sel); }
+#ctxmenu button kbd { float:right; }
 body.wrap #viewport.static .row { position:static; height:auto; min-height:20px; white-space:pre-wrap; word-break:break-word; }
 body.wrap #viewport.static #spacer { height:auto !important; }
 /* find bar */
