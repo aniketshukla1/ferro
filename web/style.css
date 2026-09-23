@@ -83,8 +83,15 @@ main { flex:1; display:grid; grid-template-columns:300px 1fr; min-height:0; }
 #askpanel[hidden] { display:none; }
 #askclose { float:right; background:var(--bg2); color:var(--fg); border:1px solid var(--border); border-radius:6px; cursor:pointer; }
 #askbody h3 { color:var(--acc); margin:14px 0 4px; font-size:13px; }
+#askbody h4 { margin:12px 0 4px; font-size:13px; }
+#askbody p { margin:6px 0; }
+#askbody ul { margin:4px 0; padding-left:20px; }
 #askbody pre { background:var(--bg1); border:1px solid var(--border); padding:8px 10px; border-radius:8px; overflow:auto; }
+#askbody pre.code { border-left:3px solid var(--acc); }
 #askbody code { background:var(--bg2); padding:1px 5px; border-radius:4px; font-size:12px; }
+#askbody details { margin:8px 0; border:1px solid var(--border); border-radius:8px; }
+#askbody summary { cursor:pointer; padding:6px 10px; color:var(--mut); }
+#askbody a { color:var(--acc); }
 #viewport { position:absolute; inset:0; top:33px; overflow:auto; }
 #viewport[hidden] { display:none; }
 #spacer { position:relative; width:100%; }

@@ -287,7 +287,7 @@ const COMMANDS = [
   { name: 'theme', hint: 'cycle theme' },
   { name: 'open', hint: 'open folder (Tauri)' },
 ];
-function openPalette() { pal.hidden = false; palInput.value = ''; renderPal([]); setTimeout(() => palInput.focus(), 0); }
+function openPalette(preset) { pal.hidden = false; palInput.value = preset || ''; updatePalette(); setTimeout(() => palInput.focus(), 0); }
 function closePalette() { pal.hidden = true; }
 $('palette-trigger').onclick = openPalette;
 pal.addEventListener('click', (e) => { if (e.target === pal) closePalette(); });
@@ -383,18 +383,55 @@ async function runPal(it) {
 }
 
 /* ---------- ask ---------- */
+/* ---------- mini markdown ---------- */
+const fileSet = () => new Set(allFiles.map(f => (typeof f === 'string' ? f : f.path)));
+function linkify(html) {
+  const known = fileSet();
+  return html.replace(/([A-Za-z0-9_.\/-]+\.[a-z]{1,5})(:(\d+))?/g, (m, p, _c, ln) => {
+    const hit = [...known].find(f => f === p || f.endsWith('/' + p));
+    if (!hit) return m;
+    return `<a href="#" data-open="${esc(hit)}${ln ? ':' + ln : ''}">${esc(m)}</a>`;
+  });
+}
+function md(src) {
+  const blocks = [];
+  let text = esc(src).replace(/```(\w*)\n([\s\S]*?)(?:```|$)/g, (_, lang, code) => {
+    blocks.push(`<pre class="code"${lang ? ` data-lang="${lang}"` : ''}>${code.replace(/\n$/, '')}</pre>`);
+    return `\u0000${blocks.length - 1}\u0000`;
+  });
+  text = text.split('\n').map(line => {
+    if (/^\u0000\d+\u0000$/.test(line.trim())) return line.trim();
+    if (/^#{1,4} /.test(line)) return `<h4>${line.replace(/^#{1,4} /, '')}</h4>`;
+    if (/^[-*] /.test(line)) return `<li>${line.slice(2)}</li>`;
+    if (!line.trim()) return '';
+    return `<p>${line}</p>`;
+  }).join('\n').replace(/((?:<li>.*?<\/li>\n?)+)/g, '<ul>$1</ul>');
+  text = text
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[+i]);
+  return linkify(text);
+}
+document.addEventListener('click', async (e) => {
+  const a = e.target.closest?.('a[data-open]');
+  if (!a) return;
+  e.preventDefault();
+  const [p, ln] = a.dataset.open.split(':');
+  await openFile(p);
+  if (ln) { viewport.scrollTop = Math.max(0, (+ln - 10) * ROW_H); paint(); }
+});
+
 async function submitAsk(question) {
   askpanel.hidden = false;
   askbody.innerHTML = '<p>thinking…</p>';
   try {
     const res = await apiAsk(question);
     const t = res.transcript;
-    let html = `<h3>Answer</h3><p>${esc(t.final_text)}</p>`;
+    let html = `<h3>Answer</h3>${md(t.final_text || '(no answer)')}`;
     (t.steps || []).forEach((s, i) => {
-      html += `<h3>Step ${i + 1}${s.thought ? ' — ' + esc(s.thought) : ''}</h3>`;
-      (s.calls || []).forEach(([call, result]) => {
-        html += `<pre>$ ${esc(call.name)} ${esc(JSON.stringify(call.args))}\n${esc(String(result.output).slice(0, 2000))}</pre>`;
-      });
+      const calls = (s.calls || []).map(([call, result]) =>
+        `<pre>$ ${esc(call.name)} ${esc(JSON.stringify(call.args))}\n${esc(String(result.output).slice(0, 2000))}</pre>`).join('');
+      html += `<details><summary>Step ${i + 1}${s.thought ? ' — ' + esc(s.thought).slice(0, 80) : ''}</summary>${calls}</details>`;
     });
     askbody.innerHTML = html;
   } catch (err) {
@@ -434,6 +471,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape' && !pal.hidden) closePalette();
   else if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); showDiff(); }
   else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); pickFolder(); }
+  else if (e.key === '?' && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName || '')) { e.preventDefault(); openPalette('?'); }
 });
 
 /* ---------- boot ---------- */
