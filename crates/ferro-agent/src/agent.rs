@@ -131,7 +131,6 @@ mod tests {
     use async_trait::async_trait;
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
     struct Mock {
         calls: AtomicUsize,
     }
@@ -224,5 +223,89 @@ mod tests {
         let t = agent.run("x").await;
         assert_eq!(t.steps.len(), 2);
         assert!(t.truncated);
+    }
+
+    #[tokio::test]
+    async fn loop_applies_patch_end_to_end() {
+        // Temp git repo: agent's apply_patch must change the file.
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(r)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::File::create(r.join("a.txt"))
+            .unwrap()
+            .write_all(b"one\n")
+            .unwrap();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(r)
+            .args(["add", "."])
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(r)
+            .args(["commit", "-m", "init"])
+            .status()
+            .unwrap()
+            .success());
+
+        struct Fixer;
+        #[async_trait]
+        impl LlmClient for Fixer {
+            async fn chat(
+                &self,
+                _m: &[ChatMessage],
+                _t: &[crate::ToolDef],
+            ) -> Result<Turn, ProviderError> {
+                static N: AtomicUsize = AtomicUsize::new(0);
+                if N.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(Turn {
+                        content: Some("fixing".into()),
+                        tool_calls: vec![crate::provider::WireToolCall {
+                            id: "c1".into(),
+                            r#type: "function".into(),
+                            function: crate::provider::WireFunction {
+                                name: "apply_patch".into(),
+                                arguments: "{\"patch\":\"diff --git a/a.txt b/a.txt\\n--- a/a.txt\\n+++ b/a.txt\\n@@ -1 +1,2 @@\\n one\\n+two\\n\"}".into(),
+                            },
+                        }],
+                    })
+                } else {
+                    Ok(Turn {
+                        content: Some("fixed".into()),
+                        tool_calls: vec![],
+                    })
+                }
+            }
+        }
+        let idx = Arc::new(Index::new(r.to_path_buf()));
+        let mut sb = Sandbox::readonly(idx.root().to_path_buf());
+        sb.allow_write = true;
+        let agent = Agent {
+            index: idx,
+            sandbox: sb,
+            client: Arc::new(Fixer),
+            max_steps: 4,
+        };
+        let t = agent.run("address the comment").await;
+        assert_eq!(
+            std::fs::read_to_string(r.join("a.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+        assert!(t.final_text.contains("fixed"));
     }
 }

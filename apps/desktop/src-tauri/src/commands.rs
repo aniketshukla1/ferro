@@ -383,3 +383,47 @@ pub async fn read_image(state: State<'_, CoreState>, path: String) -> Result<Str
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "not an image".to_string())
 }
+
+#[tauri::command]
+pub async fn review_apply(state: State<'_, CoreState>) -> Result<serde_json::Value, String> {
+    let idx = state.get();
+    let pr = idx.pr_ctx().ok_or("not in PR mode")?;
+    let provider =
+        ferro_agent::OpenAiCompat::from_env(None, None, None).map_err(|e| e.to_string())?;
+    let drafts = ferro_agent::drafts().list();
+    if drafts.is_empty() {
+        return Err("no drafts to apply".into());
+    }
+    let mut prompt = format!(
+        "You are addressing {} code review comment(s) on PR #{} ({}/{}). For each comment, make the minimal edit with apply_patch (one call per fix, unified diff with `+++ b/<path>` lines). Do not commit. Reply with a short summary of what changed.\n\nComments:\n",
+        drafts.len(), pr.number, pr.owner, pr.repo
+    );
+    for d in &drafts {
+        prompt.push_str(&format!("- {}:{} — {}\n", d.path, d.line, d.body));
+    }
+    let mut sandbox = ferro_agent::Sandbox::readonly(idx.root().to_path_buf());
+    sandbox.allow_write = true;
+    let agent = ferro_agent::Agent {
+        index: idx.clone(),
+        sandbox,
+        client: std::sync::Arc::new(provider),
+        max_steps: 12,
+    };
+    let t = agent.run(&prompt).await;
+    let applied = t
+        .steps
+        .iter()
+        .flat_map(|st| st.calls.iter())
+        .filter(|(c, r)| c.name == "apply_patch" && r.ok)
+        .count();
+    let id = ferro_agent::new_id();
+    let _ = ferro_agent::log_ask(
+        idx.root(),
+        &id,
+        &format!("batch apply {} drafts", drafts.len()),
+        &t,
+        &[],
+    );
+    idx.rebuild().await;
+    Ok(serde_json::json!({"applied": applied, "transcript": t}))
+}

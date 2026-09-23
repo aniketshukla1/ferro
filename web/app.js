@@ -991,9 +991,34 @@ async function listDrafts() {
   if (!all.length) { askbody.innerHTML = '<p>no drafts yet — Alt+R on a line</p>'; return; }
   askbody.innerHTML = '<h2>Drafts</h2>' + all.map(d =>
     `<pre data-draft="${esc(d.id)}">${esc(d.path)}:${d.line} — ${esc(d.body)}  [× ${esc(d.id)}]</pre>`).join('') +
+    '<p><button id="draft-apply">Batch apply with agent</button></p>' +
     '<p>Delete: click a draft, or submit below.</p>' +
     ['comment', 'approve', 'request-changes'].map(e => `<button data-submit="${e}">Submit ${e}</button> `).join('');
   askbody.querySelectorAll('button[data-submit]').forEach(b => b.onclick = () => submitReview(b.dataset.submit));
+  const applyBtn = askbody.querySelector('#draft-apply');
+  if (applyBtn) applyBtn.onclick = async () => {
+    askbody.innerHTML = '<p>agent applying drafts…</p>';
+    try {
+      let res;
+      if (invoke) res = await invoke('review_apply');
+      else {
+        const r = await fetch('/api/review/apply', { method: 'POST' });
+        const t = await r.text();
+        if (!r.ok) throw new Error(t);
+        res = JSON.parse(t);
+      }
+      const t = res.transcript;
+      askbody.innerHTML = `<h2>Applied ${res.applied} fix${res.applied === 1 ? '' : 'es'}</h2><p>${esc(t.final_text || '')}</p>`;
+      await refreshDrafts();
+      const s = await apiStats().catch(() => null);
+      if (s) { lastStats = s; }
+      allFiles = await apiFiles().catch(() => []);
+      renderSidebar(allFiles);
+      status();
+    } catch (err) {
+      askbody.innerHTML = `<p>apply failed: ${esc(err.message || err)}</p>`;
+    }
+  };
   askbody.querySelectorAll('pre[data-draft]').forEach(p => p.onclick = async () => {
     const id = p.dataset.draft;
     if (invoke) await invoke('draft_delete', { id });

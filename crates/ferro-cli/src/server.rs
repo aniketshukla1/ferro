@@ -53,6 +53,7 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
         .route("/api/review/drafts", get(review_list).post(review_add))
         .route("/api/review/drafts/{id}", delete(review_delete))
         .route("/api/review/submit", post(review_submit))
+        .route("/api/review/apply", post(review_apply))
         .route("/api/settings", get(settings_get).put(settings_put));
     if !o.no_git {
         app = app
@@ -367,6 +368,55 @@ async fn review_delete(Path(id): Path<String>) -> impl IntoResponse {
 struct SubmitBody {
     event: Option<String>,
     body: Option<String>,
+}
+
+async fn review_apply(State(s): State<Arc<Index>>) -> impl IntoResponse {
+    let Some(pr) = s.pr_ctx() else {
+        return (StatusCode::BAD_REQUEST, "not in PR mode".to_string()).into_response();
+    };
+    let provider = match ferro_agent::OpenAiCompat::from_env(None, None, None) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::SERVICE_UNAVAILABLE, format!("no provider: {e}")).into_response()
+        }
+    };
+    let drafts = ferro_agent::drafts().list();
+    if drafts.is_empty() {
+        return (StatusCode::BAD_REQUEST, "no drafts to apply".to_string()).into_response();
+    }
+    let mut prompt = format!(
+        "You are addressing {} code review comment(s) on PR #{} ({}/{}). For each comment, make the minimal edit with apply_patch (one call per fix, unified diff with `+++ b/<path>` lines). Do not commit. Reply with a short summary of what changed.\n\nComments:\n",
+        drafts.len(), pr.number, pr.owner, pr.repo
+    );
+    for d in &drafts {
+        prompt.push_str(&format!("- {}:{} — {}\n", d.path, d.line, d.body));
+    }
+    let mut sandbox = ferro_agent::Sandbox::readonly(s.root().to_path_buf());
+    sandbox.allow_write = true;
+    let agent = ferro_agent::Agent {
+        index: s.clone(),
+        sandbox,
+        client: Arc::new(provider),
+        max_steps: 12,
+    };
+    let t = agent.run(&prompt).await;
+    let applied = t
+        .steps
+        .iter()
+        .flat_map(|st| st.calls.iter())
+        .filter(|(c, r)| c.name == "apply_patch" && r.ok)
+        .count();
+    let id = ferro_agent::new_id();
+    let _ = ferro_agent::log_ask(
+        s.root(),
+        &id,
+        &format!("batch apply {} drafts", drafts.len()),
+        &t,
+        &[],
+    );
+    // Worktree changed under the index; refresh synchronously so UI is current.
+    s.rebuild().await;
+    Json(serde_json::json!({"id": id, "applied": applied, "transcript": t})).into_response()
 }
 
 async fn settings_get(State(s): State<Arc<Index>>) -> impl IntoResponse {
