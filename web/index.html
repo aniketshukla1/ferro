@@ -11,11 +11,13 @@
   <strong>ferro</strong>
   <span id="stats">indexing…</span>
   <input id="q" placeholder="Ctrl+P fuzzy · >search · Ctrl+D diff · Ctrl+O folder" autocomplete="off"/>
+  <input id="askq" placeholder="Ask agent… (Enter)" autocomplete="off"/>
   <button id="open" title="Open folder (Tauri)">Open</button>
 </header>
 <main>
   <aside id="files"></aside>
   <section id="view">
+    <div id="askpanel" hidden><button id="askclose">×</button><div id="askbody"></div></div>
     <div id="viewport" hidden><div id="spacer"><div id="rows"></div></div></div>
     <pre id="plain">Select a file. Press Ctrl+P to fuzzy-find.</pre>
   </section>

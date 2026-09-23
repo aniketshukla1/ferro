@@ -2,6 +2,10 @@ const q = document.getElementById('q');
 const filesEl = document.getElementById('files');
 const statsEl = document.getElementById('stats');
 const openBtn = document.getElementById('open');
+const askq = document.getElementById('askq');
+const askpanel = document.getElementById('askpanel');
+const askbody = document.getElementById('askbody');
+const askclose = document.getElementById('askclose');
 const viewport = document.getElementById('viewport');
 const spacer = document.getElementById('spacer');
 const rowsEl = document.getElementById('rows');
@@ -54,6 +58,12 @@ async function apiWindow(path, start, count) {
 async function apiDiff() {
   if (invoke) return await invoke('git_diff', { path: null });
   return await (await fetch('/api/diff')).text();
+}
+async function apiAsk(question) {
+  if (invoke) return await invoke('ask', { question, maxSteps: 8 });
+  const r = await fetch('/api/ask', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ question }) });
+  if (!r.ok) throw new Error(await r.text());
+  return await r.json();
 }
 
 function esc(s) {
@@ -233,4 +243,25 @@ async function pickFolder() {
   }
 }
 if (openBtn) openBtn.onclick = pickFolder;
+askclose.onclick = () => { askpanel.hidden = true; };
+askq.addEventListener('keydown', async (e) => {
+  if (e.key !== 'Enter' || !askq.value.trim()) return;
+  const question = askq.value.trim();
+  askpanel.hidden = false;
+  askbody.innerHTML = '<p>thinking…</p>';
+  try {
+    const res = await apiAsk(question);
+    const t = res.transcript;
+    let html = `<h3>Answer</h3><p>${esc(t.final_text)}</p>`;
+    (t.steps || []).forEach((s, i) => {
+      html += `<h3>Step ${i + 1}${s.thought ? ' — ' + esc(s.thought) : ''}</h3>`;
+      (s.calls || []).forEach(([call, result]) => {
+        html += `<pre>$ ${esc(call.name)} ${esc(JSON.stringify(call.args))}\n${esc(String(result.output).slice(0, 2000))}</pre>`;
+      });
+    });
+    askbody.innerHTML = html;
+  } catch (err) {
+    askbody.innerHTML = `<p>ask failed: ${esc(err.message || err)}</p><p>Set GEMINI_API_KEY where the server/desktop runs.</p>`;
+  }
+});
 boot();

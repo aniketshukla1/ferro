@@ -31,6 +31,7 @@ pub fn run() {
             commands::set_root,
             commands::reindex,
             commands::pick_folder,
+            commands::ask,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ferro");

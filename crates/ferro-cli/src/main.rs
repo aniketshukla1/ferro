@@ -86,7 +86,7 @@ async fn ask(
     let index = Arc::new(ferro_core::Index::new(root.clone()));
     index.rebuild().await;
 
-    let mut sandbox = ferro_agent::Sandbox::readonly(root);
+    let mut sandbox = ferro_agent::Sandbox::readonly(root.clone());
     sandbox.allow_write = allow_write;
 
     let agent = ferro_agent::Agent {
@@ -96,6 +96,11 @@ async fn ask(
         max_steps,
     };
     let t = agent.run(&question).await;
+    let id = ferro_agent::new_id();
+    match ferro_agent::log_ask(&root, &id, &question, &t, &[]) {
+        Ok(p) => eprintln!("session: {}", p.display()),
+        Err(e) => eprintln!("session log skipped: {e}"),
+    }
     for (i, step) in t.steps.iter().enumerate() {
         if let Some(thought) = &step.thought {
             println!("— step {}: {thought}", i + 1);

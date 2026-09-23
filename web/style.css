@@ -3,6 +3,7 @@ body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 system-ui,
 header { display:flex; gap:12px; align-items:center; padding:8px 12px; border-bottom:1px solid #222; }
 #q { flex:1; background:#131826; color:var(--fg); border:1px solid #2a3350; padding:6px 10px; border-radius:6px; }
 #open { background:#182034; color:var(--fg); border:1px solid #2a3350; border-radius:6px; padding:6px 10px; cursor:pointer; }
+#askq { width:220px; background:#131826; color:var(--fg); border:1px solid #2a3350; padding:6px 10px; border-radius:6px; }
 main { display:grid; grid-template-columns:320px 1fr; height:calc(100vh - 45px); }
 #files { overflow:auto; border-right:1px solid #222; }
 .f { padding:4px 10px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -15,3 +16,7 @@ main { display:grid; grid-template-columns:320px 1fr; height:calc(100vh - 45px);
   font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12.5px; padding-left:56px; box-sizing:border-box; }
 .row .ln { position:absolute; left:0; width:48px; text-align:right; color:var(--mut); user-select:none; }
 #stats { color:var(--mut); font-size:12px; }
+#askpanel { position:absolute; inset:0; overflow:auto; background:var(--bg); padding:12px 16px; z-index:5; }
+#askclose { float:right; background:#182034; color:var(--fg); border:1px solid #2a3350; border-radius:6px; cursor:pointer; }
+#askbody h3 { color:var(--acc); margin:12px 0 4px; }
+#askbody pre { background:#131826; padding:8px; border-radius:6px; overflow:auto; }

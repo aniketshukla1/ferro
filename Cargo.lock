@@ -1339,6 +1339,7 @@ dependencies = [
 name = "ferro-tauri"
 version = "0.1.0"
 dependencies = [
+ "ferro-agent",
  "ferro-core",
  "serde",
  "serde_json",

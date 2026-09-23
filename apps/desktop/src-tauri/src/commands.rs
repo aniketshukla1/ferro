@@ -165,6 +165,31 @@ pub async fn reindex(state: State<'_, CoreState>) -> Result<serde_json::Value, S
 }
 
 #[tauri::command]
+pub async fn ask(
+    state: State<'_, CoreState>,
+    question: String,
+    max_steps: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    if question.trim().is_empty() {
+        return Err("empty question".into());
+    }
+    let provider =
+        ferro_agent::OpenAiCompat::from_env(None, None, None).map_err(|e| e.to_string())?;
+    let idx = state.get();
+    let sandbox = ferro_agent::Sandbox::readonly(idx.root().to_path_buf());
+    let agent = ferro_agent::Agent {
+        index: idx.clone(),
+        sandbox,
+        client: std::sync::Arc::new(provider),
+        max_steps: max_steps.unwrap_or(8).clamp(1, 16),
+    };
+    let t = agent.run(&question).await;
+    let id = ferro_agent::new_id();
+    let _ = ferro_agent::log_ask(idx.root(), &id, &question, &t, &[]);
+    Ok(serde_json::json!({"id": id, "transcript": t}))
+}
+
+#[tauri::command]
 pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let dir = app

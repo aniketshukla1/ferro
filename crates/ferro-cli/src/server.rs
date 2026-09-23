@@ -2,7 +2,7 @@ use axum::{
     extract::{Query, State},
     http::{header, StatusCode},
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use rust_embed::RustEmbed;
@@ -29,6 +29,7 @@ pub async fn serve(state: Arc<Index>, addr: &str) {
         .route("/api/highlight", get(highlight))
         .route("/api/git-status", get(git_status))
         .route("/api/diff", get(diff))
+        .route("/api/ask", post(ask))
         .fallback(static_file)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -157,6 +158,39 @@ async fn git_status(State(s): State<Arc<Index>>) -> impl IntoResponse {
 #[derive(Deserialize)]
 struct DiffQ {
     path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AskBody {
+    question: String,
+    max_steps: Option<usize>,
+}
+
+/// POST /api/ask — read-only agent over the live index.
+/// Provider resolves from server env (GEMINI_API_KEY / OPENAI_API_KEY / OLLAMA_MODEL).
+/// Never accepts keys in the request body.
+async fn ask(State(s): State<Arc<Index>>, Json(b): Json<AskBody>) -> impl IntoResponse {
+    if b.question.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty question".to_string()).into_response();
+    }
+    let provider = match ferro_agent::OpenAiCompat::from_env(None, None, None) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::SERVICE_UNAVAILABLE, format!("no provider: {e}")).into_response()
+        }
+    };
+    let sandbox = ferro_agent::Sandbox::readonly(s.root().to_path_buf());
+    let agent = ferro_agent::Agent {
+        index: s.clone(),
+        sandbox,
+        client: Arc::new(provider),
+        max_steps: b.max_steps.unwrap_or(8).clamp(1, 16),
+    };
+    let t = agent.run(&b.question).await;
+    let id = ferro_agent::new_id();
+    let session = ferro_agent::log_ask(s.root(), &id, &b.question, &t, &[]).ok();
+    let _ = session;
+    Json(serde_json::json!({"id": id, "transcript": t})).into_response()
 }
 
 async fn diff(State(s): State<Arc<Index>>, Query(q): Query<DiffQ>) -> impl IntoResponse {
