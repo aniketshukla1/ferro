@@ -1,0 +1,11 @@
+:root { --bg:#0b0e14; --fg:#e6e6e6; --mut:#8b93a7; --acc:#7cc7ff; }
+body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 system-ui, monospace; }
+header { display:flex; gap:12px; align-items:center; padding:8px 12px; border-bottom:1px solid #222; }
+#q { flex:1; background:#131826; color:var(--fg); border:1px solid #2a3350; padding:6px 10px; border-radius:6px; }
+main { display:grid; grid-template-columns:320px 1fr; height:calc(100vh - 45px); }
+#files { overflow:auto; border-right:1px solid #222; }
+.f { padding:4px 10px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.f:hover { background:#182034; }
+#view { overflow:auto; padding:12px; }
+pre { margin:0; white-space:pre-wrap; }
+#stats { color:var(--mut); font-size:12px; }
