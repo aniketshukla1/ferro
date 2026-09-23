@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/ferro-core",
   "crates/ferro-cli",
+  "crates/ferro-agent",
   "apps/desktop/src-tauri",
 ]
 
