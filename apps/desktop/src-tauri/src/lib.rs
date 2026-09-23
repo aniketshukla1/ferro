@@ -37,6 +37,7 @@ pub fn run() {
             commands::draft_delete,
             commands::review_submit,
             commands::review_apply,
+            commands::pr_info,
             commands::git_stage,
             commands::git_unstage,
             commands::git_commit,

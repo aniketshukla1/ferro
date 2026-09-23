@@ -139,7 +139,7 @@ async function apiReindex() {
   await bootStats();
 }
 async function apiPrInfo() {
-  if (invoke) return { pr: null };
+  if (invoke) return await invoke('pr_info');
   try { return await (await fetch('/api/pr-info')).json(); }
   catch { return { pr: null }; }
 }
@@ -1155,6 +1155,9 @@ async function updatePalette() {
   if (v.startsWith('>')) {
     const query = v.slice(1).trim();
     const cmds = COMMANDS.filter(c => c.name.startsWith(query)).map(c => ({ k: 'cmd', label: c.name, sub: c.hint, go: { cmd: c.name, arg: query.slice(c.name.length).trim() } }));
+    if (/github\.com\/.+\/pull\/\d+/.test(query)) {
+      cmds.unshift({ k: 'pr', label: query, sub: 'open PR review', go: { cmd: 'openpr', arg: query } });
+    }
     if (prInfo && 'drafts'.startsWith(query)) cmds.unshift({ k: 'cmd', label: 'drafts', sub: 'list review drafts', go: { cmd: 'drafts' } });
     if (prInfo && 'submit'.startsWith(query)) {
       for (const ev of ['comment', 'approve', 'request-changes']) {
@@ -1212,6 +1215,8 @@ async function runPal(it) {
     showDiff();
   } else if (go.cmd === 'git') {
     openGitPanel();
+  } else if (go.cmd === 'openpr') {
+    await openPr(go.arg);
   } else if (go.cmd === 'settings') {
     openSettings();
   } else if (go.cmd === 'drafts') {
@@ -1369,6 +1374,26 @@ async function pickFolder() {
   if (dir) {
     await invoke('set_root', { path: dir });
     await boot(true);
+  }
+}
+async function openPr(url) {
+  askpanel.hidden = false;
+  askbody.innerHTML = '<p>fetching PR…</p>';
+  try {
+    let s;
+    if (invoke) s = await invoke('open_pr', { url });
+    else throw new Error('PR mode needs the desktop app or `ferro <pr-url>` on the server');
+    lastStats = s;
+    allFiles = await apiFiles().catch(() => []);
+    try { parseGitStatus(await apiGitStatus()); } catch {}
+    renderSidebar(allFiles);
+    status();
+    const info = await apiPrInfo().catch(() => ({ pr: null }));
+    prInfo = info && info.pr ? info.pr : null;
+    askpanel.hidden = true;
+    showHome();
+  } catch (err) {
+    askbody.innerHTML = `<p>open PR failed: ${esc(err.message || err)}</p>`;
   }
 }
 if (openBtn) openBtn.onclick = pickFolder;

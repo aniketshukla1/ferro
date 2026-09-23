@@ -427,3 +427,11 @@ pub async fn review_apply(state: State<'_, CoreState>) -> Result<serde_json::Val
     idx.rebuild().await;
     Ok(serde_json::json!({"applied": applied, "transcript": t}))
 }
+
+#[tauri::command]
+pub async fn pr_info(state: State<'_, CoreState>) -> Result<serde_json::Value, String> {
+    Ok(match state.get().pr_ctx() {
+        Some(pr) => serde_json::json!({"pr": pr}),
+        None => serde_json::json!({"pr": null}),
+    })
+}
