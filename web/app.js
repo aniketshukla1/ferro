@@ -73,6 +73,16 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/* Every clickable row must be keyboard-operable (skill: no div-only controls). */
+function activatable(el, fn) {
+  el.tabIndex = 0;
+  el.setAttribute('role', 'button');
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
+  });
+  return el;
+}
+
 /* ---------- themes ---------- */
 const THEMES = ['tokyo', 'paper', 'mocha'];
 function setTheme(t) {
@@ -124,7 +134,9 @@ function renderSidebar(list) {
       const kids = document.createElement('div');
       kids.className = 't-kids';
       kids.hidden = !s.open;
-      d.onclick = () => { s.open = !s.open; kids.hidden = !s.open; d.querySelector('.tw').textContent = s.open ? '▾' : '▸'; };
+      const toggle = () => { s.open = !s.open; kids.hidden = !s.open; d.querySelector('.tw').textContent = s.open ? '▾' : '▸'; };
+      d.onclick = toggle;
+      activatable(d, toggle);
       sub.appendChild(d); sub.appendChild(kids);
       emitInto(kids, s, full, depth + 1);
     }
@@ -141,7 +153,9 @@ function renderSidebar(list) {
     d.innerHTML = `<span class="dot" style="background:${EXT_COLORS[extOf(p)] || 'var(--mut)'}"></span>` +
       `<span class="nm" title="${esc(p)}">${esc(nm)}</span>` +
       (st ? `<span class="badge ${esc(st[0])}">${esc(st[0])}</span>` : '');
-    d.onclick = () => openFile(p);
+    const open = () => openFile(p);
+    d.onclick = open;
+    activatable(d, open);
     return d;
   }
   emitInto(frag, root, '', 0);
@@ -169,8 +183,10 @@ function renderTabs() {
       `<span title="${esc(p)}">${esc(nm)}</span>${st ? '<span style="color:var(--yellow)">●</span>' : ''}`;
     const x = document.createElement('button');
     x.className = 'x'; x.textContent = '×';
+    x.setAttribute('aria-label', `Close ${nm}`);
     x.onclick = (e) => { e.stopPropagation(); closeTab(p); };
     t.onclick = () => openFile(p);
+    activatable(t, () => openFile(p));
     t.appendChild(x);
     tabsEl.appendChild(t);
   }
@@ -231,7 +247,11 @@ function renderHome() {
   heroRecent.innerHTML = tabs.length
     ? tabs.map(p => `<div class="rrow" data-p="${esc(p)}">${esc(p)}</div>`).join('')
     : '<div class="krow"><span>no recent files yet</span></div>';
-  heroRecent.querySelectorAll('.rrow').forEach(el => el.onclick = () => openFile(el.dataset.p));
+  heroRecent.querySelectorAll('.rrow').forEach(el => {
+    const open = () => openFile(el.dataset.p);
+    el.onclick = open;
+    activatable(el, open);
+  });
 }
 document.querySelectorAll('.hero-actions button').forEach(b => b.onclick = () => {
   const act = b.dataset.act;
@@ -277,7 +297,9 @@ async function toggleOutline() {
     const d = document.createElement('div');
     d.className = 'ol-item';
     d.innerHTML = `<span class="k">${esc(s.k)}</span><span>${esc(s.name)}</span>`;
-    d.onclick = () => { viewport.scrollTop = Math.max(0, (s.n - 8) * ROW_H); paint(); };
+    const jump = () => { viewport.scrollTop = Math.max(0, (s.n - 8) * ROW_H); paint(); };
+    d.onclick = jump;
+    activatable(d, jump);
     olItems.appendChild(d);
   }
 }
@@ -359,7 +381,24 @@ async function openFile(path) {
   fbMeta.textContent = `${cur.total.toLocaleString()} lines · ${(meta.size / 1024).toFixed(1)} KB`;
   $('st-line').textContent = 'Ln 1';
   status();
+  // Skeleton rows (skill: loading state, not blank) until the first window lands.
+  rowsEl.innerHTML = '';
+  {
+    const frag = document.createDocumentFragment();
+    const n = Math.max(8, Math.ceil(viewport.clientHeight / ROW_H) || 20);
+    for (let i = 1; i <= Math.min(n, 40); i++) {
+      const d = document.createElement('div');
+      d.className = 'row skel';
+      d.style.top = ((i - 1) * ROW_H) + 'px';
+      d.setAttribute('aria-hidden', 'true');
+      d.innerHTML = `<span class="ln">${i}</span><span style="width:${55 + ((i * 37) % 35)}%"></span>`;
+      frag.appendChild(d);
+    }
+    rowsEl.appendChild(frag);
+  }
+  viewport.setAttribute('aria-busy', 'true');
   await ensureAround(0);
+  viewport.removeAttribute('aria-busy');
   paint();
 }
 
@@ -445,7 +484,8 @@ function renderPal(items) {
     const d = document.createElement('div');
     d.className = 'pr' + (i === 0 ? ' active' : '');
     d.innerHTML = `<span class="k">${esc(it.k)}</span><span>${esc(it.label)}</span>${it.sub ? `<span class="s">${esc(it.sub)}</span>` : ''}`;
-    d.onclick = () => runPal(it);
+    d.onclick = () => { closePalette(); runPal(it); };
+    activatable(d, () => { closePalette(); runPal(it); });
     palRes.appendChild(d);
   });
 }
@@ -573,7 +613,7 @@ async function submitAsk(question) {
   try {
     const res = await apiAsk(question);
     const t = res.transcript;
-    let html = `<h3>Answer</h3>${md(t.final_text || '(no answer)')}`;
+    let html = `<h2>Answer</h2>${md(t.final_text || '(no answer)')}`;
     (t.steps || []).forEach((s, i) => {
       const calls = (s.calls || []).map(([call, result]) =>
         `<pre>$ ${esc(call.name)} ${esc(JSON.stringify(call.args))}\n${esc(String(result.output).slice(0, 2000))}</pre>`).join('');
