@@ -15,3 +15,5 @@ apps/desktop/src-tauri/Wix/
 *.rpm
 *.AppImage
 .ferro/
+bench-repos/
+apps/desktop/src-tauri/gen/
