@@ -251,7 +251,10 @@ mod tests {
     #[test]
     fn splits_file_line() {
         // CWD for bin tests is the package dir.
-        assert_eq!(split_file_line("src/main.rs:42"), Some(("src/main.rs".into(), 42)));
+        assert_eq!(
+            split_file_line("src/main.rs:42"),
+            Some(("src/main.rs".into(), 42))
+        );
         assert_eq!(split_file_line("src/main.rs"), None);
         assert_eq!(split_file_line("nope/nothing.rs:10"), None);
         assert_eq!(split_file_line("README.md:0"), None);

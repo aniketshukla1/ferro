@@ -7,10 +7,10 @@ Legend: DONE · PART (partial) · TODO · SKIP (deferred with reason) · EDGE (f
 
 | px0 | ferro |
 |---|---|
-| `px0 [path\|file:line\|pr-url]` | PART — path only; `file:line` unparsed; no pr-url |
-| `-port` (0 = random) | PART — fixed port, no 0 |
+| `px0 [path\|file:line\|pr-url]` | DONE (all three) |
+| `-port` (0 = random) | DONE |
 | `-host`, `-no-open`, `-no-lsp` | DONE (`--host`, `--no-open`, `--no-lsp` accepted) |
-| `-y` (skip merged-PR confirm) | TODO (with PR mode) |
+| `-y` (skip merged-PR confirm) | DONE |
 | `-no-git` | TODO |
 | `-agent <harness>` / `-no-agent` | EDGE instead — built-in agent, no external harness needed |
 | `-no-color`, `-quiet`, `-verbose` | TODO |
@@ -56,7 +56,7 @@ Legend: DONE · PART (partial) · TODO · SKIP (deferred with reason) · EDGE (f
 | px0 | ferro |
 |---|---|
 | Single binary, bg index, fuzzy, virtual rows | DONE |
-| 14 themes | PART (3: forge/paper/mocha) |
+| 14 themes | PART (6: forge/paper/mocha/nord/dracula/gruvbox) |
 | Memory scavenger (15s idle release) | TODO (cheap: drop highlight LRU on idle) |
 | Settings JSON + visual manager | TODO |
 | Docker guide + image | TODO |

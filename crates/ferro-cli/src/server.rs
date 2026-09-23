@@ -48,7 +48,8 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
     app = app
         .route("/api/review/drafts", get(review_list).post(review_add))
         .route("/api/review/drafts/{id}", delete(review_delete))
-        .route("/api/review/submit", post(review_submit));
+        .route("/api/review/submit", post(review_submit))
+        .route("/api/settings", get(settings_get).put(settings_put));
     if !o.no_git {
         app = app
             .route("/api/git/stage", post(git_stage))
@@ -310,6 +311,20 @@ async fn review_delete(Path(id): Path<String>) -> impl IntoResponse {
 struct SubmitBody {
     event: Option<String>,
     body: Option<String>,
+}
+
+async fn settings_get(State(s): State<Arc<Index>>) -> impl IntoResponse {
+    Json(ferro_core::settings::Settings::new(s.root().to_path_buf()).get())
+}
+
+async fn settings_put(
+    State(s): State<Arc<Index>>,
+    Json(patch): Json<std::collections::BTreeMap<String, serde_json::Value>>,
+) -> impl IntoResponse {
+    match ferro_core::settings::Settings::new(s.root().to_path_buf()).save(&patch) {
+        Ok(eff) => Json(eff).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
 }
 
 #[derive(Deserialize)]

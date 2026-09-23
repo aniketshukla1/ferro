@@ -59,8 +59,8 @@ async function apiGitStatus() {
   return await (await fetch('/api/git-status')).text();
 }
 async function apiAsk(question) {
-  if (invoke) return await invoke('ask', { question, maxSteps: 8 });
-  const r = await fetch('/api/ask', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question }) });
+  if (invoke) return await invoke('ask', { question, maxSteps: askSteps });
+  const r = await fetch('/api/ask', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question, max_steps: askSteps }) });
   if (!r.ok) throw new Error(await r.text());
   return await r.json();
 }
@@ -754,6 +754,59 @@ findInput.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') { findbar.hidden = true; selectedLine = 0; paint(); }
 });
 
+/* ---------- settings (Ctrl+,) ---------- */
+async function apiSettingsGet() {
+  if (invoke) return await invoke('get_settings');
+  return await (await fetch('/api/settings')).json();
+}
+async function apiSettingsSave(patch) {
+  if (invoke) return await invoke('save_settings', { patch });
+  const r = await fetch('/api/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
+  const t = await r.text();
+  if (!r.ok) throw new Error(t);
+  return JSON.parse(t);
+}
+function applySettings(s) {
+  if (s.theme && !localStorage.getItem('ferro-theme')) setTheme(s.theme);
+  document.body.classList.toggle('no-side', s.sidebar === false);
+  if (s.wordWrap && !document.body.classList.contains('wrap')) toggleWrap();
+  if (!s.wordWrap && document.body.classList.contains('wrap')) toggleWrap();
+}
+async function openSettings() {
+  const panel = $('settingspanel');
+  panel.hidden = false;
+  let s = {};
+  try { s = await apiSettingsGet(); } catch {}
+  const sel = $('set-theme');
+  sel.innerHTML = '';
+  for (const t of THEMES) {
+    const o = document.createElement('option');
+    o.value = t; o.textContent = t;
+    if (s.theme === t) o.selected = true;
+    sel.appendChild(o);
+  }
+  $('set-wrap').checked = !!s.wordWrap;
+  $('set-sidebar').checked = s.sidebar !== false;
+  $('set-steps').value = s.askMaxSteps ?? 8;
+  $('set-raw').value = JSON.stringify(s, null, 2);
+  $('set-out').textContent = '';
+}
+$('set-close').onclick = () => { $('settingspanel').hidden = true; };
+$('set-save').onclick = async () => {
+  try {
+    const patch = JSON.parse($('set-raw').value);
+    patch.theme = $('set-theme').value;
+    patch.wordWrap = $('set-wrap').checked;
+    patch.sidebar = $('set-sidebar').checked;
+    patch.askMaxSteps = +$('set-steps').value || 8;
+    const eff = await apiSettingsSave(patch);
+    localStorage.setItem('ferro-theme', eff.theme || 'forge');
+    applySettings(eff);
+    $('set-out').textContent = 'saved';
+    setTimeout(() => { $('settingspanel').hidden = true; }, 400);
+  } catch (e) { $('set-out').textContent = 'error: ' + (e.message || e); }
+};
+
 /* ---------- review drafts (Alt+R) ---------- */
 const composeEl = $('compose'), composeText = $('compose-text'), composeTitle = $('compose-title');
 let prInfo = null;
@@ -886,6 +939,7 @@ const COMMANDS = [
   { name: 'search', hint: '>query — content search' },
   { name: 'diff', hint: 'show diff vs HEAD' },
   { name: 'git', hint: 'open git panel' },
+  { name: 'settings', hint: 'open settings' },
   { name: 'ask', hint: '>ask question — agent' },
   { name: 'reindex', hint: 'rebuild file index' },
   { name: 'theme', hint: 'cycle theme' },
@@ -1027,6 +1081,8 @@ async function runPal(it) {
     showDiff();
   } else if (go.cmd === 'git') {
     openGitPanel();
+  } else if (go.cmd === 'settings') {
+    openSettings();
   } else if (go.cmd === 'drafts') {
     listDrafts();
   } else if (go.cmd === 'submit') {
@@ -1133,6 +1189,7 @@ document.addEventListener('keydown', (e) => {
   else if (mod && e.key === 'Tab') { e.preventDefault(); cycleTab(e.shiftKey ? -1 : 1); }
   else if (e.altKey && /^[1-9]$/.test(e.key)) { e.preventDefault(); const t = tabs[+e.key - 1]; if (t) openFile(t); }
   else if (mod && k === 'b') { e.preventDefault(); document.body.classList.toggle('no-side'); }
+  else if (mod && k === ',') { e.preventDefault(); openSettings(); }
   else if (mod && k === 'g') { e.preventDefault(); openPalette(':'); }
   else if (mod && k === 'f') { e.preventDefault(); openFind(); }
   else if (e.altKey && !mod && k === 'c') { e.preventDefault(); copyRef(); }
@@ -1154,6 +1211,7 @@ document.addEventListener('keydown', (e) => {
 
 /* ---------- boot ---------- */
 let lastStats = null;
+let askSteps = 8;
 async function bootStats() {
   try {
     const s = await apiStats();
@@ -1173,6 +1231,11 @@ async function boot(reset) {
   } catch {}
   renderSidebar(allFiles);
   status();
+  try {
+    const s0 = await apiSettingsGet();
+    if (typeof s0.askMaxSteps === 'number') askSteps = Math.min(16, Math.max(1, s0.askMaxSteps));
+    applySettings(s0);
+  } catch {}
   try {
     const info = await apiPrInfo();    prInfo = info && info.pr ? info.pr : null;
     const banner = $('prbanner');

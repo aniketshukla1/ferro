@@ -321,7 +321,6 @@ pub async fn git_push(state: State<'_, CoreState>) -> Result<String, String> {
 pub async fn git_pull(state: State<'_, CoreState>) -> Result<String, String> {
     git_run(state, |r| ferro_core::git::pull_ff(&r)).await
 }
-
 #[tauri::command]
 pub async fn git_commit_message(state: State<'_, CoreState>) -> Result<String, String> {
     let provider =
@@ -350,4 +349,19 @@ pub async fn git_commit_message(state: State<'_, CoreState>) -> Result<String, S
         .await
         .map(|m| m.lines().next().unwrap_or("").trim().to_string())
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_settings(
+    state: State<'_, CoreState>,
+) -> Result<std::collections::BTreeMap<String, serde_json::Value>, String> {
+    Ok(ferro_core::settings::Settings::new(state.get().root().to_path_buf()).get())
+}
+
+#[tauri::command]
+pub async fn save_settings(
+    state: State<'_, CoreState>,
+    patch: std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<std::collections::BTreeMap<String, serde_json::Value>, String> {
+    ferro_core::settings::Settings::new(state.get().root().to_path_buf()).save(&patch)
 }
