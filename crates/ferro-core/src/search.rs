@@ -30,7 +30,7 @@ pub fn grep(root: &std::path::Path, query: &str, limit: usize) -> Vec<Hit> {
         .filter(|p| {
             !p.components().any(|c| {
                 let s = c.as_os_str().to_string_lossy();
-                s == ".git" || s == "target" || s == "node_modules"
+                s == ".git" || s == ".ferro" || s == "target" || s == "node_modules"
             })
         })
         .collect();

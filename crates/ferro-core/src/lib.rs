@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod fuzzy;
 pub mod git;
 pub mod index;

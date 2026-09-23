@@ -39,10 +39,12 @@ pub struct Index {
 impl Index {
     pub fn new(root: PathBuf) -> Self {
         let root = root.canonicalize().unwrap_or(root);
+        // Instant cold start: serve cached list immediately, rebuild() refreshes.
+        let (files, indexed_ms) = crate::cache::load(&root).unwrap_or_default();
         Self {
             root,
-            files: RwLock::new(Vec::new()),
-            indexed_ms: RwLock::new(0),
+            files: RwLock::new(files),
+            indexed_ms: RwLock::new(indexed_ms),
         }
     }
 
@@ -64,13 +66,15 @@ impl Index {
     /// Parallel walk, gitignore-aware via `ignore` crate. Skips dir symlinks.
     pub async fn rebuild(&self) {
         let root = self.root.clone();
+        let walk_root = root.clone();
         let t0 = Instant::now();
-        let files = tokio::task::spawn_blocking(move || walk(&root))
+        let files = tokio::task::spawn_blocking(move || walk(&walk_root))
             .await
             .unwrap_or_default();
         let ms = t0.elapsed().as_millis();
-        *self.files.write().unwrap() = files;
+        *self.files.write().unwrap() = files.clone();
         *self.indexed_ms.write().unwrap() = ms;
+        crate::cache::save(&root, &files, ms);
         tracing::info!(
             "ferro indexed {} files in {}ms",
             self.files.read().unwrap().len(),
@@ -195,7 +199,7 @@ fn walk(root: &Path) -> Vec<FileEntry> {
         // Skip .git internals and build output for speed.
         if path.components().any(|c| {
             let s = c.as_os_str().to_string_lossy();
-            s == ".git" || s == "target" || s == "node_modules"
+            s == ".git" || s == ".ferro" || s == "target" || s == "node_modules"
         }) {
             continue;
         }

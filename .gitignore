@@ -14,3 +14,4 @@ apps/desktop/src-tauri/Wix/
 *.deb
 *.rpm
 *.AppImage
+.ferro/
