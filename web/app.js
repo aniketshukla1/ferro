@@ -5,6 +5,8 @@ const viewport = $('viewport'), spacer = $('spacer'), rowsEl = $('rows'), plainE
 const askpanel = $('askpanel'), askbody = $('askbody'), askclose = $('askclose');
 const filebar = $('filebar'), fbPath = $('filebar-path'), fbMeta = $('filebar-meta'), fbDirty = $('filebar-dirty');
 const diffview = $('diffview');
+const homeEl = $('home'), heroStats = $('hero-stats'), heroKeys = $('hero-keys'), heroRecent = $('hero-recent');
+const outlineEl = $('outline'), olItems = $('ol-items');
 const pal = $('palette'), palInput = $('palette-input'), palRes = $('palette-results');
 const sideCount = $('side-count'), reindexBtn = $('reindex');
 let allFiles = [];
@@ -178,7 +180,7 @@ function closeTab(p) {
   renderTabs();
   if (p === currentPath) {
     if (tabs.length) openFile(tabs[tabs.length - 1]);
-    else { currentPath = null; showPlainMode('Select a file, or press Ctrl+K to jump anywhere.'); status(); renderSidebar(allFiles); }
+    else showHome();
   }
 }
 
@@ -205,13 +207,79 @@ function status() {
 const ROW_H = 20, OVERSCAN = 24, WIN = 200;
 const cur = { path: null, total: 0, cache: new Map(), mode: 'plain', pending: new Set() };
 
-function showFileMode() { cur.mode = 'file'; plainEl.hidden = true; askpanel.hidden = true; diffview.hidden = true; viewport.hidden = false; filebar.hidden = false; }
+function showFileMode() { cur.mode = 'file'; plainEl.hidden = true; askpanel.hidden = true; diffview.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; viewport.hidden = false; filebar.hidden = false; }
 function showPlainMode(text) {
-  cur.mode = 'plain'; viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; plainEl.hidden = false;
+  cur.mode = 'plain'; viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; plainEl.hidden = false;
   if (text !== undefined) plainEl.textContent = text;
 }
+function showHome() {
+  cur.mode = 'home'; cur.path = null; currentPath = null;
+  viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; plainEl.hidden = true; homeEl.hidden = false;
+  renderHome(); status(); renderTabs(); renderSidebar(allFiles);
+}
+function renderHome() {
+  const s = lastStats || { files: 0, indexed_ms: 0, root: '' };
+  heroStats.innerHTML =
+    `<span class="chip"><b>${s.files}</b> files</span>` +
+    `<span class="chip">indexed in <b>${s.indexed_ms}ms</b></span>` +
+    `<span class="chip">${esc(s.root.split('/').pop() || '')}</span>` +
+    `<span class="chip">${esc(backend)}</span>`;
+  heroKeys.innerHTML = [
+    ['Ctrl+K', 'palette'], ['Ctrl+D', 'diff vs HEAD'], ['Ctrl+Shift+O', 'outline'],
+    ['Ctrl+W', 'close tab'], ['Ctrl+O', 'open folder'], ['?', 'help'],
+  ].map(([k, v]) => `<div class="krow"><span>${v}</span><kbd>${k}</kbd></div>`).join('');
+  heroRecent.innerHTML = tabs.length
+    ? tabs.map(p => `<div class="rrow" data-p="${esc(p)}">${esc(p)}</div>`).join('')
+    : '<div class="krow"><span>no recent files yet</span></div>';
+  heroRecent.querySelectorAll('.rrow').forEach(el => el.onclick = () => openFile(el.dataset.p));
+}
+document.querySelectorAll('.hero-actions button').forEach(b => b.onclick = () => {
+  const act = b.dataset.act;
+  if (act === 'palette') openPalette();
+  else if (act === 'diff') showDiff();
+  else if (act === 'ask') askq.focus();
+});
 function showDiffMode() {
-  cur.mode = 'diff'; viewport.hidden = true; askpanel.hidden = true; plainEl.hidden = true; filebar.hidden = true; diffview.hidden = false;
+  cur.mode = 'diff'; viewport.hidden = true; askpanel.hidden = true; plainEl.hidden = true; filebar.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; diffview.hidden = false;
+}
+
+/* ---------- symbol outline (regex, zero-config) ---------- */
+const SYM_PATTERNS = {
+  rs: [[/^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)/, 'fn'], [/^\s*(?:pub\s+)?(?:struct|enum|trait|mod)\s+([A-Za-z_]\w*)/, 'ty'], [/^\s*impl(?:\s+[A-Za-z_]\w*)?\s+([A-Za-z_][\w:]*)/, 'impl']],
+  py: [[/^\s*(?:async\s+def|def)\s+([A-Za-z_]\w*)/, 'def'], [/^\s*class\s+([A-Za-z_]\w*)/, 'cls']],
+  js: [[/^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_]\w*)/, 'fn'], [/^\s*(?:export\s+)?class\s+([A-Za-z_]\w*)/, 'cls'], [/^\s*(?:export\s+)?(?:const|let)\s+([A-Za-z_]\w*)\s*=\s*(?:\(|async|function)/, 'fn']],
+  ts: [[/^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_]\w*)/, 'fn'], [/^\s*(?:export\s+)?(?:class|interface|type)\s+([A-Za-z_]\w*)/, 'ty'], [/^\s*(?:export\s+)?const\s+([A-Za-z_]\w*)\s*[:=]/, 'var']],
+  tsx: [[/^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_]\w*)/, 'fn'], [/^\s*(?:export\s+)?(?:class|interface|type)\s+([A-Za-z_]\w*)/, 'ty']],
+  go: [[/^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_]\w*)/, 'fn'], [/^\s*type\s+([A-Za-z_]\w*)/, 'ty']],
+  md: [[/^(#{1,3})\s+(.+)$/, 'h']],
+};
+async function toggleOutline() {
+  if (!outlineEl.hidden) { outlineEl.hidden = true; return; }
+  if (!cur.path) return;
+  outlineEl.hidden = false;
+  olItems.innerHTML = '<div class="ol-item">…</div>';
+  let text = '';
+  try {
+    if (invoke) text = await invoke('read_file', { path: cur.path });
+    else text = await (await fetch('/api/file?path=' + encodeURIComponent(cur.path))).text();
+  } catch { olItems.innerHTML = ''; return; }
+  const pats = SYM_PATTERNS[extOf(cur.path)] || [];
+  const syms = [];
+  text.split('\n').slice(0, 20000).forEach((line, i) => {
+    for (const [re, kind] of pats) {
+      const m = line.match(re);
+      if (m) { syms.push({ n: i + 1, k: kind, name: m[1] || m[2] }); break; }
+    }
+  });
+  olItems.innerHTML = '';
+  if (!syms.length) { olItems.innerHTML = '<div class="ol-item">no symbols</div>'; return; }
+  for (const s of syms.slice(0, 400)) {
+    const d = document.createElement('div');
+    d.className = 'ol-item';
+    d.innerHTML = `<span class="k">${esc(s.k)}</span><span>${esc(s.name)}</span>`;
+    d.onclick = () => { viewport.scrollTop = Math.max(0, (s.n - 8) * ROW_H); paint(); };
+    olItems.appendChild(d);
+  }
 }
 
 /* ---------- unified diff render ---------- */
@@ -540,6 +608,7 @@ async function pickFolder() {
   }
 }
 if (openBtn) openBtn.onclick = pickFolder;
+$('ol-toggle').onclick = toggleOutline;
 reindexBtn.onclick = async () => { await apiReindex(); await boot(true); };
 
 document.addEventListener('keydown', (e) => {
@@ -548,15 +617,18 @@ document.addEventListener('keydown', (e) => {
   else if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); pal.hidden ? openPalette() : closePalette(); }
   else if (e.key === 'Escape' && !pal.hidden) closePalette();
   else if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); showDiff(); }
+  else if (mod && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); toggleOutline(); }
   else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); pickFolder(); }
   else if (mod && e.key.toLowerCase() === 'w') { e.preventDefault(); if (currentPath) closeTab(currentPath); }
   else if (e.key === '?' && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName || '')) { e.preventDefault(); openPalette('?'); }
 });
 
 /* ---------- boot ---------- */
+let lastStats = null;
 async function bootStats() {
   try {
     const s = await apiStats();
+    lastStats = s;
     $('st-backend').textContent = backend;
     $('st-files').textContent = `${s.files} files`;
     $('st-index').textContent = `${s.indexed_ms}ms`;
@@ -564,6 +636,7 @@ async function bootStats() {
 }
 async function boot(reset) {
   const s = await apiStats().catch(() => ({ files: 0, indexed_ms: 0, root: '' }));
+  lastStats = s;
   allFiles = await apiFiles().catch(() => []);
   try {
     const g = await apiGitStatus();
@@ -573,6 +646,6 @@ async function boot(reset) {
   status();
   setTimeout(bootStats, 800);
   if (!invoke && openBtn) openBtn.style.display = 'none';
-  if (reset) { currentPath = null; showPlainMode('Select a file, or press Ctrl+K to jump anywhere.'); }
+  showHome();
 }
 boot(false);
