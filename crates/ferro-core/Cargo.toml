@@ -15,3 +15,4 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 syntect = "5"
 lru = "0.12"
 tempfile = "3"
+pulldown-cmark = "0.12"

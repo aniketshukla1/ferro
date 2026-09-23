@@ -226,6 +226,24 @@ body.wrap #viewport.static #spacer { height:auto !important; }
 .d-del { background:color-mix(in srgb, var(--red) 14%, transparent); }
 .d-add { background:color-mix(in srgb, var(--green) 13%, transparent); }
 .d-empty { color:var(--mut); padding:12px; }
+/* markdown + image */
+#mdview { position:absolute; inset:0; overflow:auto; padding:16px 28px; max-width:860px; }
+#mdview[hidden] { display:none; }
+#mdview pre { background:var(--bg1); border:1px solid var(--border); padding:10px 12px; border-radius:8px; overflow:auto; }
+#mdview code { background:var(--bg2); padding:1px 5px; border-radius:4px; font-size:12px; }
+#mdview pre code { background:none; padding:0; }
+#mdview table { border-collapse:collapse; }
+#mdview th, #mdview td { border:1px solid var(--border); padding:4px 10px; }
+#mdview a { color:var(--acc); }
+#imgview { position:absolute; inset:0; display:flex; flex-direction:column; }
+#imgview[hidden] { display:none; }
+#imgtools { display:flex; gap:12px; padding:6px 14px; color:var(--mut); font-size:12px; border-bottom:1px solid var(--border); background:var(--bg1); }
+#imgwrap { flex:1; overflow:auto; display:flex; align-items:center; justify-content:center;
+  background:repeating-conic-gradient(#222 0 25%, #1a1a1a 0 50%) 0 0/20px 20px; }
+#imgwrap.light { background:repeating-conic-gradient(#ddd 0 25%, #fff 0 50%) 0 0/20px 20px; }
+#imgwrap.dark { background:#000; }
+#img { max-width:none; cursor:grab; }
+#img.pixel { image-rendering:pixelated; }
 /* git panel */
 #gitpanel { position:absolute; inset:0; overflow:auto; background:var(--bg0); padding:16px 20px; z-index:4; }
 #gitpanel[hidden] { display:none; }

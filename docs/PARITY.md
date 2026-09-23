@@ -27,7 +27,7 @@ Legend: DONE · PART (partial) · TODO · SKIP (deferred with reason) · EDGE (f
 | Ctrl+Shift+O outline | DONE (panel; regex, no LSP) |
 | Ctrl+F find in file | DONE |
 | Ctrl+G jump to line | DONE (palette `:`) |
-| Ctrl+, settings | TODO (with settings system) |
+| Ctrl+, settings | DONE (panel + raw JSON + file) |
 | Ctrl+B sidebar toggle | DONE |
 | Ctrl+Shift+R refresh | DONE |
 | Tabs: W / Shift+T reopen / Ctrl+Tab / Alt+1-9 | DONE |

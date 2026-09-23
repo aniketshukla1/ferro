@@ -46,6 +46,9 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
     }
     app = app.route("/api/pr-info", get(pr_info));
     app = app
+        .route("/api/markdown", get(markdown))
+        .route("/api/raw", get(raw));
+    app = app
         .route("/api/review/drafts", get(review_list).post(review_add))
         .route("/api/review/drafts/{id}", delete(review_delete))
         .route("/api/review/submit", post(review_submit))
@@ -274,6 +277,30 @@ async fn pr_info(State(s): State<Arc<Index>>) -> impl IntoResponse {
     match s.pr_ctx() {
         Some(pr) => Json(serde_json::json!({"pr": pr})).into_response(),
         None => Json(serde_json::json!({"pr": null})).into_response(),
+    }
+}
+
+async fn markdown(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+    let s2 = s.clone();
+    let path = q.path.clone();
+    let out = tokio::task::spawn_blocking(move || ferro_core::media::render_markdown(&s2, &path))
+        .await
+        .unwrap_or(None);
+    match out {
+        Some(html) => ([(header::CONTENT_TYPE, "text/html")], html).into_response(),
+        None => (StatusCode::NOT_FOUND, "not markdown".to_string()).into_response(),
+    }
+}
+
+async fn raw(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+    let s2 = s.clone();
+    let path = q.path.clone();
+    let out = tokio::task::spawn_blocking(move || ferro_core::media::read_image_bytes(&s2, &path))
+        .await
+        .unwrap_or(None);
+    match out {
+        Some((bytes, mime)) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
+        None => (StatusCode::NOT_FOUND, "not found".to_string()).into_response(),
     }
 }
 

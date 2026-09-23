@@ -365,3 +365,21 @@ pub async fn save_settings(
 ) -> Result<std::collections::BTreeMap<String, serde_json::Value>, String> {
     ferro_core::settings::Settings::new(state.get().root().to_path_buf()).save(&patch)
 }
+
+#[tauri::command]
+pub async fn markdown(state: State<'_, CoreState>, path: String) -> Result<String, String> {
+    let idx = state.get();
+    tokio::task::spawn_blocking(move || ferro_core::media::render_markdown(&idx, &path))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "not markdown".to_string())
+}
+
+#[tauri::command]
+pub async fn read_image(state: State<'_, CoreState>, path: String) -> Result<String, String> {
+    let idx = state.get();
+    tokio::task::spawn_blocking(move || ferro_core::media::image_data_url(&idx, &path))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "not an image".to_string())
+}

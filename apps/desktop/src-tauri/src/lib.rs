@@ -44,6 +44,8 @@ pub fn run() {
             commands::git_pull,
             commands::get_settings,
             commands::save_settings,
+            commands::markdown,
+            commands::read_image,
             commands::ask,
         ])
         .run(tauri::generate_context!())

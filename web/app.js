@@ -5,6 +5,7 @@ const viewport = $('viewport'), spacer = $('spacer'), rowsEl = $('rows'), plainE
 const askpanel = $('askpanel'), askbody = $('askbody'), askclose = $('askclose');
 const filebar = $('filebar'), fbPath = $('filebar-path'), fbMeta = $('filebar-meta'), fbDirty = $('filebar-dirty');
 const diffview = $('diffview');
+const mdview = $('mdview'), imgview = $('imgview'), imgEl = $('img'), imgWrap = $('imgwrap');
 const homeEl = $('home'), heroStats = $('hero-stats'), heroKeys = $('hero-keys'), heroRecent = $('hero-recent');
 const outlineEl = $('outline'), olItems = $('ol-items');
 const pal = $('palette'), palInput = $('palette-input'), palRes = $('palette-results');
@@ -53,6 +54,75 @@ async function apiWindow(path, start, count) {
 async function apiDiff() {
   if (invoke) return await invoke('git_diff', { path: null });
   return await (await fetch('/api/diff')).text();
+}
+async function apiMarkdown(path) {
+  if (invoke) return await invoke('markdown', { path });
+  const r = await fetch('/api/markdown?path=' + encodeURIComponent(path));
+  if (!r.ok) throw new Error('md ' + r.status);
+  return await r.text();
+}
+async function apiImageUrl(path) {
+  if (invoke) return await invoke('read_image', { path });
+  return '/api/raw?path=' + encodeURIComponent(path);
+}
+
+async function openImage(path, meta) {
+  cur.mode = 'image'; cur.path = path; currentPath = path;
+  plainEl.hidden = true; askpanel.hidden = true; diffview.hidden = true; homeEl.hidden = true;
+  outlineEl.hidden = true; gitpanel.hidden = true; viewport.hidden = true; mdview.hidden = true;
+  filebar.hidden = false; imgview.hidden = false;
+  renderTabs(); renderSidebar(allFiles);
+  fbPath.textContent = path;
+  fbMeta.textContent = `${(meta.size / 1024).toFixed(1)} KB · image`;
+  const st = gitMap.get(path);
+  fbDirty.hidden = !st;
+  $('img-meta').textContent = path;
+  imgState = { scale: 1, bg: 0 };
+  imgEl.src = await apiImageUrl(path);
+  imgEl.onload = () => {
+    $('img-zoom').textContent = `${imgEl.naturalWidth}×${imgEl.naturalHeight}`;
+    fitImage();
+  };
+  status();
+}
+function applyImg() {
+  imgEl.style.width = (imgEl.naturalWidth * imgState.scale) + 'px';
+  $('img-zoom').textContent = `${imgEl.naturalWidth}×${imgEl.naturalHeight} · ${Math.round(imgState.scale * 100)}%`;
+  imgWrap.classList.toggle('light', imgState.bg === 2);
+  imgWrap.classList.toggle('dark', imgState.bg === 1);
+}
+function fitImage() {
+  if (!imgEl.naturalWidth) return;
+  imgState.scale = Math.min(2, (imgWrap.clientWidth - 40) / imgEl.naturalWidth);
+  applyImg();
+}
+imgEl.addEventListener('load', applyImg);
+imgEl.addEventListener('wheel', (e) => {
+  if (cur.mode !== 'image') return;
+  e.preventDefault();
+  imgState.scale = Math.min(32, Math.max(0.05, imgState.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  applyImg();
+}, { passive: false });
+{
+  let drag = null;
+  imgWrap.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, l: imgWrap.scrollLeft, t: imgWrap.scrollTop }; });
+  addEventListener('mousemove', (e) => {
+    if (!drag) return;
+    imgWrap.scrollLeft = drag.l - (e.clientX - drag.x);
+    imgWrap.scrollTop = drag.t - (e.clientY - drag.y);
+  });
+  addEventListener('mouseup', () => { drag = null; });
+}
+async function toggleMd() {
+  if (cur.mode !== 'file' && cur.mode !== 'md' || !cur.path || !isMd(cur.path)) return;
+  if (cur.mode === 'md') {
+    cur.mode = 'file'; mdview.hidden = true; viewport.hidden = false; paint();
+    return;
+  }
+  try {
+    mdview.innerHTML = await apiMarkdown(cur.path);
+    cur.mode = 'md'; viewport.hidden = true; mdview.hidden = false;
+  } catch { $('st-line').textContent = 'preview failed'; }
 }
 async function apiGitStatus() {
   if (invoke) return await invoke('git_status');
@@ -295,7 +365,7 @@ async function gitPost(path, body) {
 }
 function openGitPanel() {
   cur.mode = 'git';
-  viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; homeEl.hidden = true; plainEl.hidden = true; outlineEl.hidden = true;
+  viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; homeEl.hidden = true; plainEl.hidden = true; outlineEl.hidden = true; mdview.hidden = true; imgview.hidden = true;
   gitpanel.hidden = false;
   renderGitPanel();
 }
@@ -376,14 +446,20 @@ function status() {
 const ROW_H = 20, OVERSCAN = 24, WIN = 200;
 const cur = { path: null, total: 0, cache: new Map(), mode: 'plain', pending: new Set() };
 
-function showFileMode() { cur.mode = 'file'; plainEl.hidden = true; askpanel.hidden = true; diffview.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; gitpanel.hidden = true; viewport.hidden = false; filebar.hidden = false; }
+const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp'];
+const isImage = (p) => IMAGE_EXTS.includes(extOf(p || ''));
+const isMd = (p) => ['md', 'markdown'].includes(extOf(p || ''));
+let mdPreview = false;
+let imgState = { scale: 1, bg: 0 };
+
+function showFileMode() { cur.mode = 'file'; plainEl.hidden = true; askpanel.hidden = true; diffview.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; gitpanel.hidden = true; mdview.hidden = true; imgview.hidden = true; viewport.hidden = false; filebar.hidden = false; }
 function showPlainMode(text) {
-  cur.mode = 'plain'; viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; gitpanel.hidden = true; plainEl.hidden = false;
+  cur.mode = 'plain'; viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; gitpanel.hidden = true; mdview.hidden = true; imgview.hidden = true; plainEl.hidden = false;
   if (text !== undefined) plainEl.textContent = text;
 }
 function showHome() {
   cur.mode = 'home'; cur.path = null; currentPath = null;
-  viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; plainEl.hidden = true; homeEl.hidden = false; gitpanel.hidden = true; outlineEl.hidden = true;
+  viewport.hidden = true; askpanel.hidden = true; diffview.hidden = true; filebar.hidden = true; plainEl.hidden = true; homeEl.hidden = false; gitpanel.hidden = true; outlineEl.hidden = true; mdview.hidden = true; imgview.hidden = true;
   renderHome(); status(); renderTabs(); renderSidebar(allFiles);
 }
 function renderHome() {
@@ -413,7 +489,7 @@ document.querySelectorAll('.hero-actions button').forEach(b => b.onclick = () =>
   else if (act === 'ask') askq.focus();
 });
 function showDiffMode() {
-  cur.mode = 'diff'; viewport.hidden = true; askpanel.hidden = true; plainEl.hidden = true; filebar.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; gitpanel.hidden = true; diffview.hidden = false;
+  cur.mode = 'diff'; viewport.hidden = true; askpanel.hidden = true; plainEl.hidden = true; filebar.hidden = true; homeEl.hidden = true; outlineEl.hidden = true; gitpanel.hidden = true; mdview.hidden = true; imgview.hidden = true; diffview.hidden = false;
 }
 
 /* ---------- symbol outline (regex, zero-config) ---------- */
@@ -516,9 +592,16 @@ async function showDiff() {
 
 async function openFile(path, fromHistory) {
   if (currentPath && currentPath !== path && !fromHistory) pushHistory(currentPath);
+  mdPreview = false;
   currentPath = path;
   if (!tabs.includes(path)) { tabs.push(path); if (tabs.length > 10) tabs.shift(); }
   renderTabs();
+  if (isImage(path)) {
+    let meta = { size: 0 };
+    try { meta = await apiMeta(path); } catch {}
+    await openImage(path, meta.size ? meta : { size: 0 });
+    return;
+  }
   showFileMode();
   cur.path = path; cur.cache.clear(); cur.pending.clear();
   wrapCache = null;
@@ -534,7 +617,7 @@ async function openFile(path, fromHistory) {
   const st = gitMap.get(path);
   fbDirty.hidden = !st;
   fbDirty.title = st ? 'modified (' + st + ')' : '';
-  fbMeta.textContent = `${cur.total.toLocaleString()} lines · ${(meta.size / 1024).toFixed(1)} KB`;
+  fbMeta.textContent = `${cur.total.toLocaleString()} lines · ${(meta.size / 1024).toFixed(1)} KB${isMd(path) ? ' · Alt+M preview' : ''}`;
   $('st-line').textContent = 'Ln 1';
   status();
   // Skeleton rows (skill: loading state, not blank) until the first window lands.
@@ -1196,6 +1279,17 @@ document.addEventListener('keydown', (e) => {
   else if (e.altKey && !mod && k === 'a') { e.preventDefault(); copyWithContext(); }
   else if (e.altKey && !mod && k === 'u') { e.preventDefault(); findUsages(); }
   else if (e.altKey && !mod && k === 'r') { e.preventDefault(); openCompose(); }
+  else if (e.altKey && !mod && k === 'm') { e.preventDefault(); toggleMd(); }
+  else if (cur.mode === 'image' && ['+', '=', '-', '_', '0', '1', 'b', 'p'].includes(e.key)) {
+    e.preventDefault();
+    if (e.key === '+' || e.key === '=') imgState.scale = Math.min(32, imgState.scale * 1.25);
+    else if (e.key === '-' || e.key === '_') imgState.scale = Math.max(0.05, imgState.scale / 1.25);
+    else if (e.key === '0') fitImage();
+    else if (e.key === '1') { imgState.scale = 1; }
+    else if (e.key === 'b' || e.key === 'B') imgState.bg = (imgState.bg + 1) % 3;
+    else if (e.key === 'p' || e.key === 'P') imgEl.classList.toggle('pixel');
+    if (e.key !== '0') applyImg();
+  }
   else if (e.altKey && k === 'z') { e.preventDefault(); toggleWrap(); }
   else if (e.altKey && !mod && e.key === 'ArrowLeft') { e.preventDefault(); goHistory(-1); }
   else if (e.altKey && !mod && e.key === 'ArrowRight') { e.preventDefault(); goHistory(1); }
