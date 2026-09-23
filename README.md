@@ -1,6 +1,6 @@
 # ferro
 
-Ferro is a fast local code review tool for humans and AI — a Rust rival to px0.
+Ferro is a fast local code review tool for humans and AI.
 
 - `ferro` CLI: single static Rust binary, browser UI, zero runtime deps
 - `Ferro` desktop: Tauri 2 native app, same `ferro-core`, offline, no server
