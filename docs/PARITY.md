@@ -15,14 +15,14 @@ Legend: DONE · PART (partial) · TODO · SKIP (deferred with reason) · EDGE (f
 | `-agent <harness>` / `-no-agent` | EDGE instead — built-in agent, no external harness needed |
 | `-no-color`, `-quiet`, `-verbose` | TODO |
 | `-update`, `-v`/`-version` | TODO |
-| `install.sh`, 15 targets, releases | TODO |
+| `install.sh`, 15 targets, releases | DONE (install.sh 4 targets + release.yml + Dockerfile) |
 | `-no-telemetry` | SKIP — ferro has no telemetry to disable |
 
 ## Keyboard / editor
 
 | px0 | ferro |
 |---|---|
-| Ctrl+P / Ctrl+K palette, fuzzy files | DONE |
+| Ctrl+P / Ctrl+K palette, fuzzy files | DONE (unified palette; Ctrl+Shift+P merged in) |
 | Ctrl+Shift+F workspace search | DONE (`>`, blended while typing) |
 | Ctrl+Shift+O outline | DONE (panel; regex, no LSP) |
 | Ctrl+F find in file | DONE |
@@ -32,7 +32,7 @@ Legend: DONE · PART (partial) · TODO · SKIP (deferred with reason) · EDGE (f
 | Ctrl+Shift+R refresh | DONE |
 | Tabs: W / Shift+T reopen / Ctrl+Tab / Alt+1-9 | DONE |
 | Alt+Z word wrap, Home/End, Alt+Left/Right history | DONE (wrap ≤2k lines; history; Home/End native scroll) |
-| Shift+arrows selection model in viewer | PART (click + shift-click ranges; no keyboard expansion yet) |
+| Shift+arrows selection model in viewer | DONE (arrows + shift-extend) |
 | Alt+C copy ref, Alt+A copy w/ context, Alt+U usages | DONE |
 | Right-click selection menu | DONE |
 | Alt+M markdown preview, image viewer | DONE (GFM + zoom/fit/bg/pixel/pan) |
@@ -57,10 +57,10 @@ Legend: DONE · PART (partial) · TODO · SKIP (deferred with reason) · EDGE (f
 |---|---|
 | Single binary, bg index, fuzzy, virtual rows | DONE |
 | 14 themes | PART (6: forge/paper/mocha/nord/dracula/gruvbox) |
-| Memory scavenger (15s idle release) | TODO (cheap: drop highlight LRU on idle) |
-| Settings JSON + visual manager | TODO |
-| Docker guide + image | TODO |
-| Benchmarks vs editors table | PART (own table; no VS Code run) |
+| Memory scavenger (15s idle release) | DONE (highlight LRU + activity middleware) |
+| Settings JSON + visual manager | DONE (panel + raw JSON + file) |
+| Docker guide + image | DONE (Dockerfile + README run) |
+| Benchmarks vs editors table | PART (own table; VS Code run needs a GUI box — SKIP here) |
 
 ## Ferro edges (px0 lacks)
 
