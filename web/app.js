@@ -84,12 +84,13 @@ function activatable(el, fn) {
 }
 
 /* ---------- themes ---------- */
-const THEMES = ['tokyo', 'paper', 'mocha'];
+const THEMES = ['forge', 'paper', 'mocha'];
 function setTheme(t) {
+  if (!THEMES.includes(t)) t = 'forge';
   document.documentElement.dataset.theme = t;
   try { localStorage.setItem('ferro-theme', t); } catch {}
 }
-setTheme((() => { try { return localStorage.getItem('ferro-theme') || 'tokyo'; } catch { return 'tokyo'; } })());
+setTheme((() => { try { return localStorage.getItem('ferro-theme') || 'forge'; } catch { return 'forge'; } })());
 themeBtn.onclick = () => {
   const cur = document.documentElement.dataset.theme || 'tokyo';
   setTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
