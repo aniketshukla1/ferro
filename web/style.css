@@ -58,6 +58,7 @@ header button:hover { border-color:var(--acc); }
 .pr .s { margin-left:auto; color:var(--mut); font-size:11px; }
 .pr.active { background:var(--sel); }
 .pr.active .k { color:var(--acc); }
+.pr-head { padding:8px 10px 2px; color:var(--mut); font-size:10.5px; text-transform:uppercase; letter-spacing:1px; }
 #palette-hint { padding:8px 16px; color:var(--mut); font-size:11px; border-top:1px solid var(--border); }
 /* layout */
 main { flex:1; display:grid; grid-template-columns:300px 1fr; min-height:0; }

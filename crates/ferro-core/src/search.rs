@@ -12,8 +12,12 @@ pub fn grep(root: &std::path::Path, query: &str, limit: usize) -> Vec<Hit> {
     if query.is_empty() || limit == 0 {
         return vec![];
     }
-    let q = query.as_bytes().to_vec();
+    let tokens = tokens_of(query);
+    // Multi-token (e.g. pasted code): line must contain ALL tokens.
+    // Single token: plain substring. No usable tokens: literal fallback.
+    let mode_and = tokens.len() > 1;
     let qlow = query.to_ascii_lowercase();
+    let q = query.as_bytes().to_vec();
 
     let walker = ignore::WalkBuilder::new(root)
         .hidden(false)
@@ -40,14 +44,19 @@ pub fn grep(root: &std::path::Path, query: &str, limit: usize) -> Vec<Hit> {
         if out.len() >= limit {
             break;
         }
-        // Fast reject: read bytes, check contains (case-sensitive first, then fold).
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
         };
         if bytes.len() > 2_000_000 {
             continue; // bgLimit parity: skip giant files in full scan
         }
-        if !contains(&bytes, &q) && !contains_fold(&bytes, qlow.as_bytes()) {
+        // Fast reject: longest token first (AND) or literal (single).
+        if mode_and {
+            let longest = tokens.iter().max_by_key(|t| t.len()).unwrap();
+            if !contains_fold(&bytes, longest.as_bytes()) {
+                continue;
+            }
+        } else if !contains(&bytes, &q) && !contains_fold(&bytes, qlow.as_bytes()) {
             continue;
         }
         let text = String::from_utf8_lossy(&bytes).into_owned();
@@ -56,7 +65,13 @@ pub fn grep(root: &std::path::Path, query: &str, limit: usize) -> Vec<Hit> {
             if out.len() >= limit {
                 break;
             }
-            if line.to_ascii_lowercase().contains(&qlow) {
+            let matched = if mode_and {
+                let ll = line.to_ascii_lowercase();
+                tokens.iter().all(|t| ll.contains(t.as_str()))
+            } else {
+                line.to_ascii_lowercase().contains(&qlow)
+            };
+            if matched {
                 let rel = path
                     .strip_prefix(root)
                     .unwrap_or(&path)
@@ -77,6 +92,16 @@ pub fn grep(root: &std::path::Path, query: &str, limit: usize) -> Vec<Hit> {
         }
     }
     out
+}
+
+/// Split a query into lowercase alphanumeric tokens for AND matching.
+/// `RwLock::new(Arc::new(x))` -> ["rwlock", "new", "arc", "new", "x"].
+pub fn tokens_of(query: &str) -> Vec<String> {
+    query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase())
+        .collect()
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -123,4 +148,37 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokenizes_pasted_code() {
+        assert_eq!(tokens_of("RwLock::new(Arc::new(x))"), vec!["rwlock", "new", "arc", "new", "x"]);
+        assert!(tokens_of(":::").is_empty());
+    }
+
+    #[test]
+    fn and_matches_scattered_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "let s = RwLock::new( Arc::new( Index::new( root ) ) );\n",
+        )
+        .unwrap();
+        let hits = grep(dir.path(), "RwLock::new(Arc::new(Index::new(root)))", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, 1);
+    }
+
+    #[test]
+    fn and_rejects_partial_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "foo bar\nfoo only\n").unwrap();
+        let hits = grep(dir.path(), "foo bar", 10);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].text.contains("foo bar"));
+    }
 }

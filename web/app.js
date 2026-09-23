@@ -73,13 +73,34 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-/* Highlight query matches (case-insensitive) inside already-escaped-safe text. */
+/* Highlight query matches (case-insensitive). Multi-token: every token lights up. */
+function queryTokens(q) {
+  return String(q || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
 function hi(text, query) {
-  const t = String(text), q = String(query || '').trim();
-  if (!q) return esc(t);
-  const ix = t.toLowerCase().indexOf(q.toLowerCase());
-  if (ix < 0) return esc(t);
-  return esc(t.slice(0, ix)) + '<mark>' + esc(t.slice(ix, ix + q.length)) + '</mark>' + esc(t.slice(ix + q.length));
+  const t = String(text);
+  const toks = [...new Set(queryTokens(query))].sort((a, b) => b.length - a.length);
+  if (!toks.length) return esc(t);
+  const low = t.toLowerCase();
+  const ranges = [];
+  for (const tok of toks) {
+    let i = 0;
+    while ((i = low.indexOf(tok, i)) >= 0) { ranges.push([i, i + tok.length]); i += tok.length; }
+  }
+  if (!ranges.length) return esc(t);
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+    else merged.push([...r]);
+  }
+  let out = '', pos = 0;
+  for (const [a, b] of merged) {
+    out += esc(t.slice(pos, a)) + '<mark>' + esc(t.slice(a, b)) + '</mark>';
+    pos = b;
+  }
+  return out + esc(t.slice(pos));
 }
 
 /* Every clickable row must be keyboard-operable (skill: no div-only controls). */
@@ -488,20 +509,46 @@ $('palette-trigger').onclick = () => openPalette();
 pal.addEventListener('click', (e) => { if (e.target === pal) closePalette(); });
 
 function renderPal(items) {
-  palItems = items; palActive = 0;
+  palItems = items;
+  palActive = items.findIndex(it => !it.header);
+  if (palActive < 0) palActive = 0;
   palRes.innerHTML = '';
-  items.slice(0, 12).forEach((it, i) => {
+  items.slice(0, 14).forEach((it) => {
+    if (it.header) {
+      const h = document.createElement('div');
+      h.className = 'pr-head';
+      h.textContent = it.label;
+      palRes.appendChild(h);
+      return;
+    }
     const d = document.createElement('div');
-    d.className = 'pr' + (i === 0 ? ' active' : '');
+    d.className = 'pr' + (palItems.indexOf(it) === palActive ? ' active' : '');
     d.innerHTML = `<span class="k">${esc(it.k)}</span><span>${esc(it.label)}</span>${it.sub ? `<span class="s">${it.html ? it.sub : esc(it.sub)}</span>` : ''}`;
     d.onclick = () => { closePalette(); runPal(it); };
     activatable(d, () => { closePalette(); runPal(it); });
     palRes.appendChild(d);
   });
+  markPalActive();
+}
+function stepPal(dir) {
+  if (!palItems.length) return;
+  let i = palActive;
+  for (let n = 0; n < palItems.length; n++) {
+    i = (i + dir + palItems.length) % palItems.length;
+    if (!palItems[i].header) break;
+  }
+  palActive = i;
+  markPalActive();
 }
 function markPalActive() {
-  [...palRes.children].forEach((c, i) => c.classList.toggle('active', i === palActive));
-  palRes.children[palActive]?.scrollIntoView({ block: 'nearest' });
+  const rows = [...palRes.children].filter(c => !c.classList.contains('pr-head'));
+  const sel = palItems[palActive];
+  [...palRes.children].forEach((c) => c.classList.remove('active'));
+  const ix = palItems.slice(0, 14).filter(i => !i.header).indexOf(sel);
+  if (rows[ix]) {
+    rows[ix].classList.add('active');
+    rows[ix].scrollIntoView({ block: 'nearest' });
+  }
 }
 
 let palDeb = null;
@@ -510,9 +557,9 @@ palInput.addEventListener('input', () => {
   palDeb = setTimeout(updatePalette, 70);
 });
 palInput.addEventListener('keydown', (e) => {
-  if (e.key === 'ArrowDown') { e.preventDefault(); palActive = Math.min(palItems.length - 1, palActive + 1); markPalActive(); }
-  else if (e.key === 'ArrowUp') { e.preventDefault(); palActive = Math.max(0, palActive - 1); markPalActive(); }
-  else if (e.key === 'Enter') { const it = palItems[palActive]; if (it) { closePalette(); runPal(it); } }
+  if (e.key === 'ArrowDown') { e.preventDefault(); stepPal(1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); stepPal(-1); }
+  else if (e.key === 'Enter') { const it = palItems[palActive]; if (it && !it.header) { closePalette(); runPal(it); } }
   else if (e.key === 'Escape') closePalette();
 });
 
@@ -552,8 +599,23 @@ async function updatePalette() {
     }));
     return;
   }
-  const res = await apiFuzzy(v).catch(() => []);
-  renderPal(res.map(r => ({ k: 'file', label: r.path, sub: String(r.score), go: { file: r.path } })));
+  // Blended: filenames first, then content hits (no > prefix needed).
+  const [fuzzyRes, contentHits] = await Promise.all([
+    apiFuzzy(v).catch(() => []),
+    v.trim().length >= 3 ? apiSearch(v).catch(() => []) : Promise.resolve([]),
+  ]);
+  const items = fuzzyRes.map(r => ({ k: 'file', label: r.path, sub: String(r.score), go: { file: r.path } }));
+  if (contentHits.length) {
+    items.push({ header: true, label: `Content — ${contentHits.length} hit${contentHits.length > 1 ? 's' : ''}` });
+    for (const h of contentHits.slice(0, 8)) {
+      items.push({
+        k: 'grep', label: `${h.path}:${h.line}`, html: true,
+        sub: hi(String(h.text).slice(0, 120), v),
+        go: { file: h.path, line: h.line },
+      });
+    }
+  }
+  renderPal(items);
 }
 
 async function runPal(it) {
