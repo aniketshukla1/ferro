@@ -1,9 +1,9 @@
-/* ferro brand: forge (default dark) · paper (light) · mocha */
+/* ferro brand: forge (default dark, Claude Code dark matched) · paper (light) · mocha */
 :root, [data-theme="forge"], [data-theme="tokyo"] {
-  --bg0:#121110; --bg1:#1a1815; --bg2:#26221e; --border:#35302a;
-  --fg:#f3ede3; --mut:#a8a094; --acc:#ff7a1a; --acc-dim:#4a2c14;
-  --green:#9ec46a; --red:#ef6a5e; --yellow:#e8b44f; --blue:#8ab0ff;
-  --sel:#2e251b;
+  --bg0:#1a1a1a; --bg1:#232120; --bg2:#2a2a2a; --border:#38342f;
+  --fg:#c3c1ba; --mut:#96928a; --acc:#d87757; --acc-dim:#4a2e22;
+  --green:#4eba65; --red:#ff6b80; --yellow:#d9a45b; --blue:#7aa2f7;
+  --sel:#2e2b26;
 }
 [data-theme="paper"] {
   --bg0:#f6f4ee; --bg1:#efece3; --bg2:#e4dfd2; --border:#d5cfbd;
