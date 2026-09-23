@@ -27,6 +27,18 @@ pnpm --dir apps/desktop dev
 # opens native window, root = cwd, Ctrl+O to switch folder
 ```
 
+## Ask the built-in agent (P2)
+
+```bash
+export GEMINI_API_KEY=...            # or OPENAI_API_KEY / OLLAMA_MODEL
+# optional: export GEMINI_MODEL=gemini-2.0-flash
+cargo run -p ferro -- ask "where is fuzzy scoring implemented?" --path .
+```
+
+Resolution order: `--api-key/--base-url/--model` flags > `GEMINI_API_KEY` >
+`OPENAI_API_KEY` (+`OPENAI_BASE_URL`, `FERRO_MODEL`) > `OLLAMA_MODEL`
+(localhost:11434, no key). Never commit keys — env only.
+
 Tauri commands (same core as CLI): `get_stats, list_files, fuzzy, grep, read_file, git_status, git_diff, set_root, reindex, pick_folder`.
 
 ## Layout

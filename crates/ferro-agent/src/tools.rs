@@ -33,7 +33,7 @@ impl From<Access> for AccessLabel {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub name: String,
     pub args: serde_json::Value,

@@ -1,10 +1,10 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "ferro", version, about = "Ferro — fast local code review")]
 pub struct Cli {
-    /// Directory or file to inspect. Also accepts file:line, e.g. main.rs:42
+    /// Directory to inspect (serve mode). Defaults to cwd.
     pub path: Option<PathBuf>,
 
     #[arg(short, long, default_value_t = 7778)]
@@ -18,4 +18,34 @@ pub struct Cli {
 
     #[arg(long, default_value_t = false)]
     pub no_lsp: bool,
+
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum Commands {
+    /// Ask the built-in agent about the workspace (uses read-only tools by default).
+    Ask {
+        /// The question.
+        question: String,
+        /// Workspace root. Defaults to cwd.
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Model override (else GEMINI_MODEL / FERRO_MODEL / default per provider).
+        #[arg(long)]
+        model: Option<String>,
+        /// Base URL override (OpenAI-compatible endpoint).
+        #[arg(long)]
+        base_url: Option<String>,
+        /// Raw API key override (prefer GEMINI_API_KEY env).
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Max agent steps.
+        #[arg(long, default_value_t = 8)]
+        max_steps: usize,
+        /// Allow write tools (apply_patch lands in P2-3; currently a no-op gate).
+        #[arg(long, default_value_t = false)]
+        allow_write: bool,
+    },
 }
