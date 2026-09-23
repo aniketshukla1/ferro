@@ -11,11 +11,21 @@ use cli::{Cli, Commands};
 
 #[tokio::main]
 async fn main() -> AnyhowResult {
+    // Parse first for output flags, then configure logging.
+    // (clap handles --version/-V automatically from the crate version.)
+    let cli = Cli::parse();
+    let filter = if cli.verbose {
+        EnvFilter::new("debug")
+    } else if cli.quiet {
+        EnvFilter::new("warn")
+    } else {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+    };
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(filter)
+        .with_ansi(!cli.no_color)
         .init();
 
-    let cli = Cli::parse();
     match cli.command {
         Some(Commands::Ask {
             question,
@@ -52,15 +62,15 @@ async fn serve(cli: Cli) -> AnyhowResult {
     let bg = state.clone();
     tokio::spawn(async move { bg.rebuild().await });
 
-    let addr = format!("{}:{}", cli.host, cli.port);
-    tracing::info!("ferro serving {} on http://{}", root.display(), addr);
-
-    if !cli.no_open {
-        let url = format!("http://127.0.0.1:{}/", cli.port);
-        let _ = open::that(&url);
-    }
-
-    server::serve(state, &addr).await;
+    server::serve(
+        state,
+        &cli.host,
+        cli.port,
+        cli.no_git,
+        !cli.quiet,
+        cli.no_open,
+    )
+    .await;
     Ok(())
 }
 

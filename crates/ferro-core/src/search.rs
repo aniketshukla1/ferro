@@ -156,7 +156,10 @@ mod tests {
 
     #[test]
     fn tokenizes_pasted_code() {
-        assert_eq!(tokens_of("RwLock::new(Arc::new(x))"), vec!["rwlock", "new", "arc", "new", "x"]);
+        assert_eq!(
+            tokens_of("RwLock::new(Arc::new(x))"),
+            vec!["rwlock", "new", "arc", "new", "x"]
+        );
         assert!(tokens_of(":::").is_empty());
     }
 

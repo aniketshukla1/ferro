@@ -19,6 +19,22 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub no_lsp: bool,
 
+    /// Disable git awareness (status badges, diffs).
+    #[arg(long, default_value_t = false)]
+    pub no_git: bool,
+
+    /// Suppress startup narration.
+    #[arg(long, default_value_t = false)]
+    pub quiet: bool,
+
+    /// Verbose logging (request timing, agent steps).
+    #[arg(long, default_value_t = false)]
+    pub verbose: bool,
+
+    /// Disable ANSI colors in terminal output.
+    #[arg(long, default_value_t = false)]
+    pub no_color: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

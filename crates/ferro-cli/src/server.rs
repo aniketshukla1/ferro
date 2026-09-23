@@ -16,8 +16,15 @@ use ferro_core::Index;
 #[folder = "../../web/"]
 struct Web;
 
-pub async fn serve(state: Arc<Index>, addr: &str) {
-    let app = Router::new()
+pub async fn serve(
+    state: Arc<Index>,
+    host: &str,
+    port: u16,
+    no_git: bool,
+    narrate: bool,
+    no_open: bool,
+) {
+    let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/stats", get(stats))
         .route("/api/files", get(files))
@@ -27,14 +34,36 @@ pub async fn serve(state: Arc<Index>, addr: &str) {
         .route("/api/file-meta", get(file_meta))
         .route("/api/file-window", get(file_window))
         .route("/api/highlight", get(highlight))
-        .route("/api/git-status", get(git_status))
-        .route("/api/diff", get(diff))
-        .route("/api/ask", post(ask))
+        .route("/api/ask", post(ask));
+    if !no_git {
+        app = app
+            .route("/api/git-status", get(git_status))
+            .route("/api/diff", get(diff));
+    }
+    let app = app
         .fallback(static_file)
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state.clone());
 
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
+    let listener = tokio::net::TcpListener::bind(format!("{host}:{port}"))
+        .await
+        .expect("bind");
+    let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    let host_out = if host == "0.0.0.0" { "127.0.0.1" } else { host };
+    if narrate {
+        tracing::info!(
+            "ferro serving {} on http://{}:{}/",
+            state.root().display(),
+            host_out,
+            bound
+        );
+        println!("ferro http://{}:{}/", host_out, bound);
+    }
+
+    if !no_open {
+        let _ = open::that(format!("http://127.0.0.1:{bound}/"));
+    }
+
     axum::serve(listener, app).await.expect("serve");
 }
 
