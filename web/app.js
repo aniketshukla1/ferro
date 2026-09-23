@@ -201,6 +201,7 @@ function renderSidebar(list) {
 
 /* ---------- tabs ---------- */
 let tabs = [];
+let closedStack = [];
 const tabsEl = $('tabs');
 function renderTabs() {
   tabsEl.hidden = tabs.length === 0;
@@ -224,11 +225,37 @@ function renderTabs() {
 }
 function closeTab(p) {
   tabs = tabs.filter(t => t !== p);
+  closedStack.push(p);
+  if (closedStack.length > 25) closedStack.shift();
   renderTabs();
   if (p === currentPath) {
-    if (tabs.length) openFile(tabs[tabs.length - 1]);
+    if (tabs.length) openFile(tabs[tabs.length - 1], true);
     else showHome();
   }
+}
+function reopenTab() {
+  const p = closedStack.pop();
+  if (p) openFile(p);
+}
+function cycleTab(dir) {
+  if (tabs.length < 2 || !currentPath) return;
+  const i = tabs.indexOf(currentPath);
+  openFile(tabs[(i + dir + tabs.length) % tabs.length]);
+}
+
+/* ---------- nav history ---------- */
+let histBack = [], histFwd = [];
+function pushHistory(prev) {
+  if (prev) { histBack.push(prev); if (histBack.length > 50) histBack.shift(); }
+  histFwd = [];
+}
+function goHistory(dir) {
+  const from = dir < 0 ? histBack : histFwd;
+  const to = dir < 0 ? histFwd : histBack;
+  const dest = from.pop();
+  if (!dest) return;
+  if (currentPath) to.push(currentPath);
+  openFile(dest, true);
 }
 
 function parseGitStatus(text) {
@@ -392,12 +419,15 @@ async function showDiff() {
   currentPath = null; status();
 }
 
-async function openFile(path) {
+async function openFile(path, fromHistory) {
+  if (currentPath && currentPath !== path && !fromHistory) pushHistory(currentPath);
   currentPath = path;
   if (!tabs.includes(path)) { tabs.push(path); if (tabs.length > 10) tabs.shift(); }
   renderTabs();
   showFileMode();
   cur.path = path; cur.cache.clear(); cur.pending.clear();
+  wrapCache = null;
+  viewport.classList.remove('static');
   renderSidebar(allFiles);
   let meta;
   try { meta = await apiMeta(path); }
@@ -463,6 +493,10 @@ function lineAt(n) {
 
 function paint() {
   if (cur.mode !== 'file') return;
+  if (document.body.classList.contains('wrap') && cur.total <= 2000 && wrapCache) {
+    renderWrapped();
+    return;
+  }
   const first = Math.max(1, Math.floor(viewport.scrollTop / ROW_H) + 1);
   const visible = Math.ceil(viewport.clientHeight / ROW_H) + 1;
   const from = Math.max(1, first - OVERSCAN), to = Math.min(cur.total, first + visible + OVERSCAN);
@@ -470,16 +504,99 @@ function paint() {
   const frag = document.createDocumentFragment();
   for (let n = from; n <= to; n++) {
     const d = document.createElement('div');
-    d.className = 'row';
+    d.className = 'row' + (n === selectedLine && cur.path === selectedFile ? ' cur-line' : '');
     d.style.top = (n - 1) * ROW_H + 'px';
     const l = lineAt(n);
     d.innerHTML = `<span class="ln">${n}</span><span>${l ? l.html : ''}</span>`;
+    d.onclick = () => { selectedFile = cur.path; selectedLine = n; paint(); };
     frag.appendChild(d);
   }
   rowsEl.appendChild(frag);
   $('st-line').textContent = 'Ln ' + first.toLocaleString() + ' / ' + cur.total.toLocaleString();
   ensureAround(first - 1);
 }
+
+/* ---------- selection, wrap, find ---------- */
+let selectedFile = null, selectedLine = 0;
+let wrapCache = null;
+
+async function renderWrapped() {
+  if (!wrapCache) {
+    try {
+      const t = await apiFile(cur.path);
+      wrapCache = String(t).split('\n');
+    } catch { wrapCache = []; }
+  }
+  viewport.classList.add('static');
+  rowsEl.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  wrapCache.slice(0, 2000).forEach((text, i) => {
+    const n = i + 1;
+    const d = document.createElement('div');
+    d.className = 'row' + (n === selectedLine && cur.path === selectedFile ? ' cur-line' : '');
+    d.innerHTML = `<span class="ln">${n}</span><span>${esc(text)}</span>`;
+    d.onclick = () => { selectedFile = cur.path; selectedLine = n; renderWrapped(); };
+    frag.appendChild(d);
+  });
+  rowsEl.appendChild(frag);
+}
+function toggleWrap() {
+  document.body.classList.toggle('wrap');
+  wrapCache = null;
+  viewport.classList.remove('static');
+  if (!document.body.classList.contains('wrap')) { paint(); return; }
+  if (cur.mode !== 'file') return;
+  if (cur.total > 2000) {
+    document.body.classList.remove('wrap');
+    $('st-line').textContent = 'wrap off for large files (>2000 lines)';
+    return;
+  }
+  renderWrapped();
+}
+
+const findbar = $('findbar'), findInput = $('find-input'), findCount = $('find-count');
+let findLines = [], findIx = -1;
+async function openFind() {
+  if (cur.mode !== 'file' || !cur.path) return;
+  findbar.hidden = false;
+  findInput.value = '';
+  findCount.textContent = '';
+  findLines = []; findIx = -1;
+  setTimeout(() => findInput.focus(), 0);
+}
+async function runFind() {
+  const query = findInput.value;
+  findLines = []; findIx = -1;
+  if (!query) { findCount.textContent = ''; paint(); return; }
+  let text = '';
+  try {
+    if (invoke) text = await invoke('read_file', { path: cur.path });
+    else text = await (await fetch('/api/file?path=' + encodeURIComponent(cur.path))).text();
+  } catch { findCount.textContent = 'err'; return; }
+  const ql = query.toLowerCase();
+  text.split('\n').forEach((line, i) => {
+    if (line.toLowerCase().includes(ql)) findLines.push(i + 1);
+  });
+  findCount.textContent = findLines.length ? `1/${findLines.length}` : '0';
+  if (findLines.length) {
+    findIx = 0;
+    jumpFind();
+  }
+}
+function jumpFind() {
+  if (!findLines.length) return;
+  const n = findLines[findIx];
+  findCount.textContent = `${findIx + 1}/${findLines.length}`;
+  selectedFile = cur.path; selectedLine = n;
+  ensureAround(n - 1).then(paint);
+  viewport.scrollTop = Math.max(0, (n - 6) * ROW_H);
+  paint();
+}
+findInput.addEventListener('input', () => { clearTimeout(findInput._d); findInput._d = setTimeout(runFind, 120); });
+findInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); if (findLines.length) { findIx = (findIx + (e.shiftKey ? -1 : 1) + findLines.length) % findLines.length; jumpFind(); } }
+  else if (e.key === 'Escape') { findbar.hidden = true; selectedLine = 0; paint(); }
+});
 
 let scrollRaf = false, paintQueued = false;
 viewport.addEventListener('scroll', () => {
@@ -727,7 +844,18 @@ reindexBtn.onclick = async () => { await apiReindex(); await boot(true); };
 
 document.addEventListener('keydown', (e) => {
   const mod = e.ctrlKey || e.metaKey;
-  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); pal.hidden ? openPalette() : closePalette(); }
+  const k = e.key.toLowerCase();
+  if (mod && e.shiftKey && k === 't') { e.preventDefault(); reopenTab(); }
+  else if (mod && e.shiftKey && k === 'r') { e.preventDefault(); apiReindex().then(() => boot(true)); }
+  else if (mod && e.key === 'Tab') { e.preventDefault(); cycleTab(e.shiftKey ? -1 : 1); }
+  else if (e.altKey && /^[1-9]$/.test(e.key)) { e.preventDefault(); const t = tabs[+e.key - 1]; if (t) openFile(t); }
+  else if (mod && k === 'b') { e.preventDefault(); document.body.classList.toggle('no-side'); }
+  else if (mod && k === 'g') { e.preventDefault(); openPalette(':'); }
+  else if (mod && k === 'f') { e.preventDefault(); openFind(); }
+  else if (e.altKey && k === 'z') { e.preventDefault(); toggleWrap(); }
+  else if (e.altKey && !mod && e.key === 'ArrowLeft') { e.preventDefault(); goHistory(-1); }
+  else if (e.altKey && !mod && e.key === 'ArrowRight') { e.preventDefault(); goHistory(1); }
+  else if (mod && k === 'k') { e.preventDefault(); pal.hidden ? openPalette() : closePalette(); }
   else if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); pal.hidden ? openPalette() : closePalette(); }
   else if (e.key === 'Escape' && !pal.hidden) closePalette();
   else if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); showDiff(); }
@@ -760,6 +888,7 @@ async function boot(reset) {
   status();
   setTimeout(bootStats, 800);
   if (!invoke && openBtn) openBtn.style.display = 'none';
-  showHome();
+  if (reset && currentPath) openFile(currentPath);
+  else showHome();
 }
 boot(false);
