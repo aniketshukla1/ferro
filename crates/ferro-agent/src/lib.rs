@@ -11,5 +11,5 @@ pub use patch::{normalize, revert, touched_files, ApplyReport};
 pub use policy::{Access, Sandbox, SandboxError};
 pub use provider::{LlmClient, OpenAiCompat, ProviderError};
 pub use review::{drafts, submit as submit_review, Draft, ReviewStore};
-pub use session::{log_ask, new_id};
+pub use session::{log_ask, log_ask_in, new_id, session_dir};
 pub use tools::{dispatch, registry, AccessLabel, ToolCall, ToolDef, ToolResult};

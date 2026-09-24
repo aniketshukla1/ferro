@@ -1,4 +1,5 @@
-//! Persistent file-list cache: `{root}/.ferro/index.db` (sqlite).
+//! Persistent file-list cache under the ferro cache dir
+//! (`cache_dir/workspaces/<key>/files.db`), never inside the repo.
 //! Instant cold start: load cache synchronously in `Index::new`,
 //! then background `rebuild()` re-walks and saves.
 //! Invalidation: mtime (secs) + size per file; root walk still authoritative.
@@ -6,10 +7,11 @@
 use std::path::Path;
 use std::time::SystemTime;
 
+use crate::dirs::FerroDirs;
 use crate::index::FileEntry;
 
-fn db_path(root: &Path) -> std::path::PathBuf {
-    root.join(".ferro").join("index.db")
+fn db_path(dirs: &FerroDirs, key: &str) -> std::path::PathBuf {
+    dirs.workspace_cache_dir(key).join("files.db")
 }
 
 fn mtime_secs(p: &Path) -> i64 {
@@ -21,8 +23,8 @@ fn mtime_secs(p: &Path) -> i64 {
         .unwrap_or(0)
 }
 
-pub fn load(root: &Path) -> Option<(Vec<FileEntry>, u128)> {
-    let db = db_path(root);
+pub fn load_in(dirs: &FerroDirs, key: &str) -> Option<(Vec<FileEntry>, u128)> {
+    let db = db_path(dirs, key);
     if !db.exists() {
         return None;
     }
@@ -55,12 +57,12 @@ pub fn load(root: &Path) -> Option<(Vec<FileEntry>, u128)> {
     Some((out, indexed_ms))
 }
 
-pub fn save(root: &Path, entries: &[FileEntry], indexed_ms: u128) {
-    let dir = root.join(".ferro");
+pub fn save_in(root: &Path, dirs: &FerroDirs, key: &str, entries: &[FileEntry], indexed_ms: u128) {
+    let dir = dirs.workspace_cache_dir(key);
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let db = db_path(root);
+    let db = db_path(dirs, key);
     let Ok(conn) = rusqlite::Connection::open(&db) else {
         return;
     };
@@ -94,6 +96,13 @@ mod tests {
     #[test]
     fn roundtrip() {
         let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let dirs = FerroDirs::new(
+            home.path().join("c"),
+            home.path().join("s"),
+            home.path().join("h"),
+        );
+        let key = dirs.workspace_key(dir.path());
         let fp = dir.path().join("a.rs");
         std::fs::File::create(&fp)
             .unwrap()
@@ -103,8 +112,10 @@ mod tests {
             path: "a.rs".into(),
             size: 11,
         }];
-        save(dir.path(), &entries, 7);
-        let (back, ms) = load(dir.path()).unwrap();
+        save_in(dir.path(), &dirs, &key, &entries, 7);
+        // Nothing may be written into the repo itself.
+        assert!(!dir.path().join(".ferro").exists());
+        let (back, ms) = load_in(&dirs, &key).unwrap();
         assert_eq!(ms, 7);
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].path, "a.rs");

@@ -1,10 +1,13 @@
 //! Session log: every ask + applied patch appended as Markdown under
-//! `{root}/.ferro/sessions/<id>.md`. The training signal and the audit trail.
+//! `state_dir/workspaces/<key>/sessions/<id>.md`. The audit trail.
+//! Nothing is written inside the user's repository.
 
 use crate::{ApplyReport, Transcript};
 
 pub fn session_dir(root: &std::path::Path) -> std::path::PathBuf {
-    root.join(".ferro").join("sessions")
+    let dirs = ferro_core::dirs::FerroDirs::resolve();
+    let key = dirs.workspace_key(root);
+    dirs.workspace_state_dir(&key).join("sessions")
 }
 
 pub fn new_id() -> String {
@@ -22,7 +25,21 @@ pub fn log_ask(
     transcript: &Transcript,
     applied: &[ApplyReport],
 ) -> Result<std::path::PathBuf, String> {
-    let dir = session_dir(root);
+    let dirs = ferro_core::dirs::FerroDirs::resolve();
+    log_ask_in(root, &dirs, id, question, transcript, applied)
+}
+
+pub fn log_ask_in(
+    root: &std::path::Path,
+    dirs: &ferro_core::dirs::FerroDirs,
+    id: &str,
+    question: &str,
+    transcript: &Transcript,
+    applied: &[ApplyReport],
+) -> Result<std::path::PathBuf, String> {
+    let dir = dirs
+        .workspace_state_dir(&dirs.workspace_key(root))
+        .join("sessions");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{id}.md"));
     let mut md = String::from("# Ferro session\n\n");
@@ -70,15 +87,22 @@ mod tests {
     #[test]
     fn writes_markdown_log() {
         let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let dirs = ferro_core::dirs::FerroDirs::new(
+            home.path().join("c"),
+            home.path().join("s"),
+            home.path().join("h"),
+        );
         let t = Transcript {
             steps: vec![],
             final_text: "hello".into(),
             truncated: false,
         };
-        let p = log_ask(dir.path(), "test-1", "hi?", &t, &[]).unwrap();
+        let p = log_ask_in(dir.path(), &dirs, "test-1", "hi?", &t, &[]).unwrap();
         let body = std::fs::read_to_string(&p).unwrap();
         assert!(body.contains("## Q"));
         assert!(body.contains("hello"));
-        assert!(p.to_string_lossy().contains(".ferro/sessions/test-1.md"));
+        assert!(p.to_string_lossy().contains("sessions/test-1.md"));
+        assert!(!dir.path().join(".ferro").exists());
     }
 }

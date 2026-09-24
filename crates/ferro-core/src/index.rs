@@ -29,23 +29,32 @@ pub struct FileMeta {
     pub total_lines: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Index {
     root: PathBuf,
     files: RwLock<Vec<FileEntry>>,
     indexed_ms: RwLock<u128>,
     pr: RwLock<Option<crate::pr::PrCtx>>,
+    dirs: crate::dirs::FerroDirs,
+    key: String,
 }
 impl Index {
     pub fn new(root: PathBuf) -> Self {
+        Self::with_dirs(root, crate::dirs::FerroDirs::resolve())
+    }
+
+    pub fn with_dirs(root: PathBuf, dirs: crate::dirs::FerroDirs) -> Self {
         let root = root.canonicalize().unwrap_or(root);
+        let key = dirs.workspace_key(&root);
         // Instant cold start: serve cached list immediately, rebuild() refreshes.
-        let (files, indexed_ms) = crate::cache::load(&root).unwrap_or_default();
+        let (files, indexed_ms) = crate::cache::load_in(&dirs, &key).unwrap_or_default();
         Self {
             root,
             files: RwLock::new(files),
             indexed_ms: RwLock::new(indexed_ms),
             pr: RwLock::new(None),
+            dirs,
+            key,
         }
     }
 
@@ -83,7 +92,7 @@ impl Index {
         let ms = t0.elapsed().as_millis();
         *self.files.write().unwrap() = files.clone();
         *self.indexed_ms.write().unwrap() = ms;
-        crate::cache::save(&root, &files, ms);
+        crate::cache::save_in(&root, &self.dirs, &self.key, &files, ms);
         tracing::info!(
             "ferro indexed {} files in {}ms",
             self.files.read().unwrap().len(),

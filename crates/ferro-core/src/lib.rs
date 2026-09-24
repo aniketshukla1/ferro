@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod dirs;
 pub mod fuzzy;
 pub mod git;
 pub mod highlight;
