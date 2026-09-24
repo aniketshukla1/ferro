@@ -61,26 +61,17 @@ async fn serve(cli: Cli) -> AnyhowResult {
             return serve_pr(cli, info).await;
         }
     }
-    // file:line launch: serve the containing dir, open the file at the line.
+    // file:line launch: serve the repository root, open the file at the line.
     let mut initial: Option<(String, usize)> = None;
     let root = match cli.path.clone() {
         Some(p) => {
             let s = p.to_string_lossy().to_string();
-            if let Some((f, l)) = split_file_line(&s) {
-                let fp = std::path::Path::new(&f);
-                let dir = fp
-                    .parent()
-                    .filter(|d| !d.as_os_str().is_empty())
-                    .map(|d| d.to_path_buf())
-                    .unwrap_or_else(|| PathBuf::from("."));
-                let name = fp
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or(f);
-                initial = Some((name, l));
-                dir.canonicalize().unwrap_or_else(|_| PathBuf::from("."))
-            } else {
-                p.canonicalize().unwrap_or_else(|_| PathBuf::from("."))
+            match launch_target(&s) {
+                (r, Some((rel, l))) => {
+                    initial = Some((rel, l));
+                    r
+                }
+                (r, None) => r,
             }
         }
         None => PathBuf::from(".")
@@ -123,6 +114,79 @@ fn split_file_line(s: &str) -> Option<(String, usize)> {
     } else {
         None
     }
+}
+
+/// Resolve a CLI target to `(root, initial file:line)`.
+/// Files serve from the git toplevel when inside a repo (D22); otherwise
+/// from the cwd when inside it, else from the parent directory.
+fn launch_target(s: &str) -> (PathBuf, Option<(String, usize)>) {
+    let (file_part, line) = match split_file_line(s) {
+        Some((f, l)) => (f, Some(l)),
+        None => (s.to_string(), None),
+    };
+    let fp = PathBuf::from(&file_part);
+    if fp.is_dir() {
+        return (
+            fp.canonicalize().unwrap_or_else(|_| PathBuf::from(".")),
+            None,
+        );
+    }
+    // Anchor: the file's directory if the file exists, else the cwd.
+    let anchor = if fp.is_file() {
+        fp.parent()
+            .map(|d| d.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        PathBuf::from(".")
+    };
+    let toplevel = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&anchor)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|t| !t.is_empty())
+        .map(PathBuf::from);
+    if let Some(top) = toplevel {
+        let top_canon = top.canonicalize().unwrap_or(top);
+        if let Some(rel) = fp.canonicalize().ok().and_then(|abs| {
+            abs.strip_prefix(&top_canon)
+                .ok()
+                .map(|r| r.to_string_lossy().to_string())
+        }) {
+            if let Some(l) = line {
+                return (top_canon, Some((rel, l)));
+            }
+            // A bare existing file inside a repo still serves the repo root.
+            return (top_canon, None);
+        }
+    }
+    if let (Ok(cwd), Ok(abs)) = (std::env::current_dir(), fp.canonicalize()) {
+        if let Ok(cwd_canon) = cwd.canonicalize() {
+            if let Ok(rel) = abs.strip_prefix(&cwd_canon) {
+                return (
+                    cwd_canon,
+                    line.map(|l| (rel.to_string_lossy().to_string(), l)),
+                );
+            }
+        }
+    }
+    // Fallback: parent directory, bare filename (px0 parity).
+    let dir = fp
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let name = fp
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or(file_part);
+    (
+        dir.canonicalize().unwrap_or_else(|_| PathBuf::from(".")),
+        line.map(|l| (name, l)),
+    )
 }
 
 async fn serve_pr(cli: Cli, info: ferro_core::pr::PrInfo) -> AnyhowResult {
@@ -283,5 +347,30 @@ mod tests {
         assert_eq!(split_file_line("src/main.rs"), None);
         assert_eq!(split_file_line("nope/nothing.rs:10"), None);
         assert_eq!(split_file_line("README.md:0"), None);
+    }
+
+    #[test]
+    fn launch_prefers_git_toplevel() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        std::fs::create_dir_all(r.join("sub")).unwrap();
+        std::fs::write(r.join("sub/f.rs"), "x\n").unwrap();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(r)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let rel = format!("{}/sub/f.rs:3", r.display());
+        let (root, initial) = launch_target(&rel);
+        assert_eq!(root, r.canonicalize().unwrap());
+        assert_eq!(initial, Some(("sub/f.rs".into(), 3)));
     }
 }

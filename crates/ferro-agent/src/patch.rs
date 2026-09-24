@@ -51,24 +51,141 @@ pub fn normalize(patch: &str) -> String {
     out
 }
 
-/// Paths a unified diff touches, parsed from `+++ b/<path>` lines.
-/// `/dev/null` targets (deletions) are skipped — deletions need --allow-destructive.
-pub fn touched_files(patch: &str) -> Vec<String> {
-    let mut out = Vec::new();
+/// One file section of a unified diff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange {
+    /// New-side path (`b/…`); for deletions, the removed path.
+    pub path: String,
+    /// Old-side path for renames.
+    pub old_path: Option<String>,
+    pub kind: ChangeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    Modify,
+    Create,
+    Delete,
+    Rename,
+}
+
+/// Parse every `diff --git` section. Deletions (`+++ /dev/null`) and renames
+/// are reported — they require `allow_destructive` (D21).
+pub fn changes(patch: &str) -> Vec<FileChange> {
+    let mut out: Vec<FileChange> = Vec::new();
+    let mut cur: Option<FileChange> = None;
+    let mut rename_from: Option<String> = None;
+    let flush = |cur: &mut Option<FileChange>, out: &mut Vec<FileChange>| {
+        if let Some(c) = cur.take() {
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    };
     for line in patch.lines() {
-        let Some(rest) = line.strip_prefix("+++ ") else {
-            continue;
-        };
-        let path = rest.split_whitespace().next().unwrap_or("");
-        let path = path.strip_prefix("b/").unwrap_or(path);
-        if path == "/dev/null" || path.is_empty() {
+        if line.starts_with("diff --git ") {
+            flush(&mut cur, &mut out);
+            rename_from = None;
             continue;
         }
-        if !out.iter().any(|p: &String| p == path) {
-            out.push(path.to_string());
+        if let Some(rest) = line.strip_prefix("rename from ") {
+            rename_from = Some(rest.trim().to_string());
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("rename to ") {
+            let to = rest.trim().to_string();
+            cur = Some(FileChange {
+                path: to,
+                old_path: rename_from.take(),
+                kind: ChangeKind::Rename,
+            });
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            let target = rest.split_whitespace().next().unwrap_or("");
+            if target == "/dev/null" {
+                // Deletion: path comes from the `--- a/…` line.
+                if let Some(c) = cur.as_mut() {
+                    c.kind = ChangeKind::Delete;
+                } else {
+                    cur = Some(FileChange {
+                        path: String::new(),
+                        old_path: None,
+                        kind: ChangeKind::Delete,
+                    });
+                }
+            } else {
+                let path = target.strip_prefix("b/").unwrap_or(target).to_string();
+                match cur.as_mut() {
+                    Some(c) if c.path.is_empty() => {
+                        c.path = path;
+                    }
+                    // Rename sections also carry ---/+++ lines; keep the Rename.
+                    Some(c) if c.kind == ChangeKind::Rename => {}
+                    _ => {
+                        flush(&mut cur, &mut out);
+                        cur = Some(FileChange {
+                            path,
+                            old_path: None,
+                            kind: ChangeKind::Modify,
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("--- ") {
+            let target = rest.split_whitespace().next().unwrap_or("");
+            if target == "/dev/null" {
+                // Creation: path comes from the `+++ b/…` line.
+                if cur.is_none() {
+                    cur = Some(FileChange {
+                        path: String::new(),
+                        old_path: None,
+                        kind: ChangeKind::Create,
+                    });
+                } else if let Some(c) = cur.as_mut() {
+                    if c.kind == ChangeKind::Modify {
+                        c.kind = ChangeKind::Create;
+                    }
+                }
+            } else {
+                let path = target.strip_prefix("a/").unwrap_or(target).to_string();
+                // Rename sections carry their own paths; don't overwrite them.
+                if cur.is_none() {
+                    cur = Some(FileChange {
+                        path: path.clone(),
+                        old_path: None,
+                        kind: ChangeKind::Modify,
+                    });
+                }
+            }
+            continue;
+        }
+    }
+    flush(&mut cur, &mut out);
+    out.retain(|c| !c.path.is_empty());
+    out
+}
+
+/// Paths a unified diff touches (all kinds, deduplicated).
+pub fn touched_files(patch: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for c in changes(patch) {
+        for p in [c.old_path, Some(c.path)].into_iter().flatten() {
+            if !p.is_empty() && !out.contains(&p) {
+                out.push(p);
+            }
         }
     }
     out
+}
+
+/// True when the patch deletes or renames files (needs `allow_destructive`).
+pub fn needs_destructive(patch: &str) -> bool {
+    changes(patch)
+        .iter()
+        .any(|c| matches!(c.kind, ChangeKind::Delete | ChangeKind::Rename))
 }
 
 pub fn apply(
@@ -79,11 +196,16 @@ pub fn apply(
     if patch.trim().is_empty() {
         return Err("empty patch".into());
     }
-    let files = touched_files(patch);
-    if files.is_empty() {
-        return Err("no files found in patch (need `+++ b/<path>` lines)".into());
+    let file_changes = changes(patch);
+    if file_changes.is_empty() {
+        return Err("no files found in patch (need `diff --git` sections)".into());
     }
+    if needs_destructive(patch) && !sandbox.allow_destructive {
+        return Err("patch deletes or renames files (restart with --allow-destructive)".into());
+    }
+    let files = touched_files(patch);
     for f in &files {
+        // Deletions resolve against the old path, which must exist.
         sandbox
             .resolve(f, Access::Write)
             .map_err(|e| format!("{f}: {e}"))?;
@@ -174,6 +296,70 @@ mod tests {
     fn parses_touched() {
         let f = touched_files(PATCH);
         assert_eq!(f, vec!["a.txt", "new.txt"]);
+    }
+
+    const DEL_PATCH: &str = concat!(
+        "diff --git a/gone.txt b/gone.txt\n",
+        "deleted file mode 100644\n",
+        "index 257cc56..0000000\n",
+        "--- a/gone.txt\n",
+        "+++ /dev/null\n",
+        "@@ -1 +0,0 @@\n",
+        "-bye\n",
+    );
+
+    const RENAME_PATCH: &str = concat!(
+        "diff --git a/old.txt b/new2.txt\n",
+        "similarity index 90%\n",
+        "rename from old.txt\n",
+        "rename to new2.txt\n",
+        "--- a/old.txt\n",
+        "+++ b/new2.txt\n",
+        "@@ -1 +1 @@\n",
+        "-hi\n",
+        "+yo\n",
+    );
+
+    #[test]
+    fn parses_delete_and_rename() {
+        let d = changes(DEL_PATCH);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].kind, ChangeKind::Delete);
+        assert_eq!(d[0].path, "gone.txt");
+        assert!(needs_destructive(DEL_PATCH));
+        let r = changes(RENAME_PATCH);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].kind, ChangeKind::Rename);
+        assert_eq!(r[0].old_path.as_deref(), Some("old.txt"));
+        assert!(needs_destructive(RENAME_PATCH));
+        assert!(!needs_destructive(PATCH));
+    }
+
+    #[test]
+    fn delete_needs_destructive_flag() {
+        let dir = git_repo();
+        std::fs::write(dir.path().join("gone.txt"), "bye\n").unwrap();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["add", "."])
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["commit", "-m", "add"])
+            .status()
+            .unwrap()
+            .success());
+        let sb = Sandbox::readonly(dir.path().to_path_buf());
+        let mut sb = sb;
+        sb.allow_write = true;
+        assert!(apply(dir.path(), &sb, DEL_PATCH).is_err());
+        sb.allow_destructive = true;
+        apply(dir.path(), &sb, DEL_PATCH).unwrap();
+        assert!(!dir.path().join("gone.txt").exists());
     }
 
     #[test]

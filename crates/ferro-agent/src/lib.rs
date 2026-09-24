@@ -7,7 +7,10 @@ pub mod session;
 pub mod tools;
 
 pub use agent::{Agent, AgentEvent, Step, Transcript};
-pub use patch::{normalize, revert, touched_files, ApplyReport};
+pub use patch::{
+    changes, needs_destructive, normalize, revert, touched_files, ApplyReport, ChangeKind,
+    FileChange,
+};
 pub use policy::{Access, Sandbox, SandboxError};
 pub use provider::{LlmClient, OpenAiCompat, ProviderError};
 pub use review::{drafts, submit as submit_review, Draft, ReviewStore};
