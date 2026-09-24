@@ -51,31 +51,31 @@ impl Sandbox {
         }
     }
 
-    /// Resolve a workspace-relative path. Rejects traversal and protected dirs for writes.
+    /// Resolve a workspace-relative path through `ferro_core::paths`.
+    /// Keeps the extra protected list (.ferro, target, node_modules) for
+    /// writes on top of the core `.git` refusal.
     pub fn resolve(&self, rel: &str, access: Access) -> Result<PathBuf, SandboxError> {
         self.check(access)?;
-        let joined = self.root.join(rel.trim_start_matches('/'));
-        // Lexical normalize, then require prefix on canonical root.
-        let mut norm = PathBuf::new();
-        for c in joined.components() {
-            use std::path::Component;
-            match c {
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    norm.pop();
-                }
-                other => norm.push(other.as_os_str()),
-            }
-        }
-        if norm != self.root && !norm.starts_with(&self.root) {
-            return Err(SandboxError::EscapesRoot);
-        }
+        // Canonical root: the core resolver returns canonical paths, so the
+        // protected-dir check below must compare against the canonical root.
+        let root = self
+            .root
+            .canonicalize()
+            .unwrap_or_else(|_| self.root.clone());
+        let core_access = match access {
+            Access::Read => ferro_core::paths::Access::Read,
+            Access::Write | Access::Destructive => ferro_core::paths::Access::Write,
+        };
+        let norm = ferro_core::paths::resolve(&root, rel, core_access).map_err(|e| match e {
+            ferro_core::paths::PathError::Protected => SandboxError::Protected(".git".into()),
+            _ => SandboxError::EscapesRoot,
+        })?;
         if matches!(access, Access::Write | Access::Destructive) {
             let rel_norm = norm
-                .strip_prefix(&self.root)
+                .strip_prefix(&root)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
-            for prot in [".git", ".ferro", "target", "node_modules"] {
+            for prot in [".ferro", "target", "node_modules"] {
                 if rel_norm == prot || rel_norm.starts_with(&format!("{prot}/")) {
                     return Err(SandboxError::Protected(prot.into()));
                 }

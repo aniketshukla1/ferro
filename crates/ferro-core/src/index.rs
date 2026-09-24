@@ -92,26 +92,9 @@ impl Index {
     }
 
     pub fn safe_join(&self, rel: &str) -> Option<PathBuf> {
-        // Reject traversal: must stay under root.
-        let p = self.root.join(rel.trim_start_matches('/'));
-        let canonical_root = self
-            .root
-            .canonicalize()
-            .unwrap_or_else(|_| self.root.clone());
-        let canonical_p = if p.is_absolute() {
-            p
-        } else {
-            canonical_root.join(rel)
-        };
-        // Normalize lexically without hitting disk for missing files.
-        let joined = self.root.join(rel);
-        let normalized = normalize(&joined);
-        if normalized.starts_with(&canonical_root) || normalized == canonical_root {
-            Some(normalized)
-        } else {
-            let _ = canonical_p;
-            None
-        }
+        // Legacy adapter: strip a leading slash, then resolve strictly.
+        let rel = rel.trim_start_matches('/');
+        crate::paths::resolve(self.root(), rel, crate::paths::Access::Read).ok()
     }
 
     /// O(n) streaming window read. Never loads the whole file into the UI.
@@ -169,21 +152,6 @@ impl Index {
             total_lines,
         })
     }
-}
-
-fn normalize(p: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
 }
 
 fn walk(root: &Path) -> Vec<FileEntry> {

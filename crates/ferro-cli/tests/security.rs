@@ -225,3 +225,38 @@ async fn raw_svg_has_sandbox_csp_and_inline_disposition() {
         .unwrap();
     assert!(cd.starts_with("inline;"), "{cd}");
 }
+
+#[tokio::test]
+#[cfg(unix)]
+async fn symlink_escape_is_403() {
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), "s3cret").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("inside.txt"), "in").unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.txt"),
+        dir.path().join("evil.txt"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(dir.path().join("inside.txt"), dir.path().join("ok.txt")).unwrap();
+    let state = Arc::new(ferro_core::Index::new(dir.path().to_path_buf()));
+    let guard = Arc::new(GuardConfig::new(Some(TOKEN.into()), 7778, vec![], false));
+    let last = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let app = server::router(state, guard, last, true);
+    let get = |path: &str| {
+        req("GET", &format!("/api/file?path={path}"))
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(
+        status(app.clone(), get("evil.txt")).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(status(app.clone(), get("ok.txt")).await, StatusCode::OK);
+    // Traversal over HTTP is also 403, not a silent miss.
+    assert_eq!(
+        status(app, get("../secret.txt")).await,
+        StatusCode::FORBIDDEN
+    );
+}
