@@ -10,6 +10,7 @@ COPY web ./web
 RUN cargo build --release -p ferro
 
 FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN useradd -m ferro
 COPY --from=build /build/target/release/ferro /usr/local/bin/ferro
 USER ferro

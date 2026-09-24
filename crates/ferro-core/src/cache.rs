@@ -49,6 +49,7 @@ pub fn load_in(dirs: &FerroDirs, key: &str) -> Option<(Vec<FileEntry>, u128)> {
 }
 
 pub fn save_in(root: &Path, dirs: &FerroDirs, key: &str, entries: &[FileEntry], indexed_ms: u128) {
+    let t0 = std::time::Instant::now();
     let dir = dirs.workspace_cache_dir(key);
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -73,6 +74,7 @@ pub fn save_in(root: &Path, dirs: &FerroDirs, key: &str, entries: &[FileEntry], 
             "INSERT OR REPLACE INTO meta(key,value) VALUES('indexed_ms',?1)",
             rusqlite::params![indexed_ms.to_string()],
         );
+        tracing::info!("cache save skipped (unchanged): {} rows", entries.len());
         return;
     }
     // One transaction for the whole replace (D10: was N autocommits).
@@ -98,6 +100,11 @@ pub fn save_in(root: &Path, dirs: &FerroDirs, key: &str, entries: &[FileEntry], 
         rusqlite::params![hash],
     );
     let _ = tx.commit();
+    tracing::info!(
+        "cache save: {} rows in {} ms",
+        entries.len(),
+        t0.elapsed().as_millis()
+    );
     let _ = root; // mtimes arrive via entries; root kept for API symmetry.
 }
 
