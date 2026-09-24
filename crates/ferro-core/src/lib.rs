@@ -8,5 +8,6 @@ pub mod paths;
 pub mod pr;
 pub mod search;
 pub mod settings;
+pub mod text;
 
 pub use index::{FileEntry, FileMeta, Index, Window, WindowLine};

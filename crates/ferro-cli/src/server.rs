@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
     middleware,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Extension, Json, Router,
 };
@@ -80,6 +80,9 @@ pub fn router(
         .layer(Extension(last_active))
         .layer(middleware::from_fn(crate::guard::guards))
         .layer(Extension(guard))
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(
+            panic_envelope,
+        ))
         .with_state(state)
 }
 
@@ -144,6 +147,19 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
 
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status":"ok","service":"ferro"}))
+}
+
+/// A panic anywhere in the stack becomes a 500 envelope, never a dropped
+/// connection (BACKEND.md § 4.4).
+fn panic_envelope(_err: Box<dyn std::any::Any + Send + 'static>) -> Response {
+    Response::builder()
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(axum::body::Body::from(
+            serde_json::json!({ "error": { "code": "internal", "message": "internal error" } })
+                .to_string(),
+        ))
+        .unwrap()
 }
 
 async fn track_activity(
@@ -252,7 +268,7 @@ async fn read_file(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl 
     match tokio::fs::read_to_string(&p).await {
         Ok(t) => {
             let out = if t.len() > 512 * 1024 {
-                t[..512 * 1024].to_string()
+                ferro_core::text::truncate_utf8(&t, 512 * 1024).to_string()
             } else {
                 t
             };

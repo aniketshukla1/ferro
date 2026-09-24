@@ -260,3 +260,25 @@ async fn symlink_escape_is_403() {
         StatusCode::FORBIDDEN
     );
 }
+
+#[tokio::test]
+async fn utf8_boundary_file_returns_valid_utf8() {
+    // 'é' (2 bytes) straddles the old 512 KiB slicing point: must not panic or truncate mid-char.
+    let mut bytes = vec![b'a'; 512 * 1024 - 1];
+    bytes.extend_from_slice("é".as_bytes());
+    bytes.extend_from_slice(b"tail");
+    let (app, _dir) = app_with_files(TOKEN, &[("uni.txt", &bytes)]);
+    let r = req("GET", "/api/file?path=uni.txt")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(r).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 2 * 1024 * 1024)
+        .await
+        .unwrap();
+    let s = std::str::from_utf8(&body).expect("response must be valid UTF-8");
+    // The é straddling the cap is backed off, never split: valid UTF-8, ≤ cap.
+    assert!(s.len() <= 512 * 1024, "{}", s.len());
+    assert!(s.ends_with('a'));
+}

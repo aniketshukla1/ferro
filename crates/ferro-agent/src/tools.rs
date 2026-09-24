@@ -51,7 +51,7 @@ impl ToolResult {
         const CAP: usize = 12 * 1024;
         if output.len() > CAP {
             Self {
-                output: output[..CAP].to_string(),
+                output: ferro_core::text::truncate_utf8(&output, CAP).to_string(),
                 truncated: true,
                 ok: true,
             }

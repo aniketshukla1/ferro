@@ -57,7 +57,7 @@ pub fn log_ask(
 fn trunc(s: &str) -> String {
     const CAP: usize = 8 * 1024;
     if s.len() > CAP {
-        format!("{}… (truncated)", &s[..CAP])
+        format!("{}… (truncated)", ferro_core::text::truncate_utf8(s, CAP))
     } else {
         s.to_string()
     }
