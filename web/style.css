@@ -132,6 +132,9 @@ body.no-side #sidebar { display:none; }
 #filebar-dirty { color:var(--yellow); }
 #ol-toggle { margin-left:auto; background:none; border:1px solid var(--border); color:var(--mut);
   border-radius:6px; cursor:pointer; font-size:12px; padding:1px 8px; }
+#ref-btn { background:none; border:1px solid var(--border); color:var(--mut);
+  border-radius:6px; cursor:pointer; font-size:12px; padding:1px 8px; }
+#ref-btn:hover { color:var(--acc); border-color:var(--acc); }
 #ol-toggle:hover { color:var(--acc); border-color:var(--acc); }
 #askpanel { position:absolute; inset:0; overflow:auto; background:var(--bg0); padding:16px 22px; z-index:5; }
 #askpanel[hidden] { display:none; }
@@ -220,6 +223,10 @@ body.wrap #viewport.static #spacer { height:auto !important; }
 #diffview[hidden] { display:none; }
 .d-file { border:1px solid var(--border); border-radius:10px; overflow:hidden; }
 .d-fhead { background:var(--bg1); padding:6px 12px; font-weight:600; font-family:inherit; }
+.d-fhead .link { cursor:pointer; }
+.d-fhead .link:hover { color:var(--acc); }
+.d-fjump { background:var(--bg1); color:var(--fg); border:1px solid var(--border);
+  border-radius:8px; padding:6px 10px; max-width:320px; }
 .d-hunk { color:var(--mut); padding:4px 12px 2px; font-size:11.5px; }
 .d-line { display:flex; white-space:pre; overflow-x:auto; padding:0 12px 0 0; }
 .d-line .g { width:34px; flex:none; text-align:right; color:var(--mut); opacity:.7; user-select:none; }

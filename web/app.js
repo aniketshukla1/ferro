@@ -561,13 +561,20 @@ function renderDiff(text) {
   const files = parseDiff(text);
   diffview.innerHTML = '';
   if (!files.length) { diffview.innerHTML = '<div class="d-empty">Working tree clean — no diff vs HEAD.</div>'; return; }
+  const jump = document.createElement('select');
+  jump.className = 'd-fjump';
+  jump.setAttribute('aria-label', 'Jump to file in diff');
+  jump.innerHTML = '<option value="">Jump to file…</option>' +
+    files.map(f => `<option value="${esc(f.file)}">${esc(f.file)}</option>`).join('');
+  diffview.appendChild(jump);
   const frag = document.createDocumentFragment();
   for (const f of files) {
     const box = document.createElement('div');
     box.className = 'd-file';
+    box.dataset.file = f.file;
     const adds = f.hunks.flatMap(h => h.lines).filter(l => l.t === 'add').length;
     const dels = f.hunks.flatMap(h => h.lines).filter(l => l.t === 'del').length;
-    box.innerHTML = `<div class="d-fhead">${esc(f.file)} <span style="color:var(--green)">+${adds}</span> <span style="color:var(--red)">−${dels}</span></div>`;
+    box.innerHTML = `<div class="d-fhead"><span class="link">${esc(f.file)}</span> <span style="color:var(--green)">+${adds}</span> <span style="color:var(--red)">−${dels}</span></div>`;
     for (const h of f.hunks) {
       const hd = document.createElement('div');
       hd.className = 'd-hunk'; hd.textContent = h.header;
@@ -583,6 +590,16 @@ function renderDiff(text) {
     frag.appendChild(box);
   }
   diffview.appendChild(frag);
+  diffview.querySelectorAll('.d-fhead .link').forEach(a => a.onclick = () => {
+    const file = a.closest('.d-file').dataset.file;
+    const target = diffview.querySelector(`.d-file[data-file="${CSS.escape(file)}"]`);
+    if (target) target.scrollIntoView({ block: 'start' });
+  });
+  const jump = diffview.querySelector('.d-fjump');
+  if (jump) jump.onchange = () => {
+    const t = diffview.querySelector(`.d-file[data-file="${CSS.escape(jump.value)}"]`);
+    if (t) t.scrollIntoView({ block: 'start' });
+  };
 }
 async function showDiff() {
   const t = await apiDiff().catch(e => String(e));
@@ -747,7 +764,7 @@ function selRef() {
     : `@${selectedFile}:${selStart}-${selEnd}`;
 }
 async function copyRef() {
-  const ref = selRef();
+  const ref = selRef() || (cur.path ? `@${cur.path}` : null);
   if (!ref) return;
   try { await navigator.clipboard.writeText(ref); } catch {}
   $('st-line').textContent = `copied ${ref}`;
@@ -1400,6 +1417,7 @@ async function openPr(url) {
 }
 if (openBtn) openBtn.onclick = pickFolder;
 $('ol-toggle').onclick = toggleOutline;
+$('ref-btn').onclick = copyRef;
 reindexBtn.onclick = async () => { await apiReindex(); await boot(true); };
 
 document.addEventListener('keydown', (e) => {
