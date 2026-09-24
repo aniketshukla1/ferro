@@ -595,9 +595,9 @@ function renderDiff(text) {
     const target = diffview.querySelector(`.d-file[data-file="${CSS.escape(file)}"]`);
     if (target) target.scrollIntoView({ block: 'start' });
   });
-  const jump = diffview.querySelector('.d-fjump');
-  if (jump) jump.onchange = () => {
-    const t = diffview.querySelector(`.d-file[data-file="${CSS.escape(jump.value)}"]`);
+  const jumpSel = diffview.querySelector('.d-fjump');
+  if (jumpSel) jumpSel.onchange = () => {
+    const t = diffview.querySelector(`.d-file[data-file="${CSS.escape(jumpSel.value)}"]`);
     if (t) t.scrollIntoView({ block: 'start' });
   };
 }
