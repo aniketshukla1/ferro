@@ -45,11 +45,124 @@ pub fn render_markdown(idx: &Index, rel: &str) -> Option<String> {
         return None;
     }
     let text = std::fs::read_to_string(&p).ok()?;
+    Some(render_markdown_text(&text))
+}
+
+/// Render + sanitize arbitrary markdown (comment previews, AI answers).
+pub fn render_markdown_text(text: &str) -> String {
     let opts = pulldown_cmark::Options::all();
-    let parser = pulldown_cmark::Parser::new_ext(&text, opts);
+    let parser = pulldown_cmark::Parser::new_ext(text, opts);
     let mut html = String::with_capacity(text.len());
     pulldown_cmark::html::push_html(&mut html, parser);
-    Some(html)
+    sanitize_html(&html)
+}
+
+/// Allowlist sanitizer per API.md § 5.4 (B0: no rewrites, those land in B1).
+/// Everything else — scripts, event handlers, iframes, inline SVG,
+/// `javascript:` URLs, forms — is removed.
+pub fn sanitize_html(html: &str) -> String {
+    use std::borrow::Cow;
+    use std::collections::HashSet;
+    let tags: HashSet<&str> = [
+        "p",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "a",
+        "img",
+        "ul",
+        "ol",
+        "li",
+        "input",
+        "blockquote",
+        "pre",
+        "code",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+        "em",
+        "strong",
+        "del",
+        "sup",
+        "sub",
+        "br",
+        "hr",
+        "details",
+        "summary",
+        "kbd",
+        "span",
+        "div",
+    ]
+    .into_iter()
+    .collect();
+    let schemes: HashSet<&str> = ["http", "https", "mailto"].into_iter().collect();
+    ammonia::Builder::default()
+        .tags(tags)
+        .url_schemes(schemes)
+        .add_tag_attributes("a", &["href", "title"])
+        .add_tag_attributes("img", &["src", "alt", "title", "width", "height"])
+        .add_tag_attributes("h1", &["id"])
+        .add_tag_attributes("h2", &["id"])
+        .add_tag_attributes("h3", &["id"])
+        .add_tag_attributes("h4", &["id"])
+        .add_tag_attributes("h5", &["id"])
+        .add_tag_attributes("h6", &["id"])
+        .add_tag_attributes("input", &["type", "checked", "disabled"])
+        .add_tag_attributes("th", &["align"])
+        .add_tag_attributes("td", &["align"])
+        .add_tag_attributes("code", &["class"])
+        .add_tag_attributes("div", &["class"])
+        .attribute_filter(|element, attribute, value| {
+            let ok = match (element, attribute) {
+                // `id` only on headings (B1 adds GitHub slugs; B0 keeps author ids).
+                (e, "id") if e.starts_with('h') && e.len() == 2 => true,
+                (_, "id") => false,
+                ("a", "href") => {
+                    value.starts_with("http://")
+                        || value.starts_with("https://")
+                        || value.starts_with("mailto:")
+                }
+                ("img", "src") => {
+                    // Relative paths and https only. No data:/javascript:/vbscript:.
+                    !(value.contains(':')
+                        && !value.starts_with("https://")
+                        && !value.starts_with("http://"))
+                }
+                ("input", "type") => value == "checkbox",
+                ("code", "class") => value.split_whitespace().all(|c| {
+                    c.strip_prefix("language-")
+                        .map(|l| {
+                            !l.is_empty()
+                                && l.chars()
+                                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                        })
+                        .unwrap_or(false)
+                }),
+                ("div", "class") => {
+                    value == "md-suggestion"
+                        || value == "md-alert"
+                        || value.starts_with("md-alert md-alert-")
+                            && ["note", "tip", "important", "warning", "caution"].contains(
+                                &value
+                                    .rsplit(' ')
+                                    .next()
+                                    .unwrap_or("")
+                                    .strip_prefix("md-alert-")
+                                    .unwrap_or(""),
+                            )
+                }
+                _ => true,
+            };
+            ok.then_some(Cow::Borrowed(value))
+        })
+        .clean(html)
+        .to_string()
 }
 
 pub fn read_image_bytes(idx: &Index, rel: &str) -> Option<(Vec<u8>, &'static str)> {
@@ -114,5 +227,78 @@ mod tests {
         assert_eq!(base64_encode(b"f"), "Zg==");
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
+    }
+
+    #[test]
+    fn xss_corpus_stripped() {
+        let cases = [
+            // script + event handlers
+            "<script>alert(1)</script><p>ok</p>",
+            "<img src=x onerror=alert(1)>",
+            "<svg onload=alert(1)><p>ok</p>",
+            "<a href=\"javascript:alert(1)\">x</a>",
+            "<iframe src=\"https://x\"></iframe>",
+            "<p style=\"color:red\" onclick=\"a()\">x</p>",
+            "<form action=\"/x\"><input type=\"text\"></form>",
+            "<a href=\"https://ok.example\">keep</a>",
+            "<input type=\"checkbox\" checked disabled>",
+            "<input type=\"text\" value=\"y\">",
+            "<code class=\"language-rust\">x</code>",
+            "<code class=\"evil\" onmouseover=\"a()\">x</code>",
+            "<div class=\"md-alert md-alert-note\">n</div>",
+            "<div class=\"other\">o</div>",
+            "<h1 id=\"a\">t</h1><p id=\"b\">u</p>",
+            "<img src=\"https://x/y.png\" alt=\"i\">",
+            "<img src=\"data:text/html,<script>alert(1)</script>\">",
+        ];
+        for html in cases {
+            let out = sanitize_html(html);
+            assert!(!out.contains("alert("), "leak in {html:?} -> {out:?}");
+            assert!(!out.contains("<script"), "{html:?} -> {out:?}");
+            assert!(
+                !out.contains("onerror")
+                    && !out.contains("onload")
+                    && !out.contains("onclick")
+                    && !out.contains("onmouseover"),
+                "{html:?} -> {out:?}"
+            );
+            assert!(!out.contains("javascript:"), "{html:?} -> {out:?}");
+            assert!(
+                !out.contains("<iframe") && !out.contains("<form") && !out.contains("<svg"),
+                "{html:?} -> {out:?}"
+            );
+            assert!(!out.contains("style="), "{html:?} -> {out:?}");
+        }
+        // Allowed content survives.
+        assert!(sanitize_html("<a href=\"https://ok.example\">keep</a>")
+            .contains("href=\"https://ok.example\""));
+        assert!(sanitize_html("<input type=\"checkbox\" checked disabled>").contains("checked"));
+        assert!(!sanitize_html("<input type=\"text\" value=\"y\">").contains("type=\"text\""));
+        assert!(sanitize_html("<code class=\"language-rust\">x</code>").contains("language-rust"));
+        assert!(!sanitize_html("<code class=\"evil\">x</code>").contains("class="));
+        assert!(
+            sanitize_html("<div class=\"md-alert md-alert-note\">n</div>")
+                .contains("md-alert-note")
+        );
+        assert!(!sanitize_html("<div class=\"other\">o</div>").contains("class="));
+        assert!(sanitize_html("<h1 id=\"a\">t</h1>").contains("id=\"a\""));
+        assert!(!sanitize_html("<p id=\"b\">u</p>").contains("id="));
+        assert!(sanitize_html("<img src=\"https://x/y.png\" alt=\"i\">").contains("src="));
+        assert!(!sanitize_html("<img src=\"data:text/html,x\">").contains("src="));
+    }
+
+    #[test]
+    fn markdown_pipeline_is_sanitized() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("x.md"),
+            "# T\n\n<img src=x onerror=alert(1)>\n\n[evil](javascript:alert(2))\n",
+        )
+        .unwrap();
+        let idx = Index::new(dir.path().to_path_buf());
+        let html = render_markdown(&idx, "x.md").unwrap();
+        assert!(html.contains("<h1>"));
+        assert!(!html.contains("alert("));
+        assert!(!html.contains("javascript:"));
     }
 }

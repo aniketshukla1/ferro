@@ -8,11 +8,18 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 fn app(token: &str) -> axum::Router {
+    app_with_files(token, &[]).0
+}
+
+fn app_with_files(token: &str, files: &[(&str, &[u8])]) -> (axum::Router, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
+    for (name, bytes) in files {
+        std::fs::write(dir.path().join(name), bytes).unwrap();
+    }
     let state = Arc::new(ferro_core::Index::new(dir.path().to_path_buf()));
     let guard = Arc::new(GuardConfig::new(Some(token.into()), 7778, vec![], false));
     let last = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    server::router(state, guard, last, true)
+    (server::router(state, guard, last, true), dir)
 }
 
 fn req(method: &str, uri: &str) -> axum::http::request::Builder {
@@ -163,4 +170,58 @@ async fn security_headers_present() {
     assert!(h.contains_key("permissions-policy"));
     let csp = h.get("content-security-policy").unwrap().to_str().unwrap();
     assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+}
+
+#[tokio::test]
+async fn markdown_endpoint_strips_xss() {
+    let (app, _dir) = app_with_files(
+        TOKEN,
+        &[(
+            "evil.md",
+            b"# T\n\n<img src=x onerror=alert(1)>\n\n[evil](javascript:alert(2))\n\n<script>alert(3)</script>\n",
+        )],
+    );
+    let r = req("GET", "/api/markdown?path=evil.md")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(r).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 65536).await.unwrap();
+    let html = String::from_utf8_lossy(&body);
+    assert!(html.contains("<h1>"), "{html}");
+    assert!(!html.contains("alert("), "{html}");
+    assert!(!html.contains("javascript:"), "{html}");
+    assert!(!html.contains("<script"), "{html}");
+}
+
+#[tokio::test]
+async fn raw_svg_has_sandbox_csp_and_inline_disposition() {
+    let (app, _dir) = app_with_files(
+        TOKEN,
+        &[(
+            "x.svg",
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>",
+        )],
+    );
+    let r = req("GET", "/api/raw?path=x.svg")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(r).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let h = res.headers();
+    assert_eq!(h.get(header::CONTENT_TYPE).unwrap(), "image/svg+xml");
+    let csp = h
+        .get(header::CONTENT_SECURITY_POLICY)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(csp.contains("sandbox"), "{csp}");
+    let cd = h
+        .get(header::CONTENT_DISPOSITION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(cd.starts_with("inline;"), "{cd}");
 }

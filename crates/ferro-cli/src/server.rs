@@ -390,7 +390,28 @@ async fn raw(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl IntoRe
         .await
         .unwrap_or(None);
     match out {
-        Some((bytes, mime)) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
+        Some((bytes, mime)) => {
+            // D3: SVG opened directly cannot run script; sniffing off; inline disposition.
+            let name = q
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or("file")
+                .replace(['"', '\\', '\r', '\n'], "");
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, mime.parse().unwrap());
+            headers.insert(
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
+                    .parse()
+                    .unwrap(),
+            );
+            headers.insert(
+                header::CONTENT_DISPOSITION,
+                format!("inline; filename=\"{name}\"").parse().unwrap(),
+            );
+            (headers, bytes).into_response()
+        }
         None => (StatusCode::NOT_FOUND, "not found".to_string()).into_response(),
     }
 }
