@@ -504,20 +504,28 @@ const SYM_PATTERNS = {
 };
 async function toggleOutline() {
   if (!outlineEl.hidden) { outlineEl.hidden = true; return; }
-  if (!cur.path) return;
+  if (!cur.path || (cur.mode !== 'file' && cur.mode !== 'md')) {
+    $('st-line').textContent = cur.path ? 'outline needs the text view' : 'open a file first';
+    return;
+  }
   outlineEl.hidden = false;
   olItems.innerHTML = '<div class="ol-item">…</div>';
   let text = '';
   try {
     if (invoke) text = await invoke('read_file', { path: cur.path });
-    else text = await (await fetch('/api/file?path=' + encodeURIComponent(cur.path))).text();
-  } catch { olItems.innerHTML = ''; return; }
+    else {
+      const r = await fetch('/api/file?path=' + encodeURIComponent(cur.path));
+      if (!r.ok) throw new Error('read ' + r.status);
+      text = await r.text();
+    }
+  } catch { olItems.innerHTML = '<div class="ol-item">cannot read file</div>'; return; }
   const pats = SYM_PATTERNS[extOf(cur.path)] || [];
   const syms = [];
   text.split('\n').slice(0, 20000).forEach((line, i) => {
     for (const [re, kind] of pats) {
       const m = line.match(re);
-      if (m) { syms.push({ n: i + 1, k: kind, name: m[1] || m[2] }); break; }
+      // md headings capture (marks, title): prefer the title.
+      if (m) { syms.push({ n: i + 1, k: kind, name: m[2] || m[1] }); break; }
     }
   });
   olItems.innerHTML = '';
@@ -526,7 +534,11 @@ async function toggleOutline() {
     const d = document.createElement('div');
     d.className = 'ol-item';
     d.innerHTML = `<span class="k">${esc(s.k)}</span><span>${esc(s.name)}</span>`;
-    const jump = () => { viewport.scrollTop = Math.max(0, (s.n - 8) * ROW_H); paint(); };
+    const jump = () => {
+      ensureAround(s.n - 1).then(paint);
+      viewport.scrollTop = Math.max(0, (s.n - 8) * ROW_H);
+      paint();
+    };
     d.onclick = jump;
     activatable(d, jump);
     olItems.appendChild(d);
