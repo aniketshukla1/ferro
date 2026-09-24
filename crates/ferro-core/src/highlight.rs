@@ -165,7 +165,6 @@ fn count_remaining(abs: &Path, skipped: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::index::Index;
     use std::io::Write;
 

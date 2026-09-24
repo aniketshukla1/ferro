@@ -35,6 +35,18 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub no_color: bool,
 
+    /// Auth token (else random per launch). Env FERRO_TOKEN.
+    #[arg(long)]
+    pub token: Option<String>,
+
+    /// Disable API auth. Loopback binds only; prints a warning.
+    #[arg(long, default_value_t = false)]
+    pub no_auth: bool,
+
+    /// Extra allowed Host hostnames (repeatable). Env FERRO_ALLOW_HOST (comma list).
+    #[arg(long)]
+    pub allow_host: Vec<String>,
+
     /// Bypass refusal when opening an already-merged PR URL.
     #[arg(short = 'y', long = "yes", default_value_t = false)]
     pub yes: bool,

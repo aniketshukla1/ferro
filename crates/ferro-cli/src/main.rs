@@ -1,10 +1,10 @@
 mod cli;
-mod server;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
+use ferro::server;
 use tracing_subscriber::EnvFilter;
 
 use cli::{Cli, Commands};
@@ -52,6 +52,9 @@ async fn main() -> AnyhowResult {
 }
 
 async fn serve(cli: Cli) -> AnyhowResult {
+    if cli.no_auth && cli.host != "127.0.0.1" && cli.host != "localhost" && cli.host != "::1" {
+        return Err("--no-auth is only allowed on loopback binds".into());
+    }
     // PR mode: `ferro https://github.com/owner/repo/pull/N`
     if let Some(raw) = cli.path.as_ref().and_then(|p| p.to_str()) {
         if let Some(info) = ferro_core::pr::parse_pr_url(raw) {
@@ -98,6 +101,9 @@ async fn serve(cli: Cli) -> AnyhowResult {
             narrate: !cli.quiet,
             no_open: cli.no_open,
             initial,
+            token: cli.token.or_else(|| std::env::var("FERRO_TOKEN").ok()),
+            allow_hosts: allow_hosts(cli.allow_host),
+            no_auth: cli.no_auth,
         },
     )
     .await;
@@ -169,6 +175,9 @@ async fn serve_pr(cli: Cli, info: ferro_core::pr::PrInfo) -> AnyhowResult {
     tokio::spawn(async move { bg.rebuild().await });
     // Keep the ephemeral worktree alive for the serve lifetime.
     let _keep = work;
+    if cli.no_auth && cli.host != "127.0.0.1" && cli.host != "localhost" && cli.host != "::1" {
+        return Err("--no-auth is only allowed on loopback binds".into());
+    }
     server::serve(
         state,
         server::ServeOpts {
@@ -178,6 +187,9 @@ async fn serve_pr(cli: Cli, info: ferro_core::pr::PrInfo) -> AnyhowResult {
             narrate: !cli.quiet,
             no_open: cli.no_open,
             initial: None,
+            token: cli.token.or_else(|| std::env::var("FERRO_TOKEN").ok()),
+            allow_hosts: allow_hosts(cli.allow_host),
+            no_auth: cli.no_auth,
         },
     )
     .await;
@@ -243,6 +255,19 @@ async fn ask(
 }
 
 type AnyhowResult = Result<(), Box<dyn std::error::Error>>;
+
+/// CLI `--allow-host` (repeatable) merged with `FERRO_ALLOW_HOST` comma list.
+fn allow_hosts(cli: Vec<String>) -> Vec<String> {
+    let mut out = cli;
+    if let Ok(env) = std::env::var("FERRO_ALLOW_HOST") {
+        out.extend(
+            env.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+        );
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
