@@ -2,6 +2,15 @@
 
 Ferro is a fast local code review tool for humans and AI.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aniketshukla1/ferro/main/install.sh | sh
+```
+
+Or build from source (Rust stable): `cargo build --release -p ferro`.
+Docker: `docker build -t ferro . && docker run -p 7777:7777 -v "$(pwd):/src:ro" ferro`
+
 - `ferro` CLI: single static Rust binary, browser UI, zero runtime deps
 - `Ferro` desktop: Tauri 2 native app, same `ferro-core`, offline, no server
 - Sub-ms startup goal, ~20MB RSS goal, background indexing
