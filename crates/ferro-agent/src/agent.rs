@@ -32,6 +32,9 @@ pub enum AgentEvent {
         output: String,
         truncated: bool,
     },
+    Token {
+        text: String,
+    },
     Final {
         text: String,
         truncated: bool,
@@ -80,6 +83,40 @@ impl<C: LlmClient> Agent<C> {
         t
     }
 
+    /// Drive one provider turn, forwarding token deltas live. Borrow ends on return.
+    /// Returns leftover deltas that landed with turn completion (emitted first).
+    async fn drive_turn(
+        &self,
+        messages: &[ChatMessage],
+        defs: &[crate::ToolDef],
+        send: &impl Fn(AgentEvent),
+    ) -> (
+        Result<crate::provider::Turn, crate::provider::ProviderError>,
+        Vec<String>,
+    ) {
+        let (dtick, mut dtick_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut fut = Box::pin(self.client.chat_stream(messages, defs, dtick));
+        let r = loop {
+            tokio::select! {
+                r = &mut fut => break r,
+                d = dtick_rx.recv() => {
+                    if let Some(x) = d {
+                        if let Some(c) = x.content_piece {
+                            send(AgentEvent::Token { text: c });
+                        }
+                    }
+                }
+            }
+        };
+        let mut leftover = Vec::new();
+        while let Ok(d) = dtick_rx.try_recv() {
+            if let Some(c) = d.content_piece {
+                leftover.push(c);
+            }
+        }
+        (r, leftover)
+    }
+
     /// Same loop as `run`, but emits live events as each step unfolds.
     pub async fn run_stream(
         &self,
@@ -106,7 +143,11 @@ impl<C: LlmClient> Agent<C> {
             let _ = tx.send(e);
         };
         for _ in 0..self.max_steps.max(1) {
-            let turn = match self.client.chat(&messages, &defs).await {
+            let (r, leftover) = self.drive_turn(&messages, &defs, &send).await;
+            for tok in leftover {
+                send(AgentEvent::Token { text: tok });
+            }
+            let turn = match r {
                 Ok(t) => t,
                 Err(e) => {
                     let final_text = format!("provider error: {e}");
@@ -399,10 +440,14 @@ mod tests {
                 AgentEvent::Thought { .. } => "thought",
                 AgentEvent::ToolStart { .. } => "start",
                 AgentEvent::ToolResult { .. } => "result",
+                AgentEvent::Token { .. } => "token",
                 AgentEvent::Final { .. } => "final",
             });
         }
-        assert_eq!(kinds, vec!["thought", "start", "result", "final"]);
+        assert_eq!(
+            kinds,
+            vec!["token", "thought", "start", "result", "token", "final"]
+        );
         assert!(t.final_text.contains("clean"));
     }
 }

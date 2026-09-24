@@ -1294,8 +1294,9 @@ async function submitAsk(question) {
     let buf = '', steps = [], cur = null, finalText = '';
     askbody.innerHTML = '<h2>Answer</h2><div id="live"></div>';
     const live = () => askbody.querySelector('#live');
+    let liveAnswer = '';
     const paintLive = () => {
-      let html = '';
+      let html = liveAnswer ? `<p class="streaming">${esc(liveAnswer)}▍</p>` : '';
       steps.forEach((s, i) => {
         html += `<details open><summary>Step ${i + 1}${s.thought ? ' — ' + esc(s.thought).slice(0, 80) : ''}</summary>` +
           s.calls.map(([n, a, o]) => `<pre>$ ${esc(n)} ${esc(JSON.stringify(a))}\n${esc(String(o).slice(0, 1500))}</pre>`).join('') + '</details>';
@@ -1316,6 +1317,7 @@ async function submitAsk(question) {
         let ev;
         try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
         if (ev.kind === 'thought') { if (!cur) cur = { thought: '', calls: [] }; cur.thought = (cur.thought ? cur.thought + ' ' : '') + ev.text; }
+        else if (ev.kind === 'token') { liveAnswer += ev.text || ''; }
         else if (ev.kind === 'tool_start') { if (!cur) cur = { thought: '', calls: [] }; cur.calls.push([ev.name, ev.args, '…']); }
         else if (ev.kind === 'tool_result') {
           if (cur) {
