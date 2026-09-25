@@ -51,6 +51,8 @@ impl GitError {
 pub struct GitRepo {
     pub root: PathBuf,
     batch: std::sync::Arc<std::sync::Mutex<CatFileBatch>>,
+    /// Extra env for every child (e.g. forge HTTPS auth, never argv).
+    pub extra_env: Vec<(String, String)>,
 }
 
 impl GitRepo {
@@ -59,7 +61,13 @@ impl GitRepo {
         Self {
             root,
             batch: std::sync::Arc::new(std::sync::Mutex::new(batch)),
+            extra_env: Vec::new(),
         }
+    }
+
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.extra_env = env;
+        self
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -77,6 +85,9 @@ impl GitRepo {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
+        for (k, v) in &self.extra_env {
+            c.env(k, v);
+        }
         c
     }
 
