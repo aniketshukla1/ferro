@@ -1473,6 +1473,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-forge"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "ferro-server"
 version = "0.1.0"
 dependencies = [
