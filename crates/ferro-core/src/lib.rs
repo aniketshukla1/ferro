@@ -13,6 +13,7 @@ pub mod scan;
 pub mod search;
 pub mod settings;
 pub mod text;
+pub mod trigram;
 pub mod watch;
 
 pub use index::{FileEntry, FileMeta, Index, Window, WindowLine};

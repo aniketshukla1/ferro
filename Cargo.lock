@@ -1463,6 +1463,7 @@ dependencies = [
  "pulldown-cmark",
  "rayon",
  "regex",
+ "regex-syntax",
  "rusqlite",
  "serde",
  "serde_json",
