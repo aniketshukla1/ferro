@@ -7,6 +7,7 @@
 pub enum TokenSource {
     Env,
     Gh,
+    Glab,
     Keychain,
 }
 
@@ -15,6 +16,7 @@ impl TokenSource {
         match self {
             TokenSource::Env => "env",
             TokenSource::Gh => "gh",
+            TokenSource::Glab => "glab",
             TokenSource::Keychain => "keychain",
         }
     }
@@ -52,6 +54,22 @@ pub fn resolve_token(host: &str) -> Option<(String, TokenSource)> {
     None
 }
 
+/// Resolve a GitLab token for `host`: `GITLAB_TOKEN` first, then a
+/// best-effort `glab auth token` probe (absent/old CLIs simply miss).
+/// Returns the token and its source.
+pub fn resolve_gitlab_token(host: &str) -> Option<(String, TokenSource)> {
+    if let Ok(t) = std::env::var("GITLAB_TOKEN") {
+        let t = t.trim().to_string();
+        if !t.is_empty() {
+            return Some((t, TokenSource::Env));
+        }
+    }
+    if let Some(t) = glab_token(host) {
+        return Some((t, TokenSource::Glab));
+    }
+    None
+}
+
 /// `gh`'s stored credential for exactly `host`. The env tokens are removed
 /// first: gh would otherwise answer any `--hostname` with
 /// `GH_ENTERPRISE_TOKEN` (or `GH_TOKEN` for github.com), bypassing the
@@ -83,6 +101,28 @@ pub fn auth_config(url: &str, token: &str) -> (String, String) {
         format!("http.{url}.extraheader"),
         format!("AUTHORIZATION: Basic {creds}"),
     )
+}
+
+fn glab_token(host: &str) -> Option<String> {
+    // Newer glab CLIs print the token; older ones lack the subcommand.
+    for args in [
+        vec!["auth", "token", "--hostname", host],
+        vec!["auth", "token", "-h", host],
+    ] {
+        if let Ok(out) = std::process::Command::new("glab").args(&args).output() {
+            if out.status.success() {
+                let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                // glab may print hints instead of a bare token; accept only
+                // plausible token shapes.
+                if (t.starts_with("glpat-") || t.starts_with("gloas-") || t.len() >= 20)
+                    && !t.contains(char::is_whitespace)
+                {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Config entries as git's `GIT_CONFIG_COUNT/KEY_n/VALUE_n` env: one set

@@ -119,6 +119,7 @@ fn json(v: serde_json::Value) -> Scripted {
 
 fn pr_ref() -> ForgeRef {
     ForgeRef {
+        provider: ferro_forge::Provider::GitHub,
         host: "github.com".into(),
         owner: "o".into(),
         repo: "r".into(),

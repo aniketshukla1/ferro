@@ -1,13 +1,33 @@
-//! PR/MR URL parsing: github.com and Enterprise hosts, `pull` URLs.
-//! (GitLab MR URLs land in B4b.) Host comparison is case-insensitive;
-//! `.git` suffixes and trailing slashes are tolerated.
+//! PR/MR URL parsing: github.com and Enterprise hosts, `pull` URLs;
+//! gitlab.com and self-hosted instances, `merge_requests` URLs.
+//! Host comparison is case-insensitive; `.git` suffixes and trailing
+//! slashes are tolerated.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    GitHub,
+    GitLab,
+}
+
+impl Provider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::GitHub => "github",
+            Provider::GitLab => "gitlab",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForgeRef {
-    /// Provider host: `github.com` or a GHE hostname.
+    pub provider: Provider,
+    /// Provider host: `github.com`, a GHE hostname, `gitlab.com` or self-hosted.
     pub host: String,
+    /// `owner` (GitHub / first namespace?) — for GitLab this is the full
+    /// namespace path; `repo` is the project slug.
     pub owner: String,
     pub repo: String,
+    /// PR number (GitHub) or MR IID (GitLab).
     pub number: u64,
 }
 
@@ -18,19 +38,25 @@ impl ForgeRef {
     }
 
     pub fn is_dotcom(&self) -> bool {
-        self.host.eq_ignore_ascii_case("github.com")
+        self.provider == Provider::GitHub && self.host.eq_ignore_ascii_case("github.com")
     }
 
-    /// REST base: `https://api.github.com` or `https://<host>/api/v3`.
+    /// REST base: GitHub `https://api.github.com` / GHE `/api/v3`;
+    /// GitLab `https://<host>/api/v4`.
     pub fn api_base(&self) -> String {
-        if self.is_dotcom() {
-            "https://api.github.com".into()
-        } else {
-            format!("https://{}/api/v3", self.host)
+        match self.provider {
+            Provider::GitHub => {
+                if self.is_dotcom() {
+                    "https://api.github.com".into()
+                } else {
+                    format!("https://{}/api/v3", self.host)
+                }
+            }
+            Provider::GitLab => format!("https://{}/api/v4", self.host),
         }
     }
 
-    /// GraphQL endpoint.
+    /// GraphQL endpoint (GitHub only; GitLab has none for reviews).
     pub fn graphql_url(&self) -> String {
         if self.is_dotcom() {
             "https://api.github.com/graphql".into()
@@ -39,18 +65,61 @@ impl ForgeRef {
         }
     }
 
-    /// Human URL back to the PR.
+    /// Full namespace/project path (`owner/repo`, subgroups included).
+    pub fn project_path(&self) -> String {
+        if self.owner.is_empty() {
+            self.repo.clone()
+        } else {
+            format!("{}/{}", self.owner, self.repo)
+        }
+    }
+
+    /// URL-encoded project path for GitLab `:id` params.
+    pub fn encoded_project(&self) -> String {
+        url_encode(&self.project_path())
+    }
+
+    /// Human URL back to the PR/MR.
     pub fn html_url(&self) -> String {
-        format!(
-            "https://{}/{}/{}/pull/{}",
-            self.host, self.owner, self.repo, self.number
-        )
+        match self.provider {
+            Provider::GitHub => format!(
+                "https://{}/{}/{}/pull/{}",
+                self.host, self.owner, self.repo, self.number
+            ),
+            Provider::GitLab => format!(
+                "https://{}/{}/-/merge_requests/{}",
+                self.host,
+                self.project_path(),
+                self.number
+            ),
+        }
     }
 
     /// Clone URL for git (token goes via env extraheader, never argv).
     pub fn clone_url(&self) -> String {
-        format!("https://{}/{}/{}.git", self.host, self.owner, self.repo)
+        format!("https://{}/{}.git", self.host, self.project_path())
     }
+
+    /// Remote head ref for fetching: GitHub `pull/<n>/head`,
+    /// GitLab `merge-requests/<iid>/head`.
+    pub fn pull_ref(&self) -> String {
+        match self.provider {
+            Provider::GitHub => format!("pull/{}/head", self.number),
+            Provider::GitLab => format!("merge-requests/{}/head", self.number),
+        }
+    }
+}
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 /// A DNS hostname with an optional port: letters, digits, `-` and `.`,
@@ -118,10 +187,55 @@ pub fn parse_pr_url(s: &str) -> Option<ForgeRef> {
         return None;
     }
     Some(ForgeRef {
+        provider: Provider::GitHub,
         host: host.to_lowercase(),
         owner: owner.into(),
         repo: repo.into(),
         number,
+    })
+}
+
+/// Parse `https://<host>/<namespace...>/<project>/-/merge_requests/<iid>`
+/// (scheme optional). Namespace may nest (subgroups).
+pub fn parse_mr_url(s: &str) -> Option<ForgeRef> {
+    let s = s.trim().trim_end_matches('/');
+    let without_scheme = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .unwrap_or(s);
+    let (host, rest) = without_scheme.split_once('/')?;
+    if host.is_empty() || !host.contains('.') {
+        return None;
+    }
+    let mut parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    let iid: u64 = parts.pop()?.parse().ok()?;
+    if iid == 0 {
+        return None;
+    }
+    if parts.pop()? != "merge_requests" {
+        return None;
+    }
+    if parts.pop()? != "-" {
+        return None;
+    }
+    let repo = parts.pop()?.trim();
+    if repo.is_empty() {
+        return None;
+    }
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    let namespace = parts.join("/");
+    if namespace.is_empty() {
+        return None;
+    }
+    Some(ForgeRef {
+        provider: Provider::GitLab,
+        host: host.to_lowercase(),
+        owner: namespace,
+        repo: repo.into(),
+        number: iid,
     })
 }
 
@@ -171,5 +285,41 @@ mod tests {
             (p.host.as_str(), p.owner.as_str(), p.repo.as_str()),
             ("ghe.corp.example:8443", "my-org", "my_repo.rs")
         );
+    }
+
+    #[test]
+    fn github_pull_ref() {
+        let r = parse_pr_url("https://github.com/o/r/pull/9").unwrap();
+        assert_eq!(r.provider, Provider::GitHub);
+        assert_eq!(r.pull_ref(), "pull/9/head");
+    }
+
+    #[test]
+    fn gitlab_mr_urls() {
+        let r = parse_mr_url("https://gitlab.com/group/proj/-/merge_requests/42").unwrap();
+        assert_eq!(r.provider, Provider::GitLab);
+        assert_eq!(r.api_base(), "https://gitlab.com/api/v4");
+        assert_eq!(r.encoded_project(), "group%2Fproj");
+        assert_eq!(
+            r.html_url(),
+            "https://gitlab.com/group/proj/-/merge_requests/42"
+        );
+        assert_eq!(r.clone_url(), "https://gitlab.com/group/proj.git");
+        assert_eq!(r.pull_ref(), "merge-requests/42/head");
+        let sub = parse_mr_url("https://git.corp.example/a/b/c/-/merge_requests/7/").unwrap();
+        assert_eq!((sub.owner.as_str(), sub.repo.as_str()), ("a/b", "c"));
+        assert_eq!(sub.encoded_project(), "a%2Fb%2Fc");
+        assert_eq!(sub.pull_ref(), "merge-requests/7/head");
+        // GitHub pull URLs never parse as MRs and vice versa.
+        assert!(parse_mr_url("https://github.com/o/r/pull/1").is_none());
+        assert!(parse_pr_url("https://gitlab.com/group/proj/-/merge_requests/42").is_none());
+        for bad in [
+            "https://gitlab.com/group/proj/-/merge_requests/0",
+            "https://gitlab.com/group/-/merge_requests/1",
+            "https://gitlab.com/group/proj/merge_requests/1",
+            "https://gitlab.com/group/proj/-/merge_requests/abc",
+        ] {
+            assert!(parse_mr_url(bad).is_none(), "{bad}");
+        }
     }
 }

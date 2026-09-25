@@ -6,6 +6,7 @@
 pub mod checkout;
 pub mod error;
 pub mod github;
+pub mod gitlab;
 pub mod parse;
 pub mod store;
 pub mod token;
@@ -13,5 +14,5 @@ pub mod token;
 pub use checkout::{gc_worktrees, open_pr, CheckoutOpts, OpenedPr, WorktreeEntry};
 pub use error::ForgeError;
 pub use github::GitHub;
-pub use parse::{parse_pr_url, ForgeRef};
+pub use parse::{parse_mr_url, parse_pr_url, ForgeRef, Provider};
 pub use token::{resolve_token, TokenSource};

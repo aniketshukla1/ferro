@@ -346,7 +346,7 @@ fn fetch_refs(
             "fetch",
             "--",
             remote,
-            &pr_refspec(r.number),
+            &r.pull_ref(),
             &format!("+{base_ref}:refs/ferro/base"),
         ],
         NET_TIMEOUT,
@@ -500,6 +500,7 @@ mod tests {
     #[test]
     fn remote_shapes() {
         let r = ForgeRef {
+            provider: crate::Provider::GitHub,
             host: "github.com".into(),
             owner: "o".into(),
             repo: "r".into(),
@@ -527,6 +528,7 @@ mod tests {
             assert!(!remote_matches(bad, &r), "{bad}");
         }
         let ghe = ForgeRef {
+            provider: crate::Provider::GitHub,
             host: "ghe.corp.example".into(),
             owner: "o".into(),
             repo: "r".into(),
