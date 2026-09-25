@@ -251,7 +251,7 @@ fn attach_worktree(
                 reused: true,
             });
         }
-        if !clean && head_ok {
+        if !clean {
             return Err(ForgeError::Schema(
                 "worktree has local changes; stash or discard first".into(),
             ));

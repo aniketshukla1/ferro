@@ -23,11 +23,9 @@ async fn open(
     }
     let v: serde_json::Value = serde_json::from_slice(&body)
         .map_err(|e| ApiError::bad_request(format!("invalid JSON: {e}")))?;
-    if v.get("prUrl").is_some() {
-        return Err(ApiError::new(
-            crate::error::ErrorCode::Unsupported,
-            "PR workspaces arrive in B4",
-        ));
+    if let Some(url) = v.get("prUrl").and_then(|u| u.as_str()) {
+        // PR workspaces open through the same pr.open job.
+        return super::pr::start_open_job(&s, url).await;
     }
     let path = v
         .get("path")

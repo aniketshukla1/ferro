@@ -35,6 +35,8 @@ pub const FEATURES: &[&str] = &[
     "git.gutter",
     "git.write",
     "git.log",
+    "pr.github",
+    "pr.open",
 ];
 
 fn git_info(root: &std::path::Path) -> (bool, Option<String>, Option<String>) {
@@ -81,7 +83,11 @@ async fn meta(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>,
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default(),
-        Mode::Pr => "pr".to_string(),
+        Mode::Pr => ws
+            .pr
+            .as_ref()
+            .map(|p| p.pr_ref.name())
+            .unwrap_or_else(|| "pr".to_string()),
     };
     Ok(Json(serde_json::json!({
         "api": 1,

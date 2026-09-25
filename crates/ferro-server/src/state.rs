@@ -15,6 +15,21 @@ pub enum Mode {
     Pr,
 }
 
+/// Live PR session (B4). Held by `Workspace.pr` when in PR mode.
+pub struct PrSession {
+    pub pr_ref: ferro_forge::ForgeRef,
+    pub meta: parking_lot::RwLock<ferro_forge::github::PullMeta>,
+    pub github: std::sync::Arc<ferro_forge::GitHub>,
+    /// Memory only, never serialized or logged (refresh re-opens worktrees).
+    pub token: Option<String>,
+    pub token_source: Option<ferro_forge::TokenSource>,
+    pub worktree: parking_lot::RwLock<ferro_forge::OpenedPr>,
+    pub store: ferro_forge::store::ReviewStore,
+    pub checks: parking_lot::RwLock<Option<ferro_forge::github::Checks>>,
+    pub can_push: parking_lot::RwLock<Option<bool>>,
+    pub can_push_known: std::sync::atomic::AtomicBool,
+}
+
 #[derive(Clone)]
 pub enum Host {
     Cli,
@@ -67,6 +82,8 @@ pub struct Workspace {
     pub lines: crate::lines::LineIndex,
     pub hl: Arc<parking_lot::Mutex<crate::hl::Highlighter>>,
     pub git: Option<GitRepo>,
+    /// Live PR session in PR mode (B4).
+    pub pr: Option<Arc<PrSession>>,
     /// Latest status payload (B3 watcher + mutations); tree reads it for
     /// `git`/`dirty` without spawning git per request.
     pub git_status: parking_lot::RwLock<Option<ferro_core::git::GitStatus>>,
@@ -92,6 +109,32 @@ impl Workspace {
             lines: crate::lines::LineIndex::new(),
             hl: Arc::new(parking_lot::Mutex::new(crate::hl::Highlighter::new())),
             git,
+            pr: None,
+            git_status: parking_lot::RwLock::new(None),
+            review: ferro_agent::ReviewStore::default(),
+            session_path,
+        })
+    }
+
+    /// PR-mode workspace rooted at an opened worktree.
+    pub fn pr(root: PathBuf, session: Arc<PrSession>, dirs: &FerroDirs) -> Arc<Self> {
+        let index = Arc::new(ferro_core::Index::new(root.clone()));
+        let key = dirs.workspace_key(index.root());
+        let session_path = dirs.workspace_state_dir(&key).join("session.json");
+        let git = is_repo(index.root()).then(|| GitRepo {
+            root: index.root().to_path_buf(),
+            repo: ferro_core::git::GitRepo::new(index.root().to_path_buf()),
+        });
+        Arc::new(Self {
+            key,
+            root: index.root().to_path_buf(),
+            mode: Mode::Pr,
+            index,
+            generation: AtomicU64::new(0),
+            lines: crate::lines::LineIndex::new(),
+            hl: Arc::new(parking_lot::Mutex::new(crate::hl::Highlighter::new())),
+            git,
+            pr: Some(session),
             git_status: parking_lot::RwLock::new(None),
             review: ferro_agent::ReviewStore::default(),
             session_path,

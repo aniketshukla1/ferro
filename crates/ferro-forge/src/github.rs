@@ -45,6 +45,11 @@ impl GitHub {
     }
 
     pub fn for_ref(r: &ForgeRef, token: Option<String>) -> Self {
+        // Integration tests point this at a local mock server.
+        if let Ok(base) = std::env::var("FERRO_FORGE_API_BASE") {
+            let base = base.trim_end_matches('/').to_string();
+            return Self::new(base.clone(), format!("{base}/graphql"), token);
+        }
         Self::new(r.api_base(), r.graphql_url(), token)
     }
 

@@ -8,6 +8,7 @@ description = "Ferro HTTP boundary — guards, /api/v1, legacy routes, events, j
 [dependencies]
 ferro-core = { path = "../ferro-core" }
 ferro-agent = { path = "../ferro-agent" }
+ferro-forge = { path = "../ferro-forge" }
 tokio.workspace = true
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["full"] }
