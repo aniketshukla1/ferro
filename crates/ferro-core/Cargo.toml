@@ -25,3 +25,10 @@ regex = "1.11"
 globset = "0.4"
 memmap2 = "0.9"
 arc-swap = "1.7"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "engines"
+harness = false
