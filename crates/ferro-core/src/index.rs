@@ -41,6 +41,8 @@ pub struct Index {
     pr: RwLock<Option<crate::pr::PrCtx>>,
     dirs: crate::dirs::FerroDirs,
     key: String,
+    /// B2a snapshot, refreshed on every rebuild. Lock-free reads.
+    pub file_index: crate::fileindex::FileIndex,
 }
 impl Index {
     pub fn new(root: PathBuf) -> Self {
@@ -52,6 +54,8 @@ impl Index {
         let key = dirs.workspace_key(&root);
         // Instant cold start: serve cached list immediately, rebuild() refreshes.
         let (files, indexed_ms) = crate::cache::load_in(&dirs, &key).unwrap_or_default();
+        let file_index = crate::fileindex::FileIndex::default();
+        publish_snapshot(&file_index, &files);
         Self {
             root,
             files: RwLock::new(files),
@@ -59,6 +63,7 @@ impl Index {
             pr: RwLock::new(None),
             dirs,
             key,
+            file_index,
         }
     }
 
@@ -96,6 +101,7 @@ impl Index {
         let ms = t0.elapsed().as_millis();
         *self.files.write().unwrap() = files.clone();
         *self.indexed_ms.write().unwrap() = ms;
+        publish_snapshot(&self.file_index, &files);
         // Cache write off the async runtime (D10): blocking sqlite IO.
         let save_root = root.clone();
         let save_dirs = self.dirs.clone();
@@ -176,6 +182,13 @@ impl Index {
             total_lines,
         })
     }
+}
+
+fn publish_snapshot(idx: &crate::fileindex::FileIndex, files: &[FileEntry]) {
+    let paths = files.iter().map(|f| f.path.clone()).collect();
+    let sizes = files.iter().map(|f| f.size).collect();
+    let mtimes = files.iter().map(|f| f.mtime).collect();
+    idx.store(paths, sizes, mtimes);
 }
 
 fn walk(root: &Path) -> Vec<FileEntry> {
