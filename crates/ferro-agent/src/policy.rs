@@ -52,8 +52,8 @@ impl Sandbox {
     }
 
     /// Resolve a workspace-relative path through `ferro_core::paths`.
-    /// Keeps the extra protected list (.ferro, target, node_modules) for
-    /// writes on top of the core `.git` refusal.
+    /// Keeps its own protected list on the resolved path for writes, on top of
+    /// the core VCS refusal (defense in depth; compared case-insensitively).
     pub fn resolve(&self, rel: &str, access: Access) -> Result<PathBuf, SandboxError> {
         self.check(access)?;
         // Canonical root: the core resolver returns canonical paths, so the
@@ -71,11 +71,12 @@ impl Sandbox {
             _ => SandboxError::EscapesRoot,
         })?;
         if matches!(access, Access::Write | Access::Destructive) {
+            // Resolved (symlink-free) path, lowercased: `TARGET/` is `target/` on APFS.
             let rel_norm = norm
                 .strip_prefix(&root)
-                .map(|p| p.to_string_lossy().to_string())
+                .map(|p| p.to_string_lossy().to_ascii_lowercase())
                 .unwrap_or_default();
-            for prot in [".ferro", "target", "node_modules"] {
+            for prot in [".git", ".ferro", "target", "node_modules"] {
                 if rel_norm == prot || rel_norm.starts_with(&format!("{prot}/")) {
                     return Err(SandboxError::Protected(prot.into()));
                 }
@@ -138,5 +139,31 @@ mod tests {
             Err(SandboxError::Protected(_))
         ));
         assert!(s.resolve("src/main.rs", Access::Write).is_ok());
+    }
+
+    /// Review fix: the sandbox checks the resolved path, so a symlink into
+    /// `.git` or a case variant of a protected dir cannot be written.
+    #[test]
+    fn protected_dirs_hold_through_symlinks_and_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        let mut s = Sandbox::readonly(root.clone());
+        s.allow_write = true;
+        for p in [".GIT/config", "Target/debug/x", "NODE_MODULES/a/b.js"] {
+            assert!(
+                matches!(s.resolve(p, Access::Write), Err(SandboxError::Protected(_))),
+                "{p}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join(".git"), root.join("g")).unwrap();
+            assert!(matches!(
+                s.resolve("g/hooks/pre-commit", Access::Write),
+                Err(SandboxError::Protected(_))
+            ));
+        }
     }
 }

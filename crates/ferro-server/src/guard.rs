@@ -238,10 +238,18 @@ pub fn bootstrap(g: &GuardConfig, req: &Request<Body>) -> Option<Response> {
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join("&");
-    let location = if qs.is_empty() {
-        "/".to_string()
+    // Keep the page the link was opened on (`/next.html?token=…`), but never a
+    // scheme-relative path (`//host`, `/\host`): that would be an open redirect.
+    let path = req.uri().path();
+    let path = if path.starts_with('/') && !path.starts_with("//") && !path.starts_with("/\\") {
+        path
     } else {
-        format!("/?{qs}")
+        "/"
+    };
+    let location = if qs.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{qs}")
     };
     Response::builder()
         .status(StatusCode::FOUND)
@@ -302,6 +310,31 @@ mod tests {
             );
         }
         assert_ne!(generate_token(), generate_token());
+    }
+
+    /// Review fix: the redirect keeps the requested page and drops only the token.
+    #[test]
+    fn bootstrap_keeps_path_but_not_foreign_hosts() {
+        let g = cfg();
+        let tok = "t".repeat(32);
+        let loc = |uri: &str| {
+            let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+            let res = bootstrap(&g, &req).expect("handled");
+            assert_eq!(res.status(), StatusCode::FOUND);
+            assert!(res.headers().get(header::SET_COOKIE).is_some());
+            res.headers()[header::LOCATION]
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(loc(&format!("/next.html?token={tok}")), "/next.html");
+        assert_eq!(
+            loc(&format!("/next.html?token={tok}&path=a.rs&line=3")),
+            "/next.html?path=a.rs&line=3"
+        );
+        assert_eq!(loc(&format!("/?token={tok}")), "/");
+        assert_eq!(loc(&format!("//evil.test/x?token={tok}")), "/");
+        assert_eq!(loc(&format!("/\\evil.test/x?token={tok}")), "/");
     }
 
     #[test]

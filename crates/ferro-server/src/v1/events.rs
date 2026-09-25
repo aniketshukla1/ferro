@@ -17,7 +17,12 @@ use crate::state::AppState;
 
 #[derive(Deserialize, Default)]
 struct Params {
-    metrics: Option<bool>,
+    /// API.md § 12 spells it `?metrics=1`; `true` is accepted too.
+    metrics: Option<String>,
+}
+
+fn flag(v: Option<&str>) -> bool {
+    matches!(v, Some("1" | "true"))
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -43,7 +48,7 @@ async fn events(
         }))
         .unwrap();
     let _ = tx.send(hello);
-    let want_metrics = p.metrics.unwrap_or(false);
+    let want_metrics = flag(p.metrics.as_deref());
     let started = s.started_at;
     tokio::spawn(async move {
         let mut ping = tokio::time::interval(std::time::Duration::from_secs(15));
@@ -102,5 +107,20 @@ fn event_name(ev: &crate::bus::ServerEvent) -> &'static str {
         Drafts { .. } => "drafts",
         Metrics { .. } => "metrics",
         Resync {} => "resync",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review fix: `?metrics=1` (the spec's form) and `true` both enable metrics.
+    #[test]
+    fn metrics_flag_accepts_spec_and_bool_forms() {
+        assert!(flag(Some("1")));
+        assert!(flag(Some("true")));
+        assert!(!flag(Some("0")));
+        assert!(!flag(Some("false")));
+        assert!(!flag(None));
     }
 }

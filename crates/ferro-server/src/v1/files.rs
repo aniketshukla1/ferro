@@ -291,9 +291,25 @@ async fn lines(
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let hl = if want_hl {
-            ws.hl
-                .lock()
-                .window(&abs, &path_s, from.saturating_sub(1), win.len(), None)
+            // Clone (shared caches) so the workspace lock is not held while highlighting.
+            let highlighter = ws.hl.lock().clone();
+            highlighter.window(
+                &abs,
+                &path_s,
+                from.saturating_sub(1),
+                win.len(),
+                total,
+                None,
+                |first, n| {
+                    let (ctx, _) =
+                        crate::lines::read_window_bytes_with(&ws.lines, &abs, first + 1, n).ok()?;
+                    Some(
+                        ctx.into_iter()
+                            .map(|(_, b)| String::from_utf8_lossy(&b).into_owned())
+                            .collect(),
+                    )
+                },
+            )
         } else {
             None
         };
@@ -311,15 +327,17 @@ async fn lines(
             };
             let mut obj = serde_json::Map::new();
             obj.insert("n".into(), serde_json::json!(n));
-            if want_hl && !force_plain {
-                if let Some(h) = hl.as_ref().and_then(|w| w.lines.iter().find(|l| l.n == n)) {
-                    obj.insert("html".into(), serde_json::Value::String(h.html.clone()));
-                } else {
-                    obj.insert("text".into(), serde_json::Value::String(body));
-                }
-            } else {
-                obj.insert("text".into(), serde_json::Value::String(body));
-            }
+            // A cut line is served as truncated plain text: highlighted HTML covers the
+            // whole line and would ignore maxCols.
+            let html = (want_hl && !force_plain && cut.is_none())
+                .then_some(hl.as_ref())
+                .flatten()
+                .and_then(|w| w.lines.get(n.checked_sub(w.start + 1)?))
+                .filter(|l| l.n == n);
+            match html {
+                Some(h) => obj.insert("html".into(), serde_json::Value::String(h.html.clone())),
+                None => obj.insert("text".into(), serde_json::Value::String(body)),
+            };
             if let Some(c) = cut {
                 obj.insert("cut".into(), serde_json::json!(c));
             }

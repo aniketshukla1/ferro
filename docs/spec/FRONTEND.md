@@ -129,7 +129,7 @@ On `workspace` or `resync` events the app resets every slice and refetches (no p
 - The `Server-Timing` header (if present) is recorded for the status bar's latency readout.
 - Feature gate: `has('search.stream')` etc. read from `meta.features`.
 - Compat shims (temporary, `features/compat.js`, deleted at the flip § 11): without `fuzzy.v2` / `search.v2` the palette and search panel call the legacy `/api/fuzzy` and `/api/search`; without `git.status.v2` the legacy `/api/git-status` porcelain text is parsed into `GitStatus` and refreshed on `fs` events; without `file.find` the find bar searches `/file/raw` in the browser (one file cached, `maxRawBytes` cap).
-- B1 deviations handled on this side (logged in § 13 for the backend): the events stream is opened with `metrics=true` (B1 rejects `1`); a trailing line terminator inside per-line highlight HTML is stripped.
+- B1 deviations, fixed in the backend on `fix/b1-review` (2026-09-25); the frontend keeps tolerating older builds: the events stream is opened with `metrics=true` (accepted everywhere; `1` now works too), and a trailing line terminator inside per-line highlight HTML is still stripped defensively.
 
 ### 3.4 Mock mode
 
@@ -469,10 +469,7 @@ Acceptance per milestone: its feature sections' checks pass, the e2e suite for i
 | Settings | schema-driven form (B1 keys + `ui.*`), sections, search, user/workspace scope, save on change, per-key reset, live theme / code size / icon tint | raw JSON editor (F6) |
 | Other | light/dark toggle, shortcuts sheet (falls back to the command palette), narrow-screen overlays | — |
 
-Open requests for the backend (not in API.md § 15 yet: this worktree cannot edit the shared checkout, so the user relays them):
-
-1. `GET /events?metrics=1` → 400; B1 only accepts `metrics=true` although § 12 and the handler's doc comment say `1`. Please accept both.
-2. `/file/lines?hl=1` per-line `html` can end with `\n</span>` (doc-comment tokens include the newline, e.g. line 1 of `crates/ferro-server/src/lib.rs`). Each entry renders as one row; please strip line terminators server-side.
+Backend review of B0 + B1 (2026-09-25): 10 findings plus the two open requests above, all fixed on `fix/b1-review` with regression tests (114 Rust tests). Per-line highlight HTML and line text no longer carry `\n`/`\r`. `/events` accepts `metrics=1`. `maxCols` holds with highlighting on. Highlight windows read only the lookback plus the window, without holding the workspace lock. Markdown: externalImages counts real `<img>` only, `../` links resolve, `#anchor` links survive, attributes are escaped once, and entities unescape once. The token redirect keeps the requested page (never scheme-relative). Writes are refused into `.git`/`.hg`/`.svn` through symlinks and case variants.
 
 Open items (frontend):
 

@@ -142,7 +142,6 @@ pub fn render_v2(
     let mut html = String::new();
     html::push_html(&mut html, Parser::new_ext(source, Options::all()));
     let mut html = post_process(html, &scanned, source, base_dir, raw_base, ctx);
-    let external = html.matches("data-ext-src").count();
     // Headings text from the final HTML headings in order.
     let mut headings = Vec::new();
     let mut search = html.as_str();
@@ -159,6 +158,7 @@ pub fn render_v2(
         search = &rest[e + end_tag.len()..];
     }
     html = sanitize_v2(&html);
+    let external = count_external_images(&html);
     Rendered {
         html,
         headings: headings
@@ -196,11 +196,81 @@ fn strip_tags(s: &str) -> String {
 }
 
 fn html_unescape(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
+    // `&amp;` last: replacing it first would turn `&amp;lt;` into `<` (double unescape).
+    s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+/// Resolve a workspace link or image path against the document's directory,
+/// applying `.` and `..` (a leading `/` is repo-root relative, as on GitHub).
+/// `None` when the path climbs above the workspace root.
+fn join_workspace(base_dir: &str, rel: &str) -> Option<String> {
+    let mut out: Vec<&str> = if rel.starts_with('/') {
+        Vec::new()
+    } else {
+        base_dir.split('/').filter(|s| !s.is_empty()).collect()
+    };
+    for seg in rel.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                out.pop()?;
+            }
+            s => out.push(s),
+        }
+    }
+    (!out.is_empty()).then(|| out.join("/"))
+}
+
+/// Decode `%XX` escapes in a link destination (`my%20file.md` → `my file.md`).
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Encode a workspace path as a query value (keeps `/` and unreserved bytes).
+fn query_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &c in s.as_bytes() {
+        if c.is_ascii_alphanumeric() || b"-._~/".contains(&c) {
+            out.push(c as char);
+        } else {
+            out.push_str(&format!("%{c:02X}"));
+        }
+    }
+    out
+}
+
+/// Count `<img>` tags that wait for the external-image opt-in. Runs on sanitized
+/// HTML, where text and code can no longer contain a literal `<img`.
+fn count_external_images(html: &str) -> usize {
+    let mut n = 0;
+    let mut rest = html;
+    while let Some(i) = rest.find("<img") {
+        let end = rest[i..].find('>').map_or(rest.len(), |e| i + e);
+        if rest[i..end].contains(" data-ext-src=\"") {
+            n += 1;
+        }
+        rest = &rest[end..];
+    }
+    n
 }
 
 fn esc(s: &str) -> String {
@@ -471,42 +541,41 @@ fn rewrite_links_images(html: &str, base_dir: &str, raw_base: &str, _source: &st
                     tag = remove_attr(&tag, "href");
                     out.push_str(&tag);
                 }
-                Some(h) => {
-                    // Workspace link: resolve relative to the md file's dir.
+                Some(h_raw) => {
+                    // Attribute text is HTML-escaped by the renderer: unescape once here,
+                    // escape once on output (escaping it again produced `&amp;amp;`).
+                    let h = html_unescape(&h_raw);
                     let (path_part, frag) = match h.split_once('#') {
                         Some((p, f)) => (p, Some(f)),
                         None => (h.as_str(), None),
                     };
+                    let title = attr_val(&tag, "title")
+                        .map(|t| format!(" title=\"{t}\""))
+                        .unwrap_or_default();
                     if path_part.is_empty() {
-                        // Same-document anchor: keep for the sanitizer to drop (no ids known here).
-                        tag = remove_attr(&tag, "href");
-                        out.push_str(&tag);
-                    } else {
-                        let joined = if base_dir.is_empty() {
-                            path_part.to_string()
-                        } else {
-                            format!("{base_dir}/{path_part}")
-                        };
-                        // Normalize ./ segments; keep it simple and safe.
-                        let norm: Vec<&str> = joined
-                            .split('/')
-                            .filter(|s| !s.is_empty() && *s != ".")
-                            .collect();
-                        let data_path = norm.join("/");
-                        let title = attr_val(&tag, "title")
-                            .map(|t| format!(" title=\"{t}\""))
-                            .unwrap_or_default();
+                        // Same-document anchor: headings carry matching ids, so keep it.
+                        out.push_str(&format!("<a href=\"#{}\"{title}>", esc(frag.unwrap_or(""))));
+                    } else if let Some(data_path) =
+                        join_workspace(base_dir, &percent_decode(path_part))
+                    {
+                        // Workspace link, resolved against the md file's dir (`..` included).
                         let mut open = format!("<a href=\"#\" data-path=\"{}\"", esc(&data_path));
-                        if let Some(f) = frag {
-                            if let Some(line) =
-                                f.strip_prefix('L').and_then(|n| n.parse::<usize>().ok())
-                            {
-                                open.push_str(&format!(" data-line=\"{line}\""));
-                            }
+                        // `#L12` or `#L12-L20`: the first line number.
+                        if let Some(line) = frag
+                            .and_then(|f| f.strip_prefix('L'))
+                            .and_then(|n| n.split(|c: char| !c.is_ascii_digit()).next())
+                            .and_then(|n| n.parse::<usize>().ok())
+                            .filter(|&n| n > 0)
+                        {
+                            open.push_str(&format!(" data-line=\"{line}\""));
                         }
                         open.push_str(&title);
                         open.push('>');
                         out.push_str(&open);
+                    } else {
+                        // Climbs above the workspace root: keep the text, drop the link.
+                        tag = remove_attr(&tag, "href");
+                        out.push_str(&tag);
                     }
                 }
                 None => out.push_str(&tag),
@@ -519,29 +588,32 @@ fn rewrite_links_images(html: &str, base_dir: &str, raw_base: &str, _source: &st
                 break;
             };
             let mut tag = rest[pos..=gt].to_string();
-            match attr_val(&tag, "src") {
+            // `src_raw` is the escaped attribute text (used to locate it in the tag);
+            // `src` is the real value (escaped exactly once on output).
+            let src_raw = attr_val(&tag, "src");
+            let src = src_raw.as_deref().map(html_unescape);
+            match src.as_deref() {
                 Some(src) if src.starts_with("http://") || src.starts_with("https://") => {
                     // External: no src, only data-ext-src (opt-in rendering).
                     tag = remove_attr(&tag, "src");
-                    tag = tag.replacen("<img", &format!("<img data-ext-src=\"{}\"", esc(&src)), 1);
+                    tag = tag.replacen("<img", &format!("<img data-ext-src=\"{}\"", esc(src)), 1);
                     out.push_str(&tag);
                 }
                 Some(src) if !src.contains(':') => {
-                    let joined = if base_dir.is_empty() {
-                        src.clone()
-                    } else {
-                        format!("{base_dir}/{src}")
-                    };
-                    let joined = joined
-                        .split('/')
-                        .filter(|x| !x.is_empty() && *x != ".")
-                        .collect::<Vec<_>>()
-                        .join("/");
-                    tag = tag.replacen(
-                        &format!("src=\"{src}\""),
-                        &format!("src=\"{raw_base}/api/v1/file/raw?path={}\"", esc(&joined)),
-                        1,
-                    );
+                    match join_workspace(base_dir, &percent_decode(src)) {
+                        Some(joined) => {
+                            tag = tag.replacen(
+                                &format!("src=\"{}\"", src_raw.as_deref().unwrap_or_default()),
+                                &format!(
+                                    "src=\"{raw_base}/api/v1/file/raw?path={}\"",
+                                    esc(&query_encode(&joined))
+                                ),
+                                1,
+                            );
+                        }
+                        // Climbs above the workspace root.
+                        None => tag = remove_attr(&tag, "src"),
+                    }
                     out.push_str(&tag);
                 }
                 _ => {
@@ -683,7 +755,10 @@ pub fn sanitize_v2(html: &str) -> String {
                     value.starts_with("http://")
                         || value.starts_with("https://")
                         || value.starts_with("mailto:")
-                        || value == "#"
+                        // Same-document anchors (`#install`, `#%C3%A9t%C3%A9`).
+                        || value.strip_prefix('#').is_some_and(|f| {
+                            f.chars().all(|c| c.is_alphanumeric() || "-_.%~".contains(c))
+                        })
                 }
                 ("a", "target") => value == "_blank",
                 ("a", "data-path") | ("a", "data-line") => true,
@@ -899,5 +974,93 @@ mod tests {
         }
         assert!(!lines.is_empty());
         assert!(lines.windows(2).all(|w| w[0] <= w[1]), "{lines:?}");
+    }
+
+    // ---- review fixes (2026-09-25) ----
+
+    #[test]
+    fn external_image_count_ignores_text_and_code() {
+        let r = render_doc("Images wait in `data-ext-src` until opted in.\n\n```html\n<img data-ext-src=\"https://x.test/a.png\">\n```\n\ndata-ext-src again\n");
+        assert_eq!(r.external_images, 0, "{}", r.html);
+        let r = render_doc("![a](https://x.test/a.png) and `data-ext-src`\n");
+        assert_eq!(r.external_images, 1, "{}", r.html);
+    }
+
+    #[test]
+    fn parent_links_resolve_and_never_escape() {
+        let r = render_v2(
+            "[brand](../BRAND.md) [top](/README.md#L3-L9) [out](../../../etc/passwd) ![i](../img/a.png)",
+            "docs/spec",
+            "",
+            None,
+        );
+        assert!(r.html.contains("data-path=\"docs/BRAND.md\""), "{}", r.html);
+        assert!(
+            r.html.contains("data-path=\"README.md\" data-line=\"3\""),
+            "{}",
+            r.html
+        );
+        assert!(!r.html.contains("etc/passwd"), "{}", r.html);
+        assert!(!r.html.contains(".."), "{}", r.html);
+        assert!(
+            r.html.contains("file/raw?path=docs/img/a.png"),
+            "{}",
+            r.html
+        );
+    }
+
+    #[test]
+    fn same_document_anchors_survive() {
+        let r = render_doc("[Install](#install) [bad](#a:b)\n\n## Install\n");
+        assert!(r.html.contains("<a href=\"#install\""), "{}", r.html);
+        assert!(r.html.contains("<h2 id=\"install\""), "{}", r.html);
+        assert!(!r.html.contains("href=\"#a:b\""), "{}", r.html);
+    }
+
+    #[test]
+    fn attribute_values_are_escaped_once() {
+        let r = render_doc("![b](https://x.test/i?a=1&b=2) [w](my%20file&x.md) ![l](a&b.png)\n");
+        assert!(
+            r.html
+                .contains("data-ext-src=\"https://x.test/i?a=1&amp;b=2\""),
+            "{}",
+            r.html
+        );
+        assert!(!r.html.contains("&amp;amp;"), "{}", r.html);
+        assert!(
+            r.html.contains("data-path=\"docs/my file&amp;x.md\""),
+            "{}",
+            r.html
+        );
+        assert!(r.html.contains("path=docs/a%26b.png"), "{}", r.html);
+    }
+
+    #[test]
+    fn unescape_is_single_pass() {
+        assert_eq!(html_unescape("&amp;lt;br&amp;gt;"), "&lt;br&gt;");
+        assert_eq!(html_unescape("a &lt; b &amp;&amp; c"), "a < b && c");
+        let r = render_doc("# Use `&lt;br&gt;`\n");
+        assert_eq!(r.headings[0].1, "Use &lt;br&gt;");
+    }
+
+    #[test]
+    fn workspace_path_helpers() {
+        assert_eq!(
+            join_workspace("docs/spec", "../a.md").as_deref(),
+            Some("docs/a.md")
+        );
+        assert_eq!(
+            join_workspace("docs", "./x/./y.md").as_deref(),
+            Some("docs/x/y.md")
+        );
+        assert_eq!(
+            join_workspace("docs", "/root.md").as_deref(),
+            Some("root.md")
+        );
+        assert_eq!(join_workspace("docs", "../../x"), None);
+        assert_eq!(join_workspace("", ".."), None);
+        assert_eq!(percent_decode("my%20file%E2%9C%93.md"), "my file✓.md");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(query_encode("a b&c/ü.png"), "a%20b%26c/%C3%BC.png");
     }
 }
