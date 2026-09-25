@@ -367,22 +367,44 @@ fn render_diff(
         return Ok(v);
     }
     // Full-file highlighting of each side (exact: parsed from line 1).
-    let base_sha = g.resolve_base(base).map_err(map_err)?;
-    let old_path = raw.old_path.as_deref().unwrap_or(&display);
-    let old_bytes = match raw.status {
-        ferro_core::git::ChangeStatus::Added => Vec::new(),
-        _ => g.side_bytes(old_path, &DiffSide::Rev(base_sha)),
+    // Sides are content-cached, so warm requests skip syntect entirely.
+    let (old_html, new_html) = if want_hl {
+        let base_sha = g.resolve_base(base).map_err(map_err)?;
+        let old_path = raw.old_path.as_deref().unwrap_or(&display);
+        let old_bytes = match raw.status {
+            ferro_core::git::ChangeStatus::Added => Vec::new(),
+            _ => g.side_bytes(old_path, &DiffSide::Rev(base_sha)),
+        };
+        let new_bytes = match target {
+            "worktree" => g.side_bytes(&display, &DiffSide::Worktree),
+            "index" => g.side_bytes(&display, &DiffSide::Index),
+            rev => match g.resolve_base(rev) {
+                Ok(sha) => g.side_bytes(&display, &DiffSide::Rev(sha)),
+                Err(_) => Vec::new(),
+            },
+        };
+        let old_key = raw.old_blob.as_deref().map(|s| format!("b:{s}"));
+        let new_key = raw
+            .new_blob
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("b:{s}"))
+            .or_else(|| {
+                let abs = g.root.join(&display);
+                std::fs::metadata(&abs).ok().and_then(|m| {
+                    m.modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| format!("w:{}:{}:{}", display, d.as_millis(), m.len()))
+                })
+            });
+        (
+            cached_highlight(old_key, &old_bytes, old_path),
+            cached_highlight(new_key, &new_bytes, &display),
+        )
+    } else {
+        (None, None)
     };
-    let new_bytes = match target {
-        "worktree" => g.side_bytes(&display, &DiffSide::Worktree),
-        "index" => g.side_bytes(&display, &DiffSide::Index),
-        rev => match g.resolve_base(rev) {
-            Ok(sha) => g.side_bytes(&display, &DiffSide::Rev(sha)),
-            Err(_) => Vec::new(),
-        },
-    };
-    let old_html = highlight_side(&old_bytes, old_path, want_hl);
-    let new_html = highlight_side(&new_bytes, &display, want_hl);
     let mut hunks = Vec::with_capacity(raw.hunks.len());
     for h in &raw.hunks {
         // Pair k-th del with k-th add inside each change block.
@@ -447,9 +469,49 @@ fn render_diff(
     Ok(v)
 }
 
-/// Highlight a whole side file; `None` = serve plain (too big or hl off).
-fn highlight_side(bytes: &[u8], path: &str, want_hl: bool) -> Option<Vec<String>> {
-    if !want_hl || bytes.len() as u64 > DIFF_HL_BYTES {
+/// Content-addressed side highlights (blob sha or worktree version).
+/// Warm diff requests skip syntect entirely. Byte-budgeted (32 MiB).
+static HL_SIDES: std::sync::OnceLock<parking_lot::Mutex<SideCache>> = std::sync::OnceLock::new();
+
+struct SideCache {
+    lru: lru::LruCache<String, (u64, std::sync::Arc<Vec<String>>)>,
+    bytes: u64,
+}
+
+fn cached_highlight(
+    key: Option<String>,
+    bytes: &[u8],
+    path: &str,
+) -> Option<std::sync::Arc<Vec<String>>> {
+    let cache = HL_SIDES.get_or_init(|| {
+        parking_lot::Mutex::new(SideCache {
+            lru: lru::LruCache::new(std::num::NonZeroUsize::new(32).unwrap()),
+            bytes: 0,
+        })
+    });
+    let Some(key) = key.filter(|_| !bytes.is_empty()) else {
+        return highlight_side(bytes, path).map(std::sync::Arc::new);
+    };
+    if let Some((_, lines)) = cache.lock().lru.get(&key) {
+        return Some(lines.clone());
+    }
+    let lines = std::sync::Arc::new(highlight_side(bytes, path)?);
+    let mut c = cache.lock();
+    let size = lines.iter().map(|l| l.len() as u64).sum::<u64>() + bytes.len() as u64;
+    while c.bytes + size > 32 * 1024 * 1024 {
+        match c.lru.pop_lru() {
+            Some((_, (b, _))) => c.bytes = c.bytes.saturating_sub(b),
+            None => break,
+        }
+    }
+    c.bytes += size;
+    c.lru.put(key, (size, lines.clone()));
+    Some(lines)
+}
+
+/// Highlight a whole side file; `None` = serve plain (too big).
+fn highlight_side(bytes: &[u8], path: &str) -> Option<Vec<String>> {
+    if bytes.len() as u64 > DIFF_HL_BYTES {
         return None;
     }
     let text = String::from_utf8_lossy(bytes);
@@ -553,6 +615,9 @@ fn pair_change_blocks(
 type Ranges16 = Vec<(usize, usize)>;
 
 fn intraline_pair(a: &str, b: &str) -> Option<(Ranges16, Ranges16)> {
+    if a == b {
+        return None;
+    }
     let ta = word_tokens(a);
     let tb = word_tokens(b);
     if ta.is_empty() && tb.is_empty() {
@@ -708,7 +773,11 @@ async fn blob_lines(
             lines.pop();
         }
         let total = lines.len();
-        let html = highlight_side(&bytes, &path, want_hl);
+        let html = if want_hl {
+            highlight_side(&bytes, &path)
+        } else {
+            None
+        };
         let exact = html.is_some();
         let mut out_lines = Vec::new();
         for (idx, line) in lines.iter().enumerate().skip(from - 1).take(count) {

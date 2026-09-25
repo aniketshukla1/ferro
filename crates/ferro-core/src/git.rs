@@ -1420,6 +1420,28 @@ mod tests {
     }
 
     #[test]
+    fn status_poll_during_commits_has_no_lock_errors() {
+        // External commits in a loop while polling status: --no-optional-locks
+        // must keep index.lock out of the picture.
+        let dir = repo();
+        let root = dir.path().to_path_buf();
+        let handle = std::thread::spawn(move || {
+            let r = GitRepo::new(root);
+            for i in 0..10 {
+                std::fs::write(r.root.join("tick.txt"), format!("{i}\n")).unwrap();
+                r.run(&["add", "tick.txt"]).unwrap();
+                r.run(&["commit", "-m", &format!("tick {i}")]).unwrap();
+            }
+        });
+        let r = GitRepo::new(dir.path().to_path_buf());
+        for _ in 0..50 {
+            let st = r.status_v2().expect("status poll must succeed");
+            let _ = status_hash(&st);
+        }
+        handle.join().unwrap();
+    }
+
+    #[test]
     fn changes_numstat_and_log() {
         let dir = repo();
         let repo = GitRepo::new(dir.path().to_path_buf());

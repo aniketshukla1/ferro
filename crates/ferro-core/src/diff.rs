@@ -70,6 +70,10 @@ impl GitRepo {
     /// Raw unified diff for one path between base and target.
     /// `target`: `worktree` | `index` | any rev. Deleted files, renames and
     /// untracked files (diffed against an empty base) are all handled.
+    ///
+    /// Hot path (modified file, plain base) costs one git spawn: `base` is
+    /// passed through unresolved unless it is a `merge-base` form, and
+    /// rename pairing consults full status only for pure add/delete results.
     pub fn diff_raw(
         &self,
         path: &str,
@@ -89,46 +93,13 @@ impl GitRepo {
             .strip_prefix(&root_canon)
             .map(|r| r.to_string_lossy().to_string())
             .unwrap_or_else(|_| path.to_string());
-        let base_sha = self.resolve_base(base)?;
-        // Rename pairing needs both sides visible: look up the rename source
-        // in the relevant letter maps BEFORE running the pathspec-limited diff.
-        let (staged_letters, unstaged_letters, range_letters) = if target == "worktree" {
-            (
-                self.name_status(&[&base_sha, "--cached"])
-                    .unwrap_or_default(),
-                self.name_status(&[&base_sha]).unwrap_or_default(),
-                None,
-            )
-        } else if target == "index" {
-            (
-                self.name_status(&[&base_sha, "--cached"])
-                    .unwrap_or_default(),
-                std::collections::BTreeMap::new(),
-                None,
-            )
+        // Base passes straight to git unless it is a merge-base form.
+        let base_owned;
+        let base_arg: &str = if base == "merge-base" || base.starts_with("merge-base:") {
+            base_owned = self.resolve_base(base)?;
+            &base_owned
         } else {
-            let rev = self
-                .run(&["rev-parse", target])
-                .map(|s| s.trim().to_string())?;
-            let range = format!("{base_sha}..{rev}");
-            (
-                std::collections::BTreeMap::new(),
-                std::collections::BTreeMap::new(),
-                Some(self.name_status(&[&range]).unwrap_or_default()),
-            )
-        };
-        let rename_orig = staged_letters
-            .get(&rel)
-            .or_else(|| unstaged_letters.get(&rel))
-            .or_else(|| range_letters.as_ref().and_then(|m| m.get(&rel)))
-            .filter(|(st, _)| *st == ChangeStatus::Renamed)
-            .and_then(|(_, o)| o.clone());
-        let is_untracked = if target == "worktree" {
-            self.status_v2()
-                .map(|st| st.files.iter().any(|f| f.path == rel && f.untracked))
-                .unwrap_or(false)
-        } else {
-            false
+            base
         };
         let ctx = context.clamp(0, 50).to_string();
         let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "-M"];
@@ -138,52 +109,78 @@ impl GitRepo {
             args.push("-w");
         }
         let rev_target;
-        if is_untracked {
-            // Untracked files diff against an empty base.
-            let abs = self.root.join(&rel);
-            let out = self.run_diff_bytes(&[
-                "diff",
-                "--no-index",
-                "--no-color",
-                "--no-ext-diff",
-                &ctx_arg,
-                "/dev/null",
-                &abs.to_string_lossy(),
-            ])?;
-            return Ok(parse_diff(&out, ChangeStatus::Added));
-        } else if target == "worktree" {
-            args.push(&base_sha);
+        if target == "worktree" {
+            args.push(base_arg);
         } else if target == "index" {
             args.push("--cached");
-            args.push(&base_sha);
+            args.push(base_arg);
         } else {
             rev_target = self
                 .run(&["rev-parse", target])
                 .map(|s| s.trim().to_string())?;
-            args.push(&base_sha);
+            args.push(base_arg);
             args.push(&rev_target);
         }
         args.push("--");
-        if let Some(orig) = &rename_orig {
-            args.push(orig);
-        }
         args.push(&rel);
-        // borrowck: base_sha/rev_target/rename_orig outlive args.
+        // borrowck: base_owned/rev_target outlive args.
         let out = self.run_diff_bytes(&args)?;
-        let mut d = parse_diff(&out, ChangeStatus::Modified);
-        // Authoritative letters + rename source from the precomputed maps.
-        if let Some((st, old)) = staged_letters
-            .get(&rel)
-            .or_else(|| unstaged_letters.get(&rel))
-            .or_else(|| range_letters.as_ref().and_then(|m| m.get(&rel)))
-        {
-            d.status = *st;
-            if d.old_path.is_none() {
-                d.old_path = old.clone();
+        let d = parse_diff(&out, ChangeStatus::Modified);
+        if d.hunks.is_empty() && !d.binary {
+            // Empty diff: unchanged, or untracked (worktree only), or unknown.
+            if target == "worktree"
+                && self.root.join(&rel).is_file()
+                && self
+                    .run(&["ls-files", "--error-unmatch", "--", &rel])
+                    .is_err()
+            {
+                let abs = self.root.join(&rel);
+                let out = self.run_diff_bytes(&[
+                    "diff",
+                    "--no-index",
+                    "--no-color",
+                    "--no-ext-diff",
+                    &ctx_arg,
+                    "/dev/null",
+                    &abs.to_string_lossy(),
+                ])?;
+                return Ok(parse_diff(&out, ChangeStatus::Added));
             }
-        } else if d.hunks.is_empty() && !d.binary {
-            // No diff output for this path: unchanged vs the base.
-            d.status = ChangeStatus::Modified;
+            return Ok(d);
+        }
+        // Pure add/delete: a staged rename may hide behind the pathspec
+        // (git cannot pair across it). One full status consults the R map.
+        let all_rows: Vec<_> = d.hunks.iter().flat_map(|h| &h.rows).collect();
+        let pure_add = !all_rows.is_empty() && all_rows.iter().all(|r| r.t == RowKind::Add);
+        let pure_del = !all_rows.is_empty() && all_rows.iter().all(|r| r.t == RowKind::Del);
+        if (pure_add || pure_del) && (target == "worktree" || target == "index") {
+            if let Ok(st) = self.status_v2() {
+                let hit = st.files.iter().find(|f| {
+                    f.path == rel
+                        && f.orig_path.is_some()
+                        && (f.index == Some("R") || f.worktree == Some("R"))
+                });
+                if let Some(orig) = hit.and_then(|f| f.orig_path.clone()) {
+                    let mut args2: Vec<&str> =
+                        vec!["diff", "--no-color", "--no-ext-diff", "-M", &ctx_arg];
+                    if ignore_ws {
+                        args2.push("-w");
+                    }
+                    if target == "index" {
+                        args2.push("--cached");
+                    }
+                    args2.push(base_arg);
+                    args2.push("--");
+                    args2.push(&orig);
+                    args2.push(&rel);
+                    if let Ok(out2) = self.run_diff_bytes(&args2) {
+                        let d2 = parse_diff(&out2, ChangeStatus::Renamed);
+                        if d2.status == ChangeStatus::Renamed {
+                            return Ok(d2);
+                        }
+                    }
+                }
+            }
         }
         Ok(d)
     }
@@ -532,5 +529,41 @@ mod tests {
         assert_eq!(unquote("\"\\303\\251\""), "é");
         assert_eq!(unquote("plain"), "plain");
         assert_eq!(strip_ab("a/x".into()), "x");
+    }
+
+    #[test]
+    fn deleted_modechange_unicode() {
+        let (_dir, r) = fixture();
+        // Deleted file.
+        r.run(&["rm", "a.txt"]).unwrap();
+        let d = r.diff_raw("a.txt", "HEAD", "worktree", 3, false).unwrap();
+        assert_eq!(d.status, ChangeStatus::Deleted);
+        assert!(d
+            .hunks
+            .iter()
+            .flat_map(|h| &h.rows)
+            .all(|x| x.t == RowKind::Del));
+        r.run(&["checkout", "HEAD", "--", "a.txt"]).unwrap();
+        // Mode change only (no content change).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(r.root.join("a.txt"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            let d = r.diff_raw("a.txt", "HEAD", "worktree", 3, false).unwrap();
+            assert!(d.hunks.is_empty() && !d.binary);
+            std::fs::set_permissions(r.root.join("a.txt"), std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        // Unicode path.
+        std::fs::write(r.root.join("café.txt"), "x\n").unwrap();
+        r.run(&["add", "café.txt"]).unwrap();
+        r.run(&["commit", "-m", "uni"]).unwrap();
+        std::fs::write(r.root.join("café.txt"), "y\n").unwrap();
+        let d = r
+            .diff_raw("café.txt", "HEAD", "worktree", 3, false)
+            .unwrap();
+        assert_eq!(d.new_path, "café.txt");
+        assert_eq!(d.hunks.len(), 1);
     }
 }

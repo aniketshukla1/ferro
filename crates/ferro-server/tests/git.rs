@@ -238,8 +238,18 @@ async fn log_shape() {
 #[tokio::test]
 async fn legacy_git_status_still_works() {
     let app = state();
-    let (s, v) = j(app, "/api/git-status").await;
+    let (s, v) = j(app.clone(), "/api/git-status").await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, body) = {
+        let res = app.oneshot(get("/api/diff")).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 8 * 1024 * 1024)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    };
+    assert_eq!(s, StatusCode::OK);
+    assert!(body.contains("a.txt"), "{body}");
 }
 
 #[tokio::test]
