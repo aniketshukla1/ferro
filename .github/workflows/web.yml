@@ -1,0 +1,18 @@
+name: web
+on:
+  push:
+    paths: ['web/**', '.github/workflows/web.yml']
+  pull_request:
+    paths: ['web/**', '.github/workflows/web.yml']
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax-check every ES module
+        run: node web/tests/tools/check-syntax.mjs
+      - name: Unit tests (security sinks, theme contrast, keys, fuzzy, find, markdown mock, git status)
+        run: node --test web/tests/unit/*.test.js

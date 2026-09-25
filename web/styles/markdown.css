@@ -1,0 +1,85 @@
+/* ferro markdown preview: a quiet reading surface for backend-rendered, sanitized HTML */
+.md-wrap { background: var(--bg-0); }
+.md-view { flex: 1; min-height: 0; overflow: auto; position: relative; }
+.md-view:focus-visible { outline: none; }
+
+.md-notice {
+  display: flex; align-items: center; gap: var(--sp-4);
+  width: min(760px, calc(100% - 64px)); margin: var(--sp-6) auto 0;
+  padding: var(--sp-4) var(--sp-4) var(--sp-4) var(--sp-5);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-strong);
+  color: var(--fg-muted); font-size: var(--fs-sm);
+}
+.md-notice > span { flex: 1; }
+.md-notice .i { color: var(--fg-faint); }
+
+.md {
+  width: min(760px, calc(100% - 64px));
+  margin: 0 auto;
+  padding: var(--sp-9) 0 22vh;
+  color: var(--fg);
+  font-size: 14.5px; line-height: 1.7;
+  overflow-wrap: break-word;
+}
+.md > :first-child { margin-top: 0; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+  margin: 1.8em 0 0.6em;
+  font-weight: 600; line-height: 1.3; letter-spacing: var(--tracking-tight);
+  scroll-margin-top: var(--sp-6);
+}
+.md h1 { font-size: 28px; letter-spacing: -0.02em; margin-top: 0.4em; }
+.md h2 { font-size: 20px; padding-bottom: 0.35em; border-bottom: 1px solid var(--border); }
+.md h3 { font-size: 16px; }
+.md h4 { font-size: 14.5px; }
+.md h5, .md h6 { font-size: 13px; color: var(--fg-muted); }
+.md p, .md ul, .md ol, .md blockquote, .md pre, .md table, .md details { margin: 0 0 1em; }
+.md ul, .md ol { padding-left: 1.6em; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md ul ul { list-style: circle; }
+.md li { margin: 0.25em 0; }
+.md li > ul, .md li > ol { margin: 0.25em 0 0; }
+.md li::marker { color: var(--fg-faint); }
+.md li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.4em; }
+.md input[type="checkbox"] { margin: 0 0.5em 0 0; vertical-align: -1px; accent-color: var(--fg); }
+.md a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; cursor: pointer; }
+.md a:hover { text-decoration-color: var(--fg); }
+.md a[data-path]::after { content: "↗"; margin-left: 2px; font-size: 0.8em; color: var(--fg-faint); }
+.md strong { font-weight: 600; }
+.md em { font-style: italic; }
+.md del { color: var(--fg-muted); }
+.md hr { border: 0; border-top: 1px solid var(--border); margin: 2em 0; }
+.md img { max-width: 100%; height: auto; border-radius: var(--r-sm); }
+.md img[data-ext-src]:not([src]) { display: inline-block; width: 120px; height: 72px; border: 1px dashed var(--border-strong); border-radius: var(--r-sm); background: var(--bg-1); vertical-align: middle; }
+.md blockquote { padding: 0 1em; border-left: 3px solid var(--border-strong); color: var(--fg-muted); }
+.md code {
+  font: 0.88em/1.5 var(--font-mono);
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+}
+.md pre {
+  position: relative;
+  padding: var(--sp-5) var(--sp-6);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  overflow: auto;
+  font: 12.5px/1.65 var(--font-mono);
+  color: var(--code-fg);
+  tab-size: var(--tab-size);
+}
+.md pre code { font: inherit; padding: 0; border: 0; background: none; }
+.md pre .md-copy { position: absolute; top: 6px; right: 6px; opacity: 0; background: var(--bg-2); }
+.md pre:hover .md-copy, .md pre .md-copy:focus-visible { opacity: 1; }
+.md table { border-collapse: collapse; display: block; width: max-content; max-width: 100%; overflow: auto; font-size: 13.5px; }
+.md th, .md td { padding: 6px 12px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+.md th { font-weight: 600; background: var(--bg-1); }
+.md tr:nth-child(even) td { background: color-mix(in srgb, var(--bg-1) 50%, transparent); }
+.md kbd { font-size: 11px; }
+.md details { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-3) var(--sp-5); }
+.md summary { cursor: pointer; font-weight: 500; }
+.md .md-flash { animation: md-flash 1.2s var(--ease-out); border-radius: 4px; }
+@keyframes md-flash { from { background: color-mix(in srgb, var(--fg) 12%, transparent); } }

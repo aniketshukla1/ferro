@@ -1,0 +1,80 @@
+/* ferro command palette */
+.palette {
+  width: min(640px, calc(100vw - 32px));
+  display: flex; flex-direction: column;
+  max-height: min(540px, 72vh);
+  border-radius: var(--r-xl);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-3);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: pop-in var(--dur-2) var(--ease-out);
+}
+.pal-input-row {
+  display: flex; align-items: center; gap: var(--sp-5);
+  height: 52px; flex: none;
+  padding: 0 var(--sp-6) 0 var(--sp-7);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-faint);
+}
+.pal-mode {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 var(--sp-4);
+  border-radius: var(--r-sm);
+  background: var(--active); color: var(--fg);
+  font-size: var(--fs-sm); font-weight: 500; white-space: nowrap;
+}
+.pal-input {
+  flex: 1; min-width: 0; height: 100%;
+  border: 0; background: transparent;
+  color: var(--fg); font-size: 15px; letter-spacing: -0.005em;
+}
+.pal-input::placeholder { color: var(--fg-faint); }
+.pal-input:focus-visible { outline: none; }
+.pal-list { flex: 1; min-height: 0; overflow: auto; padding: var(--sp-3); scroll-padding: var(--sp-3); }
+.pal-group {
+  padding: var(--sp-5) var(--sp-5) var(--sp-3);
+  font-size: var(--fs-2xs); font-weight: 600; letter-spacing: var(--tracking-caps); text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.pal-group:first-child { padding-top: var(--sp-3); }
+.pal-item {
+  display: flex; align-items: center; gap: var(--sp-5);
+  height: 34px; padding: 0 var(--sp-5);
+  border-radius: var(--r-md);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.pal-item .ficon, .pal-item .pi-icon { color: var(--fg-faint); }
+.pal-item.active { background: var(--active); color: var(--fg); }
+.pal-item.active .ficon, .pal-item.active .pi-icon { color: var(--fg-muted); }
+.pal-item .pi-icon { flex: none; display: inline-grid; place-items: center; width: 18px; }
+.pal-item .pi-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--sp-4); overflow: hidden; }
+.pal-item .pi-label { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; max-width: 70%; }
+.pal-item .pi-desc { color: var(--fg-faint); font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pal-item .pi-code { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); white-space: pre; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pal-item .pi-right { flex: none; display: flex; align-items: center; gap: var(--sp-4); color: var(--fg-faint); font-size: var(--fs-sm); }
+/* fuzzy matches: weight and brightness, no hue */
+.pal-item mark, .pal-hit { background: none; color: var(--fg); font-weight: 650; }
+.pal-item .pi-label { color: color-mix(in srgb, var(--fg) 82%, transparent); }
+.pal-item.active .pi-label { color: var(--fg); }
+.pal-item .pi-desc mark { color: var(--fg-muted); font-weight: inherit; }
+.pal-item .pi-code mark { background: color-mix(in srgb, var(--fg) 16%, transparent); color: var(--fg); border-radius: 2px; font-weight: 500; text-decoration: none; }
+.pal-empty { padding: var(--sp-9) var(--sp-6); text-align: center; color: var(--fg-muted); font-size: var(--fs-sm); }
+.pal-foot {
+  display: flex; align-items: center; gap: var(--sp-6);
+  height: 34px; flex: none;
+  padding: 0 var(--sp-6);
+  border-top: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--fg-faint); font-size: var(--fs-xs);
+}
+.pal-foot .hint { display: inline-flex; align-items: center; gap: 5px; }
+.pal-foot .modes { margin-left: auto; display: flex; gap: var(--sp-1); }
+.pal-foot .mode-chip {
+  height: 20px; min-width: 20px; padding: 0 6px; border-radius: 4px;
+  color: var(--fg-faint); font-family: var(--font-mono); font-size: 11px;
+}
+.pal-foot .mode-chip:hover { background: var(--hover); color: var(--fg); }
+.pal-foot .mode-chip.on { color: var(--fg); background: var(--active); }
+.pal-foot .timing { font-variant-numeric: tabular-nums; }

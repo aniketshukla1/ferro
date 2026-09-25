@@ -1,0 +1,55 @@
+/* ferro file tree (virtualized). Row height comes from --h-row (read by tree.js). */
+.tree {
+  position: absolute; inset: 0;
+  overflow: auto;
+  padding: 2px 0 var(--sp-8);
+  --guide: color-mix(in srgb, var(--fg) 7%, transparent);
+  --indent: 14px;
+}
+.tree:focus-visible { outline: none; }
+.vl-sizer { position: relative; width: 100%; }
+.tree-row {
+  position: absolute; left: var(--sp-3); right: var(--sp-3); top: 0;
+  display: flex; align-items: center; gap: 6px;
+  height: var(--h-row);
+  padding: 0 var(--sp-3) 0 var(--sp-3);
+  border-radius: var(--r-sm);
+  color: var(--fg-muted);
+  font-size: var(--fs-md);
+  cursor: pointer; user-select: none;
+  white-space: nowrap;
+}
+.tree-row:hover { background: var(--hover); color: var(--fg); }
+.tree-row.current { color: var(--fg); background: var(--active); }
+.tree-row.current .ficon { color: var(--fg-muted); }
+.tree.kbd .tree-row.focused { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 35%, transparent); }
+.tree-row .icon-slot { display: inline-flex; flex: none; }
+.tree-row.ignored { opacity: 0.5; }
+.tree-row.dir { color: var(--fg); }
+.tree-row .indent {
+  flex: none; align-self: stretch;
+  width: calc(var(--depth, 0) * var(--indent));
+  background-image: repeating-linear-gradient(90deg, transparent 0 6.5px, var(--guide) 6.5px 7.5px, transparent 7.5px var(--indent));
+}
+.tree-row .twisty {
+  display: grid; place-items: center; flex: none;
+  width: 14px; height: 14px;
+  color: var(--fg-faint);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.tree-row[aria-expanded="true"] .twisty { transform: rotate(90deg); }
+.tree-row .twisty.none { visibility: hidden; }
+.ficon { display: inline-grid; place-items: center; flex: none; color: var(--fg-faint); }
+.ficon.folder { color: var(--fg-faint); }
+.tree-row:hover .ficon { color: var(--fg-muted); }
+.tree-row .tname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tree-row .tname .compact-sep { color: var(--fg-faint); padding: 0 1px; }
+.tree-row .tmeta { display: flex; align-items: center; gap: var(--sp-3); flex: none; }
+.tree-row .ddot { width: 5px; height: 5px; border-radius: 50%; background: var(--git-modified); opacity: 0.9; }
+.tree-row.git-M .tname { color: color-mix(in srgb, var(--git-modified) 70%, var(--fg)); }
+.tree-row.git-A .tname, .tree-row.git-\? .tname { color: color-mix(in srgb, var(--git-added) 70%, var(--fg)); }
+.tree-row.git-D .tname { color: color-mix(in srgb, var(--git-deleted) 70%, var(--fg)); text-decoration: line-through; }
+.tree-row .loading { width: 10px; height: 10px; }
+
+.tree-empty { padding: var(--sp-6); }
+.tree-skel { display: flex; flex-direction: column; gap: 12px; padding: var(--sp-5) var(--sp-6); }

@@ -1,0 +1,114 @@
+/* ferro base: reset, typography, focus, scrollbars, syntax classes, utilities */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg-chrome);
+  color: var(--fg);
+  font: 400 var(--fs-md)/var(--lh) var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: 0; padding: 0; }
+button:disabled { cursor: default; }
+a { color: inherit; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 2px; }
+a:hover { text-decoration-color: currentColor; }
+h1, h2, h3, h4, p { margin: 0; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+code, kbd, pre, .mono { font-family: var(--font-mono); }
+[hidden] { display: none !important; }
+
+::selection { background: var(--selection); }
+
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  border-radius: var(--r-sm);
+}
+
+/* thin, quiet scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); background-clip: content-box; }
+
+/* icons (built by src/ui/icons.js) */
+svg.i {
+  width: var(--icon);
+  height: var(--icon);
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--icon-stroke);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: middle;
+}
+svg.i.sm { width: 14px; height: 14px; }
+svg.i.xs { width: 12px; height: 12px; }
+svg.i.lg { width: 20px; height: 20px; }
+svg.i.xl { width: 28px; height: 28px; stroke-width: 1.5; }
+
+/* syntax highlight classes (docs/spec/API.md § 11) */
+.t-c { color: var(--syn-comment); font-style: italic; }
+.t-cd { color: var(--syn-doc); font-style: italic; }
+.t-k { color: var(--syn-keyword); }
+.t-o { color: var(--syn-operator); }
+.t-p { color: var(--syn-punct); }
+.t-s { color: var(--syn-string); }
+.t-se { color: var(--syn-escape); }
+.t-re { color: var(--syn-regex); }
+.t-n { color: var(--syn-number); }
+.t-b { color: var(--syn-constant); }
+.t-f { color: var(--syn-function); }
+.t-fd { color: var(--syn-function-def); font-weight: 600; }
+.t-t { color: var(--syn-type); }
+.t-tb { color: var(--syn-type-builtin); }
+.t-v { color: var(--syn-variable); }
+.t-vp { color: var(--syn-param); }
+.t-vb { color: var(--syn-variable-builtin); font-style: italic; }
+.t-pr { color: var(--syn-property); }
+.t-m { color: var(--syn-macro); }
+.t-ns { color: var(--syn-namespace); }
+.t-tg { color: var(--syn-tag); }
+.t-at { color: var(--syn-attr); }
+.t-h { color: var(--syn-heading); font-weight: 600; }
+.t-em { color: var(--syn-emphasis); font-style: italic; }
+.t-st { color: var(--syn-strong); font-weight: 700; }
+.t-l { color: var(--syn-link); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--syn-link) 45%, transparent); }
+.t-ins { color: var(--syn-inserted); }
+.t-del { color: var(--syn-deleted); }
+.t-err { color: var(--syn-error); text-decoration: wavy underline; text-decoration-color: var(--syn-error); }
+
+/* CSS Custom Highlight API decorations */
+::highlight(ferro-find) { background-color: color-mix(in srgb, var(--warn) 30%, transparent); color: inherit; }
+::highlight(ferro-find-current) { background-color: color-mix(in srgb, var(--warn) 62%, transparent); color: var(--fg); }
+::highlight(ferro-occ) { background-color: color-mix(in srgb, var(--fg) 12%, transparent); }
+mark.hl-find { background: color-mix(in srgb, var(--warn) 30%, transparent); color: inherit; border-radius: 2px; }
+
+/* utilities */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.muted { color: var(--fg-muted); }
+.faint { color: var(--fg-faint); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.grow { flex: 1 1 auto; min-width: 0; }
+.row { display: flex; align-items: center; gap: var(--sp-4); }
+.col { display: flex; flex-direction: column; }
+.nowrap { white-space: nowrap; }
+.num { font-variant-numeric: tabular-nums; }

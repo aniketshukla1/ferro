@@ -1,0 +1,118 @@
+/* ferro code viewer (virtualized rows, sticky gutter) and image view */
+.cv {
+  position: relative;
+  flex: 1; min-height: 0;
+  overflow: auto;
+  background: var(--bg-0);
+  font: 400 var(--code-fs)/var(--code-lh) var(--font-mono);
+  font-variant-ligatures: none;
+  tab-size: var(--tab-size);
+  contain: strict;
+  --gutter-w: 60px;
+}
+.cv:focus-visible { outline: none; }
+.cv-sizer { position: relative; min-width: 100%; }
+.cv-row {
+  position: absolute; left: 0; top: 0;
+  display: flex;
+  height: var(--code-lh);
+  min-width: 100%;
+  white-space: pre;
+  color: var(--code-fg);
+}
+.cv-ln {
+  position: sticky; left: 0; z-index: 2;
+  flex: none;
+  width: var(--gutter-w);
+  padding-right: 20px;
+  text-align: right;
+  color: color-mix(in srgb, var(--fg-faint) 85%, transparent);
+  background: var(--bg-0);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  cursor: pointer;
+}
+.cv-ln:hover { color: var(--fg-muted); }
+.cv-ln::after {
+  /* git change marker lives at the gutter's right edge */
+  content: ""; position: absolute; top: 3px; bottom: 3px; right: 7px; width: 2px; border-radius: 2px;
+  background: transparent;
+}
+.cv-row.g-add .cv-ln::after { background: var(--gutter-add); }
+.cv-row.g-mod .cv-ln::after { background: var(--gutter-mod); }
+.cv-row.g-del .cv-ln::after { background: linear-gradient(135deg, var(--gutter-del) 45%, transparent 45%); top: auto; bottom: -3px; height: 7px; width: 7px; border-radius: 0; }
+.cv-code { padding: 0 56px 0 4px; }
+.cv-row.cur { background: var(--line-hl); }
+.cv-row.cur .cv-ln { color: var(--fg); background: linear-gradient(var(--line-hl), var(--line-hl)), var(--bg-0); }
+.cv-row.sel { background: var(--line-sel); }
+.cv-row.sel .cv-ln { color: var(--fg); background: linear-gradient(var(--line-sel), var(--line-sel)), var(--bg-0); }
+.cv-row.skel .cv-code { display: flex; align-items: center; }
+.cv-row.skel .cv-code .skel { height: 7px; opacity: 0.7; }
+.cv-cut { color: var(--fg-faint); margin-left: 8px; font-family: var(--font-ui); font-size: var(--fs-xs); }
+
+/* hairline under the breadcrumbs once the code has scrolled */
+.cv-shadow {
+  position: absolute; left: 0; right: 0; top: 0; height: 1px; pointer-events: none; z-index: 3;
+  background: var(--border); opacity: 0; transition: opacity var(--dur-2);
+}
+.cv-wrap.scrolled .cv-shadow { opacity: 1; }
+.cv-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* find bar (floats over the code, below the breadcrumbs) */
+.findbar {
+  position: absolute; top: var(--sp-4); right: var(--sp-7); z-index: 6;
+  display: flex; align-items: center; gap: 2px;
+  height: 36px; padding: 0 var(--sp-2) 0 var(--sp-5);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-3);
+  box-shadow: var(--shadow-md);
+  color: var(--fg-faint);
+  animation: pop-in var(--dur-2) var(--ease-out);
+}
+.fb-input { width: 220px; height: 28px; margin-left: var(--sp-3); border: 0; background: transparent; color: var(--fg); font: 13px var(--font-mono); }
+.fb-input:focus-visible { outline: none; }
+.fb-input::placeholder { color: var(--fg-faint); font-family: var(--font-ui); }
+.fb-opts { display: flex; gap: 1px; }
+.fb-count { min-width: 76px; padding: 0 var(--sp-3); text-align: right; font-size: var(--fs-xs); white-space: nowrap; }
+.findbar.bad .fb-count { color: var(--danger); }
+.fb-sep { width: 1px; height: 16px; margin: 0 var(--sp-2); background: var(--border-strong); }
+
+/* status overlay for loading/errors */
+.view-center { flex: 1; display: grid; place-items: center; }
+
+/* jump-to-line flash */
+.cv-row.flash { animation: line-flash 1s var(--ease-out); }
+@keyframes line-flash {
+  from { background: color-mix(in srgb, var(--fg) 16%, transparent); }
+  to { background: var(--line-hl); }
+}
+
+/* loading placeholder while a document's metadata loads */
+.loading-doc { display: flex; flex-direction: column; gap: 12px; padding: 16px 0 0 76px; }
+.loading-doc .skel { height: 8px; }
+
+/* image view */
+.imgv { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.imgv-stage {
+  flex: 1; min-height: 0; overflow: auto;
+  display: grid; place-items: center; padding: var(--sp-8);
+  background-color: var(--bg-0);
+  background-image: conic-gradient(var(--bg-2) 25%, transparent 0 50%, var(--bg-2) 0 75%, transparent 0);
+  background-size: 16px 16px;
+  cursor: default;
+}
+.imgv-stage:focus-visible { outline: none; }
+.imgv-stage.plain { background-image: none; }
+.imgv-stage.panning { cursor: grabbing; }
+.imgv-stage img { max-width: none; box-shadow: 0 0 0 1px var(--border); }
+.imgv-stage img.pixelated { image-rendering: pixelated; }
+.imgv-bar {
+  display: flex; align-items: center; gap: var(--sp-2);
+  height: 36px; flex: none; padding: 0 var(--sp-3) 0 var(--sp-6);
+  border-top: 1px solid var(--border); background: var(--bg-chrome);
+  color: var(--fg-faint); font-size: var(--fs-xs);
+}
+.imgv-sp { flex: 1; }
+.imgv-zoom { min-width: 44px; text-align: center; color: var(--fg-muted); }

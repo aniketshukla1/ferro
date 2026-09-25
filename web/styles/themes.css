@@ -1,0 +1,215 @@
+/* ferro themes. Each theme sets primitives; shared semantic tokens derive from them.
+   Near-monochrome by design: surfaces and text are neutral greys, the "accent" is the
+   foreground itself, and hue appears only where it carries meaning (strings and numbers
+   in code, git state, diffs, errors). Syntax variables map 1:1 to the highlight classes
+   in docs/spec/API.md § 11. Contrast is checked by web/tests/unit/contrast.test.js. */
+
+/* ---------- shared derived tokens ---------- */
+:root, [data-theme] {
+  --hover: color-mix(in srgb, var(--fg) 5%, transparent);
+  --press: color-mix(in srgb, var(--fg) 8.5%, transparent);
+  --active: color-mix(in srgb, var(--fg) 8%, transparent);
+  --active-strong: color-mix(in srgb, var(--fg) 12%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent) 7%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 38%, transparent);
+  --selection: color-mix(in srgb, var(--sel-tint) 32%, transparent);
+  --line-hl: color-mix(in srgb, var(--fg) 3.5%, transparent);
+  --line-sel: color-mix(in srgb, var(--sel-tint) 15%, transparent);
+  --focus: color-mix(in srgb, var(--fg) 58%, transparent);
+  --scroll-thumb: color-mix(in srgb, var(--fg) 13%, transparent);
+  --scroll-thumb-hover: color-mix(in srgb, var(--fg) 24%, transparent);
+  --backdrop: color-mix(in srgb, var(--bg-chrome) 62%, transparent);
+
+  --diff-add-bg: color-mix(in srgb, var(--ok) 11%, transparent);
+  --diff-add-word-bg: color-mix(in srgb, var(--ok) 28%, transparent);
+  --diff-del-bg: color-mix(in srgb, var(--danger) 11%, transparent);
+  --diff-del-word-bg: color-mix(in srgb, var(--danger) 28%, transparent);
+  --diff-hunk-bg: color-mix(in srgb, var(--fg) 4%, transparent);
+  --gutter-add: var(--ok);
+  --gutter-mod: var(--info);
+  --gutter-del: var(--danger);
+
+  --git-added: var(--ok);
+  --git-modified: var(--warn);
+  --git-deleted: var(--danger);
+  --git-untracked: var(--ok);
+  --git-renamed: var(--info);
+  --git-conflict: var(--danger);
+
+  --sev-high: var(--danger);
+  --sev-medium: var(--warn);
+  --sev-low: var(--info);
+  --sev-nit: var(--fg-muted);
+  --viewed: var(--ok);
+}
+
+/* ---------- graphite (dark, default) ---------- */
+:root, [data-theme="graphite"] {
+  color-scheme: dark;
+  --bg-chrome: #0f0f11;
+  --bg-0: #141416;
+  --bg-1: #18181b;
+  --bg-2: #1c1c1f;
+  --bg-3: #1c1c1f;
+  --bg-inset: #18181b;
+  --fg: #ededf0;
+  --fg-muted: #a1a1aa;
+  --fg-faint: #707079;
+  --border: #232327;
+  --border-strong: #303036;
+  --accent: #ededf0;
+  --accent-hover: #ffffff;
+  --accent-fg: #0f0f11;
+  --sel-tint: #8ea4d2;
+  --ok: #6cc38f;
+  --warn: #d8b25e;
+  --danger: #ec6f6f;
+  --info: #7eaaea;
+  --shadow-lg: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 24px 60px -12px rgba(0, 0, 0, 0.7);
+  --shadow-md: 0 0 0 1px rgba(0, 0, 0, 0.45), 0 12px 28px -10px rgba(0, 0, 0, 0.6);
+  --code-fg: #d9d9de;
+
+  --syn-comment: #707079;
+  --syn-doc: #7c7c86;
+  --syn-keyword: #a1a1ab;
+  --syn-operator: #a1a1ab;
+  --syn-punct: #85858f;
+  --syn-string: #a3d6b8;
+  --syn-escape: #cbe9d6;
+  --syn-regex: #a3d6b8;
+  --syn-number: #e2c393;
+  --syn-constant: #e2c393;
+  --syn-function: #ececf0;
+  --syn-function-def: #ffffff;
+  --syn-type: #c9d0de;
+  --syn-type-builtin: #b7bfcf;
+  --syn-variable: #d9d9de;
+  --syn-param: #d9d9de;
+  --syn-variable-builtin: #a1a1ab;
+  --syn-property: #c6c6cd;
+  --syn-macro: #c9d0de;
+  --syn-namespace: #b4b4bd;
+  --syn-tag: #c9d0de;
+  --syn-attr: #a9a9b3;
+  --syn-heading: #ffffff;
+  --syn-emphasis: #d9d9de;
+  --syn-strong: #ffffff;
+  --syn-link: #a4bce8;
+  --syn-inserted: #7fd09c;
+  --syn-deleted: #f08f8f;
+  --syn-error: #ff6f6f;
+}
+
+/* ---------- porcelain (light) ---------- */
+[data-theme="porcelain"] {
+  color-scheme: light;
+  --bg-chrome: #f6f6f7;
+  --bg-0: #ffffff;
+  --bg-1: #fafafb;
+  --bg-2: #f2f2f4;
+  --bg-3: #ffffff;
+  --bg-inset: #ffffff;
+  --fg: #16161a;
+  --fg-muted: #5b5b65;
+  --fg-faint: #85858f;
+  --border: #e7e7eb;
+  --border-strong: #d7d7dd;
+  --accent: #16161a;
+  --accent-hover: #000000;
+  --accent-fg: #ffffff;
+  --sel-tint: #4a72c4;
+  --ok: #1d8049;
+  --warn: #946400;
+  --danger: #c93a3a;
+  --info: #2e68c8;
+  --shadow-lg: 0 0 0 1px rgba(20, 20, 30, 0.07), 0 24px 56px -14px rgba(20, 20, 30, 0.22);
+  --shadow-md: 0 0 0 1px rgba(20, 20, 30, 0.07), 0 10px 26px -10px rgba(20, 20, 30, 0.18);
+  --code-fg: #24242a;
+
+  --syn-comment: #85858f;
+  --syn-doc: #7a7a84;
+  --syn-keyword: #6a6a75;
+  --syn-operator: #6a6a75;
+  --syn-punct: #7d7d87;
+  --syn-string: #17754a;
+  --syn-escape: #0f5a37;
+  --syn-regex: #17754a;
+  --syn-number: #9a5800;
+  --syn-constant: #9a5800;
+  --syn-function: #16161a;
+  --syn-function-def: #000000;
+  --syn-type: #3a4863;
+  --syn-type-builtin: #47546e;
+  --syn-variable: #24242a;
+  --syn-param: #24242a;
+  --syn-variable-builtin: #6a6a75;
+  --syn-property: #393941;
+  --syn-macro: #3a4863;
+  --syn-namespace: #484852;
+  --syn-tag: #3a4863;
+  --syn-attr: #6a6a75;
+  --syn-heading: #000000;
+  --syn-emphasis: #24242a;
+  --syn-strong: #000000;
+  --syn-link: #2d5bb0;
+  --syn-inserted: #1a7c43;
+  --syn-deleted: #c13b3b;
+  --syn-error: #d22b2b;
+}
+
+/* ---------- carbon (true black, highest contrast) ---------- */
+[data-theme="carbon"] {
+  color-scheme: dark;
+  --bg-chrome: #0a0a0a;
+  --bg-0: #000000;
+  --bg-1: #0e0e0e;
+  --bg-2: #141414;
+  --bg-3: #121212;
+  --bg-inset: #101010;
+  --fg: #f5f5f5;
+  --fg-muted: #a8a8a8;
+  --fg-faint: #767676;
+  --border: #1e1e1e;
+  --border-strong: #2c2c2c;
+  --accent: #f5f5f5;
+  --accent-hover: #ffffff;
+  --accent-fg: #000000;
+  --sel-tint: #90a6d4;
+  --ok: #70c994;
+  --warn: #dcb661;
+  --danger: #f07373;
+  --info: #82aeee;
+  --shadow-lg: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 24px 60px -12px rgba(0, 0, 0, 0.9);
+  --shadow-md: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 12px 28px -10px rgba(0, 0, 0, 0.8);
+  --code-fg: #e2e2e2;
+
+  --syn-comment: #767676;
+  --syn-doc: #828282;
+  --syn-keyword: #a8a8a8;
+  --syn-operator: #a8a8a8;
+  --syn-punct: #8a8a8a;
+  --syn-string: #a8dbbd;
+  --syn-escape: #d0ecdb;
+  --syn-regex: #a8dbbd;
+  --syn-number: #e6c799;
+  --syn-constant: #e6c799;
+  --syn-function: #f0f0f0;
+  --syn-function-def: #ffffff;
+  --syn-type: #ced5e3;
+  --syn-type-builtin: #bcc4d4;
+  --syn-variable: #e2e2e2;
+  --syn-param: #e2e2e2;
+  --syn-variable-builtin: #a8a8a8;
+  --syn-property: #cbcbcb;
+  --syn-macro: #ced5e3;
+  --syn-namespace: #b9b9b9;
+  --syn-tag: #ced5e3;
+  --syn-attr: #adadad;
+  --syn-heading: #ffffff;
+  --syn-emphasis: #e2e2e2;
+  --syn-strong: #ffffff;
+  --syn-link: #a9c1ec;
+  --syn-inserted: #84d4a1;
+  --syn-deleted: #f39393;
+  --syn-error: #ff7272;
+}
