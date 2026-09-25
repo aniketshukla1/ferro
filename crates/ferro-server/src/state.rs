@@ -67,6 +67,9 @@ pub struct Workspace {
     pub lines: crate::lines::LineIndex,
     pub hl: Arc<parking_lot::Mutex<crate::hl::Highlighter>>,
     pub git: Option<GitRepo>,
+    /// Latest status payload (B3 watcher + mutations); tree reads it for
+    /// `git`/`dirty` without spawning git per request.
+    pub git_status: parking_lot::RwLock<Option<ferro_core::git::GitStatus>>,
     pub review: ferro_agent::ReviewStore,
     pub session_path: PathBuf,
 }
@@ -89,6 +92,7 @@ impl Workspace {
             lines: crate::lines::LineIndex::new(),
             hl: Arc::new(parking_lot::Mutex::new(crate::hl::Highlighter::new())),
             git,
+            git_status: parking_lot::RwLock::new(None),
             review: ferro_agent::ReviewStore::default(),
             session_path,
         })
@@ -112,6 +116,9 @@ pub struct AppState {
     pub started_at: std::time::Instant,
     /// At most 2 concurrent full scans (§ 4.3); extra ones wait.
     pub search_slots: Arc<tokio::sync::Semaphore>,
+    /// Live watcher handle (B3); None in tests or when watching failed
+    /// (adaptive polling fallback runs instead).
+    pub watch: parking_lot::Mutex<Option<ferro_core::watch::WatchHandle>>,
 }
 
 impl AppState {

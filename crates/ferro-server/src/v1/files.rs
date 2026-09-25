@@ -105,6 +105,41 @@ async fn tree(
             "symlink": symlink_outside.unwrap_or(false),
         }));
     }
+    // B3: merge cached git status (no per-request git spawn).
+    let ws = s.ws();
+    let git_cache = ws.git_status.read().clone();
+    if let Some(st) = git_cache {
+        use std::collections::{HashMap, HashSet};
+        let mut codes: HashMap<&str, (&str, bool)> = HashMap::new();
+        let mut changed_dirs: HashSet<String> = HashSet::new();
+        for f in &st.files {
+            let code = if f.untracked {
+                "?"
+            } else if f.conflicted {
+                "U"
+            } else {
+                f.index.or(f.worktree).unwrap_or("M")
+            };
+            codes.insert(f.path.as_str(), (code, f.untracked));
+            // Every ancestor directory is dirty.
+            let mut dir = f.path.as_str();
+            while let Some((parent, _)) = dir.rsplit_once('/') {
+                changed_dirs.insert(parent.to_string());
+                dir = parent;
+            }
+        }
+        for e in entries.iter_mut() {
+            let p = e["path"].as_str().unwrap_or("").to_string();
+            let is_dir = e["dir"].as_bool().unwrap_or(false);
+            if is_dir {
+                if changed_dirs.contains(&p) {
+                    e["dirty"] = serde_json::json!(true);
+                }
+            } else if let Some((code, _)) = codes.get(p.as_str()) {
+                e["git"] = serde_json::json!(code);
+            }
+        }
+    }
     entries.sort_by(|a, b| {
         let da = a["dir"].as_bool().unwrap_or(false);
         let db = b["dir"].as_bool().unwrap_or(false);

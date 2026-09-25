@@ -4,6 +4,7 @@ use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use ferro_server::server;
 use std::sync::Arc;
+use std::time::Duration;
 use tower::ServiceExt;
 
 const TOKEN: &str = "01234567890123456789012345678901";
@@ -239,6 +240,117 @@ async fn legacy_git_status_still_works() {
     let app = state();
     let (s, v) = j(app, "/api/git-status").await;
     assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn tree_git_and_dirty_overlay() {
+    // state() has .git with modified a.txt + untracked sub?/new.txt at root.
+    let dir = {
+        let d = tempfile::tempdir().unwrap();
+        git(&["init", "-b", "main"], d.path());
+        git(&["config", "user.email", "t@t"], d.path());
+        git(&["config", "user.name", "t"], d.path());
+        git(&["config", "commit.gpgsign", "false"], d.path());
+        std::fs::create_dir_all(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("sub/inner.txt"), "x\n").unwrap();
+        std::fs::write(d.path().join("top.txt"), "y\n").unwrap();
+        git(&["add", "."], d.path());
+        git(&["commit", "-m", "init"], d.path());
+        std::fs::write(d.path().join("sub/inner.txt"), "changed\n").unwrap();
+        Box::leak(Box::new(d))
+    };
+    let app = plain_state_over(dir.path());
+    // Prime the cache, then read the tree.
+    let (s, _) = j(app.clone(), "/api/v1/git/status").await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = j(app.clone(), "/api/v1/tree?dir=sub").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["entries"][0]["git"], "M");
+    let (s, v) = j(app, "/api/v1/tree").await;
+    assert_eq!(s, StatusCode::OK);
+    let sub = v["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "sub")
+        .unwrap();
+    assert_eq!(sub["dirty"], true);
+    let top = v["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "top.txt")
+        .unwrap();
+    assert!(top.get("git").is_none());
+}
+
+#[tokio::test]
+async fn watcher_fs_and_git_events() {
+    use ferro_server::state::AppState;
+    // Build a state directly so we can subscribe before starting the watch.
+    let dir = {
+        let d = tempfile::tempdir().unwrap();
+        git(&["init", "-b", "main"], d.path());
+        git(&["config", "user.email", "t@t"], d.path());
+        git(&["config", "user.name", "t"], d.path());
+        git(&["config", "commit.gpgsign", "false"], d.path());
+        std::fs::write(d.path().join("t.txt"), "v1\n").unwrap();
+        git(&["add", "."], d.path());
+        git(&["commit", "-m", "init"], d.path());
+        Box::leak(Box::new(d))
+    };
+    let home = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+    let dirs = ferro_core::dirs::FerroDirs::new(
+        home.path().join("c"),
+        home.path().join("s"),
+        home.path().join("h"),
+    );
+    let st: Arc<AppState> = server::build_state(
+        dir.path().to_path_buf(),
+        dirs,
+        ferro_server::Host::Cli,
+        "test".into(),
+    );
+    // Index first so the snapshot exists for delta filtering.
+    st.ws().index.rebuild().await;
+    let mut rx = st.bus.subscribe();
+    ferro_server::watch::start(&st);
+    // Drain prime noise (index/git ready events).
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    while rx.try_recv().is_ok() {}
+    // New file → Fs event + snapshot membership.
+    std::fs::write(dir.path().join("live.txt"), "hello\n").unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    let mut saw_fs = false;
+    while tokio::time::Instant::now() < deadline && !saw_fs {
+        if let Ok(Ok((_, ferro_server::bus::ServerEvent::Fs { changes, .. }))) =
+            tokio::time::timeout(Duration::from_secs(8), rx.recv()).await
+        {
+            saw_fs = changes.iter().any(|c| c.path == "live.txt");
+        }
+    }
+    assert!(saw_fs, "new file must raise an fs event");
+    assert!(st
+        .ws()
+        .index
+        .file_index
+        .load()
+        .paths
+        .iter()
+        .any(|p| p == "live.txt"));
+    // Tracked modification → Git event (status hash changed).
+    while rx.try_recv().is_ok() {}
+    std::fs::write(dir.path().join("t.txt"), "v2\n").unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    let mut saw_git = false;
+    while tokio::time::Instant::now() < deadline && !saw_git {
+        if let Ok(Ok((_, ferro_server::bus::ServerEvent::Git { .. }))) =
+            tokio::time::timeout(Duration::from_secs(8), rx.recv()).await
+        {
+            saw_git = true;
+        }
+    }
+    assert!(saw_git, "tracked edit must raise a git event");
 }
 
 #[tokio::test]

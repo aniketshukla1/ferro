@@ -71,6 +71,7 @@ async fn status(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value
         .await
         .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))?
         .map_err(map_err)?;
+    *ws.git_status.write() = Some(st.clone());
     Ok(Json(serde_json::to_value(&st).unwrap()))
 }
 
@@ -123,8 +124,13 @@ async fn log(
     Ok(Json(serde_json::json!({ "commits": out })))
 }
 
-fn fresh_status(g: &ferro_core::git::GitRepo) -> Result<serde_json::Value, ApiError> {
+fn fresh_status(
+    g: &ferro_core::git::GitRepo,
+    ws: &Arc<crate::state::Workspace>,
+) -> Result<serde_json::Value, ApiError> {
     let st = g.status_v2().map_err(map_err)?;
+    // Keep the tree's git/dirty overlay fresh without a watcher round-trip.
+    *ws.git_status.write() = Some(st.clone());
     Ok(serde_json::to_value(&st).unwrap())
 }
 
@@ -153,7 +159,7 @@ async fn stage(
     tokio::task::spawn_blocking(move || {
         g.stage_paths(&b.paths)
             .map_err(map_err)
-            .and_then(|_| fresh_status(&g))
+            .and_then(|_| fresh_status(&g, &ws))
     })
     .await
     .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))?
@@ -170,7 +176,7 @@ async fn unstage(
     tokio::task::spawn_blocking(move || {
         g.unstage_paths(&b.paths)
             .map_err(map_err)
-            .and_then(|_| fresh_status(&g))
+            .and_then(|_| fresh_status(&g, &ws))
     })
     .await
     .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))?
@@ -196,7 +202,7 @@ async fn discard(
     tokio::task::spawn_blocking(move || {
         g.discard_paths(&b.paths)
             .map_err(map_err)
-            .and_then(|_| fresh_status(&g))
+            .and_then(|_| fresh_status(&g, &ws))
     })
     .await
     .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))?
@@ -222,7 +228,7 @@ async fn commit(
         g.commit_msg(&b.message, b.amend.unwrap_or(false))
             .map_err(map_err)
             .and_then(|c| {
-                fresh_status(&g).map(
+                fresh_status(&g, &ws).map(
                     |st| serde_json::json!({ "sha": c.sha, "summary": c.subject, "status": st }),
                 )
             })
@@ -237,7 +243,7 @@ async fn push(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>,
     let g = ws.git.as_ref().ok_or_else(no_git)?.repo.clone();
     tokio::task::spawn_blocking(move || {
         g.push().map_err(map_err).and_then(|output| {
-            fresh_status(&g).map(|st| serde_json::json!({ "output": output, "status": st }))
+            fresh_status(&g, &ws).map(|st| serde_json::json!({ "output": output, "status": st }))
         })
     })
     .await
@@ -250,7 +256,7 @@ async fn pull(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>,
     let g = ws.git.as_ref().ok_or_else(no_git)?.repo.clone();
     tokio::task::spawn_blocking(move || {
         g.pull_ff().map_err(map_err).and_then(|(output, updated)| {
-            fresh_status(&g)
+            fresh_status(&g, &ws)
                 .map(|st| serde_json::json!({ "output": output, "updated": updated, "status": st }))
         })
     })
