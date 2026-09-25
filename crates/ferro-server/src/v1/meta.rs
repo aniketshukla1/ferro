@@ -30,6 +30,7 @@ pub const FEATURES: &[&str] = &[
     "paths.resolve",
     "git.status.v2",
     "git.changes",
+    "git.diff.v2",
     "git.write",
     "git.log",
 ];

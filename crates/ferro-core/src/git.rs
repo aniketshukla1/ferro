@@ -257,7 +257,7 @@ impl GitRepo {
     // -- changes / log ---------------------------------------------------
 
     /// Resolve a `base` form (`HEAD`, `merge-base`, `merge-base:<ref>`, any rev).
-    pub(crate) fn resolve_base(&self, base: &str) -> Result<String, GitError> {
+    pub fn resolve_base(&self, base: &str) -> Result<String, GitError> {
         if base == "HEAD" {
             return self
                 .run(&["rev-parse", "HEAD"])

@@ -240,3 +240,150 @@ async fn legacy_git_status_still_works() {
     let (s, v) = j(app, "/api/git-status").await;
     assert_eq!(s, StatusCode::OK, "{v}");
 }
+
+fn git_commit(dir: &std::path::Path, msg: &str) {
+    git(&["add", "."], dir);
+    git(&["commit", "-m", msg], dir);
+}
+
+#[tokio::test]
+async fn diff_modify_golden() {
+    let app = state();
+    let (s, v) = j(app.clone(), "/api/v1/git/diff?path=a.txt").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["path"], "a.txt");
+    assert_eq!(v["status"], "M");
+    assert_eq!(v["binary"], false);
+    assert_eq!(v["tooLarge"], false);
+    assert!(v["language"].is_null()); // .txt has no mapped language
+    let h = &v["hunks"][0];
+    assert!(!h["id"].as_str().unwrap().is_empty());
+    assert!(h["header"].as_str().unwrap().starts_with("@@ "));
+    let rows = h["rows"].as_array().unwrap();
+    // Fixture appends one line: ctx + add, no del.
+    assert!(rows.iter().any(|r| r["t"] == "ctx") && rows.iter().any(|r| r["t"] == "add"));
+    // hl=1 default: highlighted html with theme classes, correct sides.
+    let add = rows.iter().find(|r| r["t"] == "add").unwrap();
+    assert!(add["n"].is_number() && add["o"].is_null());
+    assert!(add["html"].as_str().unwrap().contains("modified"));
+    // hl=0: plain text.
+    let (s, v) = j(app, "/api/v1/git/diff?path=a.txt&hl=0").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(v["hunks"][0]["rows"].as_array().unwrap()[0]["text"].is_string());
+}
+
+#[tokio::test]
+async fn diff_rename_binary_untracked_deleted() {
+    let app = state();
+    // Rename a.txt -> r.txt via shell (staged).
+    let dir = {
+        let d = tempfile::tempdir().unwrap();
+        git(&["init", "-b", "main"], d.path());
+        git(&["config", "user.email", "t@t"], d.path());
+        git(&["config", "user.name", "t"], d.path());
+        git(&["config", "commit.gpgsign", "false"], d.path());
+        std::fs::write(d.path().join("keep.rs"), "fn keep() {}\n").unwrap();
+        git_commit(d.path(), "init");
+        git(&["mv", "keep.rs", "moved.rs"], d.path());
+        Box::leak(Box::new(d))
+    };
+    let app2 = plain_state_over(dir.path());
+    let (s, v) = j(app2, "/api/v1/git/diff?path=moved.rs").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "R");
+    assert_eq!(v["oldPath"], "keep.rs");
+    assert_eq!(v["language"], "Rust");
+    let _ = app;
+
+    // Binary + untracked + deleted goldens on the shared fixture.
+    let app = state();
+    // untracked new.txt
+    let (s, v) = j(app.clone(), "/api/v1/git/diff?path=new.txt").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "A");
+    assert!(v["hunks"][0]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["t"] == "add"));
+}
+
+#[tokio::test]
+async fn diff_intraline_utf16() {
+    let dir = {
+        let d = tempfile::tempdir().unwrap();
+        git(&["init", "-b", "main"], d.path());
+        git(&["config", "user.email", "t@t"], d.path());
+        git(&["config", "user.name", "t"], d.path());
+        git(&["config", "commit.gpgsign", "false"], d.path());
+        std::fs::write(
+            d.path().join("e.txt"),
+            "let x = \"a🎉b\";\nlet y = \"日本語 ok\";\n",
+        )
+        .unwrap();
+        git_commit(d.path(), "init");
+        std::fs::write(
+            d.path().join("e.txt"),
+            "let x = \"a🎊b\";\nlet y = \"日本語 OK\";\n",
+        )
+        .unwrap();
+        Box::leak(Box::new(d))
+    };
+    let app = plain_state_over(dir.path());
+    let (s, v) = j(app, "/api/v1/git/diff?path=e.txt").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let rows = v["hunks"][0]["rows"].as_array().unwrap().clone();
+    let dels: Vec<_> = rows.iter().filter(|r| r["t"] == "del").collect();
+    let adds: Vec<_> = rows.iter().filter(|r| r["t"] == "add").collect();
+    assert_eq!((dels.len(), adds.len()), (2, 2));
+    // 🎉 is 2 UTF-16 units; in `let x = "a🎉b";` it sits at units 10..12.
+    let ch0 = dels[0]["ch"].as_array().unwrap();
+    assert!(!ch0.is_empty(), "{dels:?}");
+    // The changed range must cover the emoji (units 10..12 of the row text).
+    let covers_emoji = ch0.iter().any(|r| {
+        let a = r[0].as_u64().unwrap();
+        let b = r[1].as_u64().unwrap();
+        a <= 10 && b >= 12
+    });
+    assert!(covers_emoji, "{ch0:?}");
+    // CJK row also carries ranges.
+    assert!(!adds[1]["ch"].as_array().unwrap().is_empty());
+    // intraline=0 suppresses ch.
+    let (s, v) = j(
+        plain_state_over(dir.path()),
+        "/api/v1/git/diff?path=e.txt&intraline=0",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(v["hunks"][0]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r.get("ch").is_none()));
+}
+
+#[tokio::test]
+async fn diff_too_large() {
+    let dir = {
+        let d = tempfile::tempdir().unwrap();
+        git(&["init", "-b", "main"], d.path());
+        git(&["config", "user.email", "t@t"], d.path());
+        git(&["config", "user.name", "t"], d.path());
+        git(&["config", "commit.gpgsign", "false"], d.path());
+        let big: String = (0..30_000).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(d.path().join("big.txt"), &big).unwrap();
+        git_commit(d.path(), "init");
+        let big2: String = (0..30_000).map(|i| format!("LINE {i}\n")).collect();
+        std::fs::write(d.path().join("big.txt"), &big2).unwrap();
+        Box::leak(Box::new(d))
+    };
+    let app = plain_state_over(dir.path());
+    let (s, v) = j(app.clone(), "/api/v1/git/diff?path=big.txt").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["tooLarge"], true);
+    assert!(v["hunks"].as_array().unwrap().is_empty());
+    let (s, v) = j(app, "/api/v1/git/diff?path=big.txt&force=1").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["tooLarge"], false);
+    assert!(!v["hunks"].as_array().unwrap().is_empty());
+}

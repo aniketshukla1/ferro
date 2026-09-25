@@ -123,7 +123,7 @@ async fn tree(
     })))
 }
 
-fn language_of(path: &str) -> Option<&'static str> {
+pub(crate) fn language_of(path: &str) -> Option<&'static str> {
     let ext = path.rsplit('.').next()?.to_lowercase();
     Some(match ext.as_str() {
         "rs" => "Rust",
