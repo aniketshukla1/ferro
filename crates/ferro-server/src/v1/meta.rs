@@ -36,6 +36,7 @@ pub const FEATURES: &[&str] = &[
     "git.write",
     "git.log",
     "pr.github",
+    "pr.gitlab",
     "pr.open",
     "pr.threads",
     "review.drafts",

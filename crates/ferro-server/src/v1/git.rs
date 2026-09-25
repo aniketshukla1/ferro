@@ -334,7 +334,8 @@ async fn pull_pr(
     let out = tokio::task::spawn_blocking(move || {
         let repo = ferro_core::git::GitRepo::new(ws2.root.clone()).with_env(auth);
         let pref = format!("refs/ferro/pr/{n}");
-        repo.run_net(&["fetch", "origin", &format!("pull/{n}/head:{pref}")])
+        let remote_ref = session2.pr_ref.pull_ref();
+        repo.run_net(&["fetch", "origin", &format!("{remote_ref}:{pref}")])
             .map_err(map_err)?;
         let head = repo.run(&["rev-parse", "HEAD"]).map_err(map_err)?;
         let fetched = repo.run(&["rev-parse", &pref]).map_err(map_err)?;

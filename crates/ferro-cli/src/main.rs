@@ -240,16 +240,21 @@ fn launch_target(s: &str) -> (PathBuf, Option<(String, usize)>) {
 /// `ferro <pr-url>`: serve the cwd, then open the PR through the same
 /// pr.open job the UI uses (persistent worktrees, no temp clones).
 async fn serve_pr(cli: Cli, url: &str) -> AnyhowResult {
-    let pr_ref = ferro_forge::parse_pr_url(url).ok_or("not a GitHub PR url")?;
+    let pr_ref = ferro_forge::parse_pr_url(url)
+        .or_else(|| ferro_forge::parse_mr_url(url))
+        .ok_or("not a GitHub PR or GitLab MR url")?;
     if !cli.yes {
         // Refuse already-merged PRs unless -y (px0 parity), via the API
         // rather than the gh CLI. Offline or unauthenticated: allow, the
         // server surfaces the real state.
-        if let (Some(token), _) = ferro_forge::resolve_token(&pr_ref.host)
-            .map(|(t, s)| (Some(t), Some(s)))
-            .unwrap_or((None, None))
-        {
-            let gh = ferro_forge::GitHub::for_ref(&pr_ref, Some(token));
+        let (token, _) = match pr_ref.provider {
+            ferro_forge::Provider::GitHub => ferro_forge::resolve_token(&pr_ref.host),
+            ferro_forge::Provider::GitLab => ferro_forge::resolve_gitlab_token(&pr_ref.host),
+        }
+        .map(|(t, s)| (Some(t), Some(s)))
+        .unwrap_or((None, None));
+        if let Some(token) = token {
+            let gh = ferro_forge::ForgeClient::for_ref(&pr_ref, Some(token));
             if let Ok(meta) = gh.pull(&pr_ref).await {
                 if meta.merged {
                     return Err("PR already merged (use -y to open anyway)".into());

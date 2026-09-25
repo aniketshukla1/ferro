@@ -58,7 +58,7 @@ pub(crate) fn pr_meta_json(ws: &Arc<Workspace>, session: &PrSession) -> serde_js
         serde_json::Value::Null
     };
     serde_json::json!({
-        "provider": "github",
+        "provider": session.pr_ref.provider.as_str(),
         "host": session.pr_ref.host,
         "owner": session.pr_ref.owner,
         "repo": session.pr_ref.repo,
@@ -80,9 +80,9 @@ pub(crate) fn pr_meta_json(ws: &Arc<Workspace>, session: &PrSession) -> serde_js
         "stats": {"files": meta.changed_files, "additions": meta.additions, "deletions": meta.deletions, "commits": meta.commits},
         "checks": session.checks.read().clone().map(|c| serde_json::json!({"state": c.state, "url": c.url})).unwrap_or(serde_json::Value::Null),
         "auth": {
-            "hasToken": session.github.has_token(),
+            "hasToken": session.client.has_token(),
             "source": session.token_source.map(|s| s.as_str()),
-            "canReview": session.github.has_token(),
+            "canReview": session.client.has_token(),
             "canPushHead": can_push_head,
         },
         "lastReviewedSha": session.store.last_reviewed_sha(),
@@ -118,10 +118,8 @@ pub(crate) async fn start_open_job(
     url: &str,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let pr_ref = ferro_forge::parse_pr_url(url)
-        .ok_or_else(|| ApiError::bad_request("not a GitHub PR url"))?;
-    if !pr_ref.host.eq_ignore_ascii_case("github.com") && pr_ref.host.is_empty() {
-        return Err(ApiError::bad_request("not a GitHub PR url"));
-    }
+        .or_else(|| ferro_forge::parse_mr_url(url))
+        .ok_or_else(|| ApiError::bad_request("not a GitHub PR or GitLab MR url"))?;
     let cancel = tokio_util::sync::CancellationToken::new();
     let job = s
         .jobs
@@ -204,19 +202,31 @@ async fn run_open_job(
     }
     // metadata (async HTTP).
     job_progress(s, job_id, "metadata");
-    let (token, source) = ferro_forge::resolve_token(&r.host)
-        .map(|(t, x)| (Some(t), Some(x)))
-        .unwrap_or((None, None));
-    let github = Arc::new(ferro_forge::GitHub::for_ref(r, token.clone()));
-    let meta = match github.pull(r).await {
+    let (token, source) = match r.provider {
+        ferro_forge::Provider::GitHub => ferro_forge::resolve_token(&r.host),
+        ferro_forge::Provider::GitLab => ferro_forge::resolve_gitlab_token(&r.host),
+    }
+    .map(|(t, x)| (Some(t), Some(x)))
+    .unwrap_or((None, None));
+    let client = Arc::new(ferro_forge::ForgeClient::for_ref(r, token.clone()));
+    let mut meta = match client.pull(r).await {
         Ok(m) => m,
         Err(e) => {
             fail_forge(s, job_id, e);
             return;
         }
     };
+    // GitLab serves the source clone URL separately (fork pushes need it).
+    if r.provider == ferro_forge::Provider::GitLab && meta.head_clone_url.is_none() {
+        if let ferro_forge::ForgeClient::GitLab(g) = client.as_ref() {
+            // Best effort: fall back to the base URL when unreachable.
+            if let Ok(u) = g.source_clone_url(r).await {
+                meta.head_clone_url = Some(u);
+            }
+        }
+    }
     let (checks, can_push) =
-        match tokio::join!(github.checks(r, &meta.head_sha), github.can_push(r)) {
+        match tokio::join!(client.checks(r, &meta.head_sha), client.can_push(r)) {
             (Ok(c), Ok(p)) => (Some(c), Some(p)),
             (Ok(c), Err(_)) => (Some(c), None),
             _ => (None, None),
@@ -289,7 +299,7 @@ async fn run_open_job(
     let session = Arc::new(PrSession {
         pr_ref: r.clone(),
         meta: parking_lot::RwLock::new(meta),
-        github: github.clone(),
+        client: client.clone(),
         token: token.clone(),
         token_source: source,
         worktree: parking_lot::RwLock::new(opened.clone()),
@@ -356,7 +366,7 @@ fn start_poll(s: &Arc<AppState>, session: Arc<PrSession>) {
                 break;
             }
             // Metadata first (cheap, ETag-cached).
-            match session.github.pull(&session.pr_ref).await {
+            match session.client.pull(&session.pr_ref).await {
                 Ok(meta) => {
                     let changed = meta.head_sha != session.meta.read().head_sha
                         || meta.updated_at != session.meta.read().updated_at
@@ -386,7 +396,7 @@ fn start_poll(s: &Arc<AppState>, session: Arc<PrSession>) {
 async fn threads_hash(session: &Arc<PrSession>) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    let Ok(threads) = session.github.threads(&session.pr_ref).await else {
+    let Ok(threads) = session.client.threads(&session.pr_ref).await else {
         return 0;
     };
     let mut h = DefaultHasher::new();
@@ -411,17 +421,17 @@ async fn refresh(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Valu
         .clone();
     let old_head = session.meta.read().head_sha.clone();
     let meta = session
-        .github
+        .client
         .pull(&session.pr_ref)
         .await
         .map_err(forge_err)?;
     let head_moved = meta.head_sha != old_head;
     *session.meta.write() = meta.clone();
     // Checks + permissions refresh (best effort).
-    if let Ok(c) = session.github.checks(&session.pr_ref, &meta.head_sha).await {
+    if let Ok(c) = session.client.checks(&session.pr_ref, &meta.head_sha).await {
         *session.checks.write() = Some(c);
     }
-    if let Ok(p) = session.github.can_push(&session.pr_ref).await {
+    if let Ok(p) = session.client.can_push(&session.pr_ref).await {
         *session.can_push.write() = Some(p);
     }
     if head_moved {

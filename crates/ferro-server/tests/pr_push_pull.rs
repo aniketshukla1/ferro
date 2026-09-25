@@ -138,6 +138,7 @@ fn fixture() -> Fixture {
         "test".into(),
     );
     let pref = ferro_forge::ForgeRef {
+        provider: ferro_forge::Provider::GitHub,
         host: "github.com".into(),
         owner: "o".into(),
         repo: "r".into(),
@@ -177,11 +178,11 @@ fn fixture() -> Fixture {
     let session = Arc::new(ferro_server::state::PrSession {
         pr_ref: pref,
         meta: parking_lot::RwLock::new(meta),
-        github: Arc::new(ferro_forge::GitHub::new(
+        client: Arc::new(ferro_forge::ForgeClient::GitHub(ferro_forge::GitHub::new(
             "http://127.0.0.1:9/unused".into(),
             "http://127.0.0.1:9/unused".into(),
             Some("tok".into()),
-        )),
+        ))),
         token: Some("tok".into()),
         token_source: None,
         worktree: parking_lot::RwLock::new(opened),
