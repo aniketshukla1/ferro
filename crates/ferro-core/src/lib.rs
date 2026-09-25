@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod diff;
 pub mod dirs;
 pub mod fileindex;
 pub mod fuzzy;

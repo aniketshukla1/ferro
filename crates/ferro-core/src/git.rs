@@ -165,18 +165,36 @@ impl GitRepo {
         if out.status.success() {
             return Ok(out.stdout);
         }
-        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        Err(Self::fail(args, &out.stderr))
+    }
+
+    /// Raw bytes for `git diff`: exit code 1 means "differences found" and
+    /// still carries the full output on stdout.
+    pub fn run_diff_bytes(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
+        let out = self
+            .command(args)
+            .stdout(Stdio::piped())
+            .output()
+            .map_err(|e| GitError::Io(e.to_string()))?;
+        if out.status.success() || out.status.code() == Some(1) {
+            return Ok(out.stdout);
+        }
+        Err(Self::fail(args, &out.stderr))
+    }
+
+    fn fail(args: &[&str], stderr: &[u8]) -> GitError {
+        let stderr = String::from_utf8_lossy(stderr).into_owned();
         if stderr.contains("not a git repository") {
-            return Err(GitError::NotRepo);
+            return GitError::NotRepo;
         }
         let mut err = stderr;
         if err.len() > STDERR_CAP {
             err.truncate(STDERR_CAP);
         }
-        Err(GitError::Failed {
+        GitError::Failed {
             args: args.join(" "),
             stderr: err,
-        })
+        }
     }
 
     /// Feed stdin (commit message via `-F -`, never argv).
@@ -239,7 +257,7 @@ impl GitRepo {
     // -- changes / log ---------------------------------------------------
 
     /// Resolve a `base` form (`HEAD`, `merge-base`, `merge-base:<ref>`, any rev).
-    pub fn resolve_base(&self, base: &str) -> Result<String, GitError> {
+    pub(crate) fn resolve_base(&self, base: &str) -> Result<String, GitError> {
         if base == "HEAD" {
             return self
                 .run(&["rev-parse", "HEAD"])
@@ -344,7 +362,7 @@ impl GitRepo {
     }
 
     /// Status letters + rename sources from `git diff --name-status -z -M`.
-    fn name_status(
+    pub(crate) fn name_status(
         &self,
         extra: &[&str],
     ) -> Result<std::collections::BTreeMap<String, (ChangeStatus, Option<String>)>, GitError> {
@@ -359,42 +377,51 @@ impl GitRepo {
         args.extend(extra);
         let raw = self.run_bytes(&args)?;
         let mut map = std::collections::BTreeMap::new();
+        // -z structure (verified): `<code>[score]\0<path>\0[<new>\0]`,
+        // orig-then-new for renames/copies. No tabs involved.
         let chunks: Vec<&[u8]> = raw.split(|&b| b == 0).collect();
         let mut i = 0;
         while i < chunks.len() {
-            let c = chunks[i];
+            let code = chunks[i];
             i += 1;
-            if c.is_empty() {
+            if code.is_empty() {
                 continue;
             }
-            // `<letter>[score]\t<path>`; renames consume the next chunk.
-            let text = String::from_utf8_lossy(c);
-            let mut parts = text.splitn(2, '\t');
-            let (Some(code), Some(path)) = (parts.next(), parts.next()) else {
-                continue;
-            };
-            let letter = code.chars().next().unwrap_or('M');
-            let (status, old) = match letter {
-                'A' => (ChangeStatus::Added, None),
-                'D' => (ChangeStatus::Deleted, None),
-                'R' => {
-                    let orig = chunks
-                        .get(i)
-                        .map(|b| String::from_utf8_lossy(b).into_owned());
+            let letter = code[0] as char;
+            if i >= chunks.len() {
+                break;
+            }
+            let first = String::from_utf8_lossy(chunks[i]).into_owned();
+            i += 1;
+            match letter {
+                'R' | 'C' => {
+                    let st = if letter == 'R' {
+                        ChangeStatus::Renamed
+                    } else {
+                        ChangeStatus::Copied
+                    };
+                    if i >= chunks.len() {
+                        map.insert(first.clone(), (st, None));
+                        break;
+                    }
+                    let new = String::from_utf8_lossy(chunks[i]).into_owned();
                     i += 1;
-                    (ChangeStatus::Renamed, orig)
+                    map.insert(new, (st, Some(first)));
                 }
-                'C' => {
-                    let orig = chunks
-                        .get(i)
-                        .map(|b| String::from_utf8_lossy(b).into_owned());
-                    i += 1;
-                    (ChangeStatus::Copied, orig)
+                'A' => {
+                    map.insert(first, (ChangeStatus::Added, None));
                 }
-                'T' => (ChangeStatus::Typechange, None),
-                _ => (ChangeStatus::Modified, None),
-            };
-            map.insert(path.to_string(), (status, old));
+                'D' => {
+                    map.insert(first, (ChangeStatus::Deleted, None));
+                }
+                'T' => {
+                    map.insert(first, (ChangeStatus::Typechange, None));
+                }
+                'M' | 'U' => {
+                    map.insert(first, (ChangeStatus::Modified, None));
+                }
+                _ => {}
+            }
         }
         Ok(map)
     }
@@ -889,9 +916,10 @@ pub struct Commit {
 }
 
 fn parse_numstat(raw: &[u8]) -> Vec<NumstatEntry> {
-    // -z: records are `<add>\t<del>\t<path>\0[<orig>\0 for renames]`.
+    // -z: records are `<add>\t<del>\t<orig>\0<new>\0` for renames
+    // (plain mode prints `orig => new`), else `<add>\t<del>\t<path>\0`.
     // A chunk is a record only if the first two tab-fields are counts;
-    // anything else is a rename-orig continuation of the previous record.
+    // anything else is the NEW path continuing the previous rename record.
     let mut out: Vec<NumstatEntry> = Vec::new();
     for c in raw.split(|&b| b == 0) {
         if c.is_empty() {
@@ -900,9 +928,11 @@ fn parse_numstat(raw: &[u8]) -> Vec<NumstatEntry> {
         let text = String::from_utf8_lossy(c);
         let mut parts = text.splitn(3, '\t');
         let (Some(add), Some(del), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
-            // Continuation chunk: orig path of the previous rename record.
+            // Continuation chunk: NEW path of the previous rename record;
+            // the inline path was the orig.
             if let Some(prev) = out.last_mut() {
-                prev.old_path = Some(text.into_owned());
+                prev.old_path = Some(std::mem::take(&mut prev.path));
+                prev.path = text.into_owned();
             }
             continue;
         };
@@ -911,7 +941,8 @@ fn parse_numstat(raw: &[u8]) -> Vec<NumstatEntry> {
             || (add.bytes().all(|b| b.is_ascii_digit()) && del.bytes().all(|b| b.is_ascii_digit()));
         if !counts {
             if let Some(prev) = out.last_mut() {
-                prev.old_path = Some(text.into_owned());
+                prev.old_path = Some(std::mem::take(&mut prev.path));
+                prev.path = text.into_owned();
             }
             continue;
         }
