@@ -104,6 +104,12 @@ async fn meta_shape() {
         "workspace.open",
         "desktop",
         "metrics",
+        "fuzzy.v2",
+        "search.v2",
+        "search.regex",
+        "search.stream",
+        "file.find",
+        "paths.resolve",
     ] {
         assert!(
             v["features"]

@@ -28,3 +28,13 @@ jobs:
           cache-dependency-path: apps/desktop/package.json
       - run: pnpm --dir apps/desktop install
       - run: cargo check -p ferro-tauri
+  perf-gate:
+    # BACKEND.md §5.5: fail if ferro is >25% slower than baseline on the
+    # small corpus (fuzzy / full-scan miss / open warm).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p ferro --release
+      - run: ./benchmark.sh --clone
+      - run: python3 bench/h2h.py --only ferro --repos flask,redis --gate bench/baseline.json

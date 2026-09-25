@@ -113,6 +113,7 @@ pub fn build_state(
         version,
         spec_version: "1.0",
         started_at: std::time::Instant::now(),
+        search_slots: Arc::new(tokio::sync::Semaphore::new(2)),
     })
 }
 

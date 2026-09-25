@@ -80,29 +80,58 @@ struct Q {
 }
 
 async fn fuzzy(State(st): State<Arc<AppState>>, Query(q): Query<Q>) -> impl IntoResponse {
-    let s = st.ws().index.clone();
+    let ws = st.ws();
     let query = q.q.unwrap_or_default();
-    let limit = q.limit.unwrap_or(50).min(200);
-    let snap = s.snapshot();
-    let paths: Vec<String> = snap.into_iter().map(|f| f.path).collect();
-    let ranked = ferro_core::fuzzy::rank(&query, &paths, limit);
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let snap = ws.index.file_index.load();
+    let empty = std::collections::HashSet::new();
+    let snap2 = snap.clone();
+    let hits = tokio::task::spawn_blocking(move || {
+        ferro_core::fuzzy::rank_snap(&snap2, &query, limit, &empty)
+    })
+    .await
+    .unwrap_or_default();
     Json(
-        ranked
-            .into_iter()
-            .map(|(p, sc)| serde_json::json!({"path": p, "score": sc}))
+        hits.into_iter()
+            .map(|h| serde_json::json!({"path": snap.paths[h.index], "score": h.score}))
             .collect::<Vec<_>>(),
     )
 }
 
 async fn search(State(st): State<Arc<AppState>>, Query(q): Query<Q>) -> impl IntoResponse {
-    let s = st.ws().index.clone();
+    let ws = st.ws();
     let query = q.q.unwrap_or_default();
-    let limit = q.limit.unwrap_or(50).min(200);
-    let root = s.root().to_path_buf();
-    let hits = tokio::task::spawn_blocking(move || ferro_core::search::grep(&root, &query, limit))
-        .await
-        .unwrap_or_default();
-    Json(hits)
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    if query.is_empty() || query.len() > 512 {
+        return Json(Vec::<serde_json::Value>::new()).into_response();
+    }
+    let snap = ws.index.file_index.load();
+    let root = ws.root.clone();
+    let mut sq = ferro_core::scan::Query::literal(query);
+    sq.max_files = 200;
+    sq.max_per_file = 20;
+    let out = tokio::task::spawn_blocking(move || {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        ferro_core::scan::search(&snap, &root, &sq, &stop).ok()
+    })
+    .await
+    .ok()
+    .flatten();
+    let mut flat = Vec::new();
+    if let Some(r) = out {
+        for f in r.files {
+            for h in f.hits {
+                if flat.len() >= limit {
+                    break;
+                }
+                flat.push(serde_json::json!({"path": f.path, "line": h.line, "text": h.text}));
+            }
+            if flat.len() >= limit {
+                break;
+            }
+        }
+    }
+    Json(flat).into_response()
 }
 
 #[derive(Deserialize)]

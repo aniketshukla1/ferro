@@ -23,6 +23,12 @@ pub const FEATURES: &[&str] = &[
     "workspace.open",
     "desktop",
     "metrics",
+    "fuzzy.v2",
+    "search.v2",
+    "search.regex",
+    "search.stream",
+    "file.find",
+    "paths.resolve",
 ];
 
 fn git_info(root: &std::path::Path) -> (bool, Option<String>, Option<String>) {

@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod dirs;
+pub mod fileindex;
 pub mod fuzzy;
 pub mod git;
 pub mod highlight;
@@ -7,6 +8,7 @@ pub mod index;
 pub mod media;
 pub mod paths;
 pub mod pr;
+pub mod scan;
 pub mod search;
 pub mod settings;
 pub mod text;

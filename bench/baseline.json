@@ -1,0 +1,11 @@
+{
+  "flask": {
+    "fuzzy": 0.7,
+    "scan": 4.5
+  },
+  "redis": {
+    "fuzzy": 0.9,
+    "scan": 22.3,
+    "open_warm": 3.2
+  }
+}
