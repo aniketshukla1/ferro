@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio_stream::StreamExt as _;
 
+use super::de_flag;
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -110,20 +111,6 @@ struct SearchQ {
     max_files: Option<usize>,
     #[serde(rename = "maxPerFile")]
     max_per_file: Option<usize>,
-}
-
-/// Accept `?word=1`, `?word=0`, `?word=true`, `?word=false` (API.md writes 0/1).
-fn de_flag<'de, D>(d: D) -> Result<Option<bool>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let opt: Option<String> = serde::Deserialize::deserialize(d)?;
-    match opt.as_deref() {
-        None => Ok(None),
-        Some("1" | "true" | "yes") => Ok(Some(true)),
-        Some("0" | "false" | "no") => Ok(Some(false)),
-        Some(other) => Err(serde::de::Error::custom(format!("bad flag: {other}"))),
-    }
 }
 
 fn build_query(s: &Arc<AppState>, q: &SearchQ) -> Result<ferro_core::scan::Query, ApiError> {

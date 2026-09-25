@@ -114,6 +114,7 @@ pub fn build_state(
         spec_version: "1.0",
         started_at: std::time::Instant::now(),
         search_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+        watch: parking_lot::Mutex::new(None),
     })
 }
 
@@ -233,6 +234,9 @@ pub async fn serve_with(
             }
         });
     }
+
+    // Live updates: fs events, incremental snapshots, status refresh.
+    crate::watch::start(&state);
 
     let host_out = if o.host == "0.0.0.0" {
         "127.0.0.1"

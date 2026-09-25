@@ -29,6 +29,13 @@ pub const FEATURES: &[&str] = &[
     "search.stream",
     "file.find",
     "paths.resolve",
+    "git.status.v2",
+    "git.changes",
+    "git.diff.v2",
+    "git.blob",
+    "git.gutter",
+    "git.write",
+    "git.log",
 ];
 
 fn git_info(root: &std::path::Path) -> (bool, Option<String>, Option<String>) {

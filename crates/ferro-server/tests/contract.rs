@@ -110,6 +110,13 @@ async fn meta_shape() {
         "search.stream",
         "file.find",
         "paths.resolve",
+        "git.status.v2",
+        "git.changes",
+        "git.diff.v2",
+        "git.blob",
+        "git.gutter",
+        "git.write",
+        "git.log",
     ] {
         assert!(
             v["features"]

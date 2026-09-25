@@ -10,6 +10,7 @@ pub mod lines;
 pub mod server;
 pub mod state;
 pub mod v1;
+pub mod watch;
 
 pub use error::{ApiError, ErrorCode};
 pub use state::{AppState, DesktopHost, Host, Limits, Mode, Workspace};

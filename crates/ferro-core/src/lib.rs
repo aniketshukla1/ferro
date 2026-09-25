@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod diff;
 pub mod dirs;
 pub mod fileindex;
 pub mod fuzzy;
@@ -12,5 +13,6 @@ pub mod scan;
 pub mod search;
 pub mod settings;
 pub mod text;
+pub mod watch;
 
 pub use index::{FileEntry, FileMeta, Index, Window, WindowLine};

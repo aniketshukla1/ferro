@@ -54,6 +54,7 @@ impl Default for Limits {
 #[derive(Debug)]
 pub struct GitRepo {
     pub root: PathBuf,
+    pub repo: ferro_core::git::GitRepo,
 }
 
 pub struct Workspace {
@@ -66,6 +67,9 @@ pub struct Workspace {
     pub lines: crate::lines::LineIndex,
     pub hl: Arc<parking_lot::Mutex<crate::hl::Highlighter>>,
     pub git: Option<GitRepo>,
+    /// Latest status payload (B3 watcher + mutations); tree reads it for
+    /// `git`/`dirty` without spawning git per request.
+    pub git_status: parking_lot::RwLock<Option<ferro_core::git::GitStatus>>,
     pub review: ferro_agent::ReviewStore,
     pub session_path: PathBuf,
 }
@@ -77,6 +81,7 @@ impl Workspace {
         let session_path = dirs.workspace_state_dir(&key).join("session.json");
         let git = is_repo(index.root()).then(|| GitRepo {
             root: index.root().to_path_buf(),
+            repo: ferro_core::git::GitRepo::new(index.root().to_path_buf()),
         });
         Arc::new(Self {
             key,
@@ -87,6 +92,7 @@ impl Workspace {
             lines: crate::lines::LineIndex::new(),
             hl: Arc::new(parking_lot::Mutex::new(crate::hl::Highlighter::new())),
             git,
+            git_status: parking_lot::RwLock::new(None),
             review: ferro_agent::ReviewStore::default(),
             session_path,
         })
@@ -110,6 +116,9 @@ pub struct AppState {
     pub started_at: std::time::Instant,
     /// At most 2 concurrent full scans (§ 4.3); extra ones wait.
     pub search_slots: Arc<tokio::sync::Semaphore>,
+    /// Live watcher handle (B3); None in tests or when watching failed
+    /// (adaptive polling fallback runs instead).
+    pub watch: parking_lot::Mutex<Option<ferro_core::watch::WatchHandle>>,
 }
 
 impl AppState {
@@ -135,6 +144,7 @@ impl SettingsStore {
             {"key":"askMaxSteps","section":"ai","title":"Ask max steps","description":"Agent loop step cap.","type":"int","default":8,"min":1,"max":16,"scopes":["user","workspace"]},
             {"key":"search.exclude","section":"search","title":"Search excludes","description":"Extra globs excluded from search.","type":"string[]","default":["**/vendor/**"],"scopes":["user","workspace"]},
             {"key":"search.maxFileBytes","section":"search","title":"Max searched file size","description":"Files larger than this are skipped.","type":"int","default":8388608,"min":1024,"scopes":["user","workspace"]},
+            {"key":"git.autoRefresh","section":"git","title":"Auto refresh","description":"Refresh git status on filesystem changes.","type":"bool","default":true,"scopes":["user","workspace"]},
             {"key":"review.defaultEvent","section":"review","title":"Default review event","description":"Submit action used by default.","type":"enum","default":"COMMENT","enum":["COMMENT","APPROVE","REQUEST_CHANGES"],"scopes":["user","workspace"]},
             {"key":"ai.provider","section":"ai","title":"Provider","description":"LLM provider selection.","type":"enum","default":"auto","enum":["auto","anthropic","openai","gemini","ollama","openai-compatible","off"],"scopes":["user","workspace"]},
             {"key":"ai.model","section":"ai","title":"Model","description":"Model override (empty = provider default).","type":"string","default":"","scopes":["user","workspace"]},
