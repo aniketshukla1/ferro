@@ -17,20 +17,48 @@ pub struct FuzzyHit {
 }
 
 /// Byte-level two-pass match. `q` must be lowercased; `lower` is the
-/// lowercased path. Returns (score, byte positions).
+/// lowercased path. Stack fast path (queries ≤ 256 bytes): zero allocation;
+/// longer queries fall back to a Vec path.
 fn score_bytes(q: &[u8], path: &[u8], lower: &[u8], base_off: usize) -> Option<(i64, Vec<usize>)> {
-    if q.is_empty() {
-        return Some((0, vec![]));
+    if q.len() <= 256 {
+        let mut tight = [0usize; 256];
+        score_into(q, path, lower, base_off, &mut tight).map(|s| (s, tight[..q.len()].to_vec()))
+    } else {
+        let mut tight = vec![0usize; q.len()];
+        score_into(q, path, lower, base_off, &mut tight).map(|s| (s, tight))
     }
-    if q.len() > path.len() {
+}
+
+/// Score-only hot path: no allocation at all. Writes tight byte positions
+/// into `tight` (must have `q.len()` capacity) and returns the score.
+fn score_only(q: &[u8], path: &[u8], lower: &[u8], base_off: usize) -> Option<i64> {
+    if q.len() <= 256 {
+        let mut tight = [0usize; 256];
+        score_into(q, path, lower, base_off, &mut tight)
+    } else {
+        let mut tight = vec![0usize; q.len()];
+        score_into(q, path, lower, base_off, &mut tight)
+    }
+}
+
+fn score_into(
+    q: &[u8],
+    path: &[u8],
+    lower: &[u8],
+    base_off: usize,
+    tight: &mut [usize],
+) -> Option<i64> {
+    if q.is_empty() {
+        return Some(0);
+    }
+    if q.len() > path.len() || q.len() > tight.len() {
         return None;
     }
-    // Pass 1: greedy subsequence.
-    let mut hits: Vec<usize> = Vec::with_capacity(q.len());
+    // Pass 1: greedy subsequence, forward positions kept in `tight` as scratch.
     let mut qi = 0;
     for (i, &c) in lower.iter().enumerate() {
         if qi < q.len() && c == q[qi] {
-            hits.push(i);
+            tight[qi] = i;
             qi += 1;
         }
     }
@@ -38,15 +66,27 @@ fn score_bytes(q: &[u8], path: &[u8], lower: &[u8], base_off: usize) -> Option<(
         return None;
     }
     // Pass 2: tighten from the end (rightmost tightest match).
-    let mut tight = vec![0usize; q.len()];
+    // Copy forward positions aside first (they bound the backward walk).
+    // Reuse the tail of `tight` via a small stack copy for short queries.
+    let mut fwd = [0usize; 256];
+    let use_stack = q.len() <= 256;
+    // NOTE: for the Vec fallback, allocate the forward copy once.
+    let fwd_vec;
+    let fwd: &[usize] = if use_stack {
+        fwd[..q.len()].copy_from_slice(&tight[..q.len()]);
+        &fwd[..q.len()]
+    } else {
+        fwd_vec = tight[..q.len()].to_vec();
+        &fwd_vec
+    };
     for k in (0..q.len()).rev() {
-        let lo = if k == 0 { 0 } else { hits[k - 1] + 1 };
+        let lo = if k == 0 { 0 } else { fwd[k - 1] + 1 };
         let hi = if k + 1 < q.len() {
             tight[k + 1].saturating_sub(1)
         } else {
             lower.len().saturating_sub(1)
         };
-        let mut best = hits[k];
+        let mut best = fwd[k];
         let mut j = hi.min(lower.len().saturating_sub(1));
         loop {
             if j >= lo && j < lower.len() && lower[j] == q[k] {
@@ -63,7 +103,7 @@ fn score_bytes(q: &[u8], path: &[u8], lower: &[u8], base_off: usize) -> Option<(
 
     let mut s: i64 = 0;
     let mut prev: Option<usize> = None;
-    for (k, &h) in tight.iter().enumerate() {
+    for (k, &h) in tight.iter().take(q.len()).enumerate() {
         let in_base = h >= base_off;
         if k == 0 && in_base && h == base_off {
             s += 20;
@@ -109,13 +149,12 @@ fn score_bytes(q: &[u8], path: &[u8], lower: &[u8], base_off: usize) -> Option<(
     }
     s -= (path.len() as i64) / 8;
     s -= (path.iter().filter(|&&c| c == b'/').count() as i64) * 2;
-    Some((s, tight))
+    Some(s)
 }
 
 /// Byte offsets → UTF-16 unit indices, snapped to char boundaries.
 fn byte_to_utf16(path: &str, bytes: &[usize]) -> Vec<usize> {
     let mut out = Vec::with_capacity(bytes.len());
-    let mut bi = 0usize;
     let mut ui = 0usize;
     let mut want = bytes.iter().peekable();
     for (i, c) in path.char_indices() {
@@ -135,8 +174,6 @@ fn byte_to_utf16(path: &str, bytes: &[usize]) -> Vec<usize> {
             }
         }
         ui += c.len_utf16();
-        bi = i + c.len_utf8();
-        let _ = bi;
     }
     // Trailing positions at/past the end clamp to the end.
     while want.next().is_some() {
@@ -161,13 +198,14 @@ pub fn rank_snap(
     let n = snap.len();
     let use_rayon = n > 4000;
     // Per-thread top-k min-heaps keyed (score, Reverse<idx>) for determinism.
+    let has_boost = !boost.is_empty();
     let collect = |range: std::ops::Range<usize>| -> BinaryHeap<Reverse<(i64, Reverse<usize>)>> {
         let mut heap = BinaryHeap::with_capacity(limit + 1);
         for i in range {
             let path = snap.paths[i].as_bytes();
             let lower = snap.lower[i].as_bytes();
-            if let Some((mut s, _)) = score_bytes(qb, path, lower, snap.base_off[i] as usize) {
-                if boost.contains(&snap.paths[i]) {
+            if let Some(mut s) = score_only(qb, path, lower, snap.base_off[i] as usize) {
+                if has_boost && boost.contains(&snap.paths[i]) {
                     s += 50;
                 }
                 heap.push(Reverse((s, Reverse(i))));
@@ -185,14 +223,12 @@ pub fn rank_snap(
         let cpus = std::thread::available_parallelism()
             .map(|x| x.get())
             .unwrap_or(4);
-        let chunk = (n + cpus - 1) / cpus;
-        let heaps: Vec<_> = (0..n)
-            .collect::<Vec<_>>()
-            .par_chunks(chunk.max(1))
-            .map(|c| {
-                let r = c[0]..c[c.len() - 1] + 1;
-                collect(r)
-            })
+        let chunk = n.div_ceil(cpus).max(1);
+        // Split the index range directly — no intermediate Vec allocation.
+        let starts: Vec<usize> = (0..n).step_by(chunk).collect();
+        let heaps: Vec<_> = starts
+            .into_par_iter()
+            .map(|s| collect(s..(s + chunk).min(n)))
             .collect();
         for mut h in heaps {
             for item in h.drain() {

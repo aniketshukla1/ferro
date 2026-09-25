@@ -108,6 +108,8 @@ pub struct AppState {
     pub version: String,
     pub spec_version: &'static str,
     pub started_at: std::time::Instant,
+    /// At most 2 concurrent full scans (§ 4.3); extra ones wait.
+    pub search_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {

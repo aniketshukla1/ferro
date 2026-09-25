@@ -9,6 +9,7 @@ pub mod markdown;
 pub mod meta;
 pub mod metrics;
 pub mod outline;
+pub mod search;
 pub mod session;
 pub mod settings;
 pub mod workspace;
@@ -28,6 +29,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(markdown::routes())
         .merge(highlight::routes())
         .merge(outline::routes())
+        .merge(search::routes())
         .merge(jobs::routes())
         .merge(workspace::routes())
         .merge(desktop::routes())

@@ -2,7 +2,6 @@
 //! rayon parallelism, mmap above 1 MiB, binary skip, glob include/exclude,
 //! UTF-16 snippets and ranges, per-file and global caps with early stop.
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -62,49 +61,56 @@ impl Query {
     }
 
     pub fn compile(&self) -> Result<regex::bytes::Regex, String> {
-        let mut pat = if self.mode == Mode::Literal {
-            regex::escape(&self.pattern)
-        } else {
-            self.pattern.clone()
-        };
-        if self.word {
-            pat = format!(r"\b(?:{pat})\b");
-        }
-        let is_regex = self.mode == Mode::Regex;
-        regex::bytes::RegexBuilder::new(&pat)
-            .case_insensitive(self.effective_case())
-            .build()
-            .map_err(|e| {
-                // Best-effort error position: first regex metacharacter, else 0.
-                let pos = if is_regex {
-                    self.pattern
-                        .char_indices()
-                        .find(|(_, c)| {
-                            matches!(
-                                c,
-                                '(' | ')'
-                                    | '['
-                                    | ']'
-                                    | '{'
-                                    | '}'
-                                    | '*'
-                                    | '+'
-                                    | '?'
-                                    | '|'
-                                    | '^'
-                                    | '$'
-                                    | '.'
-                                    | '\\'
-                            )
-                        })
-                        .map(|(i, _)| i)
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
-                format!("{e} at {pos}")
-            })
+        compile_query(self).map_err(|(msg, _)| msg)
     }
+}
+
+/// Compile a query, returning the message plus a best-effort error position
+/// for `detail.position` (API.md § 5.2).
+pub fn compile_query(q: &Query) -> Result<regex::bytes::Regex, (String, usize)> {
+    let mut pat = if q.mode == Mode::Literal {
+        regex::escape(&q.pattern)
+    } else {
+        q.pattern.clone()
+    };
+    if q.word {
+        pat = format!(r"\b(?:{pat})\b");
+    }
+    let is_regex = q.mode == Mode::Regex;
+    regex::bytes::RegexBuilder::new(&pat)
+        .case_insensitive(q.effective_case())
+        // ^/$ anchor at line boundaries (rg parity: one match per line).
+        .multi_line(true)
+        .build()
+        .map_err(|e| {
+            let pos = if is_regex {
+                q.pattern
+                    .char_indices()
+                    .find(|(_, c)| {
+                        matches!(
+                            c,
+                            '(' | ')'
+                                | '['
+                                | ']'
+                                | '{'
+                                | '}'
+                                | '*'
+                                | '+'
+                                | '?'
+                                | '|'
+                                | '^'
+                                | '$'
+                                | '.'
+                                | '\\'
+                        )
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            (format!("{e}"), pos)
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -273,20 +279,7 @@ fn snippet(line: &str, first: (usize, usize)) -> (String, Vec<(usize, usize)>, b
         }
         u2 += c.len_utf16();
     }
-    let mut units = 0usize;
-    for c in line[start_b..end_b].chars() {
-        units += c.len_utf16();
-    }
-    let shift = {
-        let mut s = 0usize;
-        let mut uu = 0usize;
-        for c in line[..start_b].chars() {
-            uu += c.len_utf16();
-        }
-        s = uu;
-        s
-    };
-    let _ = units;
+    let shift = line[..start_b].encode_utf16().count();
     let ranges = vec![(first.0.saturating_sub(shift), first.1.saturating_sub(shift))];
     (
         line[start_b..end_b].to_string(),
@@ -304,6 +297,26 @@ pub fn search(
 ) -> Result<SearchResponse, String> {
     let t0 = std::time::Instant::now();
     let re = q.compile()?;
+    let (cands, exclude_globs, excluded_files) = candidates(snap, q);
+    let (files, files_scanned, files_matched, truncated) =
+        search_candidates(snap, root, q, &re, stop, &cands);
+    Ok(SearchResponse {
+        q: q.pattern.clone(),
+        engine: "scan",
+        ms: t0.elapsed().as_millis(),
+        files_scanned,
+        files_matched,
+        truncated,
+        excluded: Excluded {
+            globs: exclude_globs,
+            files: excluded_files,
+        },
+        files,
+    })
+}
+
+/// Candidate file indices + exclusion accounting, shared by full and sharded scans.
+pub fn candidates(snap: &FileSnapshot, q: &Query) -> (Vec<usize>, Vec<String>, usize) {
     let use_defaults = !q.exclude.iter().any(|g| g == "!default");
     let mut exclude_globs: Vec<String> = q
         .exclude
@@ -332,7 +345,18 @@ pub fn search(
         }
         cands.push(i);
     }
+    (cands, exclude_globs, excluded_files)
+}
 
+/// Scan an explicit candidate list. Returns (files path-sorted, scanned, matched, truncated).
+pub fn search_candidates(
+    snap: &FileSnapshot,
+    root: &Path,
+    q: &Query,
+    re: &regex::bytes::Regex,
+    stop: &AtomicBool,
+    cands: &[usize],
+) -> (Vec<FileHits>, usize, usize, bool) {
     let scanned = AtomicUsize::new(0);
     let matched = AtomicUsize::new(0);
     let hit_cap = AtomicBool::new(false);
@@ -435,19 +459,12 @@ pub fn search(
     if files.len() > max_files {
         files.truncate(max_files);
     }
-    Ok(SearchResponse {
-        q: q.pattern.clone(),
-        engine: "scan",
-        ms: t0.elapsed().as_millis(),
-        files_scanned: scanned.load(Ordering::Relaxed),
-        files_matched: matched.load(Ordering::Relaxed),
-        truncated,
-        excluded: Excluded {
-            globs: exclude_globs,
-            files: excluded_files,
-        },
+    (
         files,
-    })
+        scanned.load(Ordering::Relaxed),
+        matched.load(Ordering::Relaxed),
+        truncated,
+    )
 }
 
 pub fn find_in_file(
