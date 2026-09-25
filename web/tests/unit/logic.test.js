@@ -115,6 +115,19 @@ test('joinPath resolves relative markdown links inside the workspace', async () 
   assert.equal(joinPath('', 'README.md'), 'README.md');
 });
 
+test('sign-in accepts the printed link, any URL with token=, or a bare token', async () => {
+  const { tokenFromInput } = await import('../../src/core/text.js');
+  const t = 'Wq3_x-9AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ab';
+  assert.equal(tokenFromInput(`http://127.0.0.1:7778/?token=${t}`), t);
+  assert.equal(tokenFromInput(`  http://localhost:7790/next.html?path=a.rs&token=${t}&line=3 `), t);
+  assert.equal(tokenFromInput(`ferro http://127.0.0.1:7778/?token=${t}`), t); // copied with the prefix
+  assert.equal(tokenFromInput('devtoken'), 'devtoken');
+  assert.equal(tokenFromInput('?token=a%2Bb%3D'), 'a+b=');
+  assert.equal(tokenFromInput(''), null);
+  assert.equal(tokenFromInput('http://127.0.0.1:7778/'), null);
+  assert.equal(tokenFromInput('not a token!'), null);
+});
+
 test('search hits drop indentation and keep the match in view', async () => {
   const { focusHit } = await import('../../src/core/text.js');
   const a = focusHit('        server::build_router(state)', [[16, 28]]);

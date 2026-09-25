@@ -5,6 +5,7 @@ import { listCommands, execute } from '../core/commands.js';
 import { store } from '../core/store.js';
 import { formatCount, formatMs, formatBytes, isMac } from '../core/util.js';
 import { icon, brandMark } from '../ui/icons.js';
+import { tokenFromInput } from '../core/text.js';
 import { openDialog } from '../ui/overlay.js';
 
 // ---------- keyboard help ----------
@@ -63,16 +64,58 @@ export function showKeyboardHelp() {
 }
 
 // ---------- auth screen ----------
+// Shown on 401: this browser has no session cookie for this exact address (the page was
+// opened without ferro's token link, or on another host name: 127.0.0.1 and localhost
+// are separate sites). Pasting the link or token signs in without a terminal round trip.
 export function showAuthScreen(root) {
+  const example = `http://${location.host}/?token=…`;
+  const input = h('input', { class: 'input mono', type: 'text', placeholder: example, 'aria-label': 'Session link or token', autocomplete: 'off', spellcheck: 'false' });
+  const submit = h('button', { class: 'btn primary', type: 'submit' }, 'Continue');
+  const err = h('p', { class: 'auth-error', role: 'alert', hidden: true });
+  const fail = (msg) => { err.textContent = msg; err.hidden = false; input.focus(); input.select(); };
+
+  async function onSubmit(e) {
+    e.preventDefault(); // handled here: the page CSP has form-action 'none'
+    err.hidden = true;
+    const raw = input.value.trim();
+    const token = tokenFromInput(raw);
+    if (!token) { fail('That doesn’t look like a ferro link or token.'); return; }
+    // A link for another ferro address (other port, localhost vs 127.0.0.1): open this page there.
+    let other = null;
+    try { const u = new URL(raw); if (/^https?:$/.test(u.protocol) && u.origin !== location.origin) other = u; } catch { /* bare token */ }
+    if (other) {
+      const next = new URL(location.pathname, other.origin);
+      next.searchParams.set('token', token);
+      location.assign(next);
+      return;
+    }
+    // Check the token before navigating: a wrong one would land on the server's raw 403.
+    submit.disabled = true;
+    const res = await fetch(new URL('api/v1/meta', document.baseURI), { headers: { Authorization: `Bearer ${token}` }, credentials: 'omit', cache: 'no-store' }).catch(() => null);
+    submit.disabled = false;
+    if (!res) { fail('Cannot reach the ferro server at this address.'); return; }
+    if (!res.ok) { fail('That token does not match this server. Copy the newest link from the terminal that started ferro.'); return; }
+    // The server trades ?token= for an HttpOnly cookie and redirects back to this page.
+    const next = new URL(location.href);
+    next.searchParams.set('token', token);
+    location.replace(next);
+  }
+
   const el = h('div', { class: 'auth-screen' },
     h('div', { class: 'auth-card' },
       brandMark(),
-      h('h1', null, 'Open ferro from your terminal'),
-      h('p', { class: 'muted' }, 'This server needs its session link. ferro prints it when it starts:'),
-      h('pre', { class: 'auth-code' }, h('span', { class: 'faint' }, '$ '), 'ferro .\n', h('span', { class: 'faint' }, 'ferro '), 'http://127.0.0.1:7778/?token=…'),
-      h('p', { class: 'faint small' }, 'The token keeps other websites on this machine from reading your code or running git commands.'),
-      h('div', { class: 'row' }, h('button', { class: 'btn primary', on: { click: () => location.reload() } }, icon('refresh', 'sm'), 'Try again'))));
+      h('h1', null, 'Sign in to this ferro session'),
+      h('p', { class: 'muted' }, 'Paste the link ferro printed when it started, or just its token.'),
+      h('form', { class: 'auth-form', on: { submit: onSubmit } }, input, submit),
+      err,
+      h('details', { class: 'auth-help' },
+        h('summary', null, 'Where do I find it?'),
+        h('p', { class: 'small muted' }, 'The terminal that started ferro prints it:'),
+        h('pre', { class: 'auth-code' }, h('span', { class: 'faint' }, '$ '), 'ferro .\n', h('span', { class: 'faint' }, 'ferro '), example),
+        h('p', { class: 'small muted' }, 'A link works for the exact address it names: 127.0.0.1 and localhost are separate sessions. Closing the browser ends the session.')),
+      h('p', { class: 'faint small' }, 'The token keeps other websites on this machine from reading your code or running git commands.')));
   root.appendChild(el);
+  input.focus();
 }
 
 // ---------- inspector: info ----------

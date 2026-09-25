@@ -94,6 +94,15 @@ textarea.input { height: auto; min-height: 64px; padding: 6px 10px; resize: vert
   font: 12.5px/1.6 var(--font-mono); text-align: left; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .small { font-size: var(--fs-sm); }
+.auth-form { display: flex; gap: var(--sp-3); width: 100%; }
+.auth-form .input { flex: 1; min-width: 0; height: 34px; font-size: 12px; }
+.auth-form .btn { height: 34px; }
+.auth-error { color: var(--danger); font-size: var(--fs-sm); margin-top: calc(-1 * var(--sp-2)); }
+.auth-help { width: 100%; }
+.auth-help summary { cursor: pointer; color: var(--fg-muted); font-size: var(--fs-sm); width: fit-content; }
+.auth-help summary:hover { color: var(--fg); }
+.auth-help[open] { display: flex; flex-direction: column; gap: var(--sp-4); }
+.auth-help[open] summary { margin-bottom: var(--sp-1); }
 
 /* inspector: AI intro + capabilities */
 .ai-intro { display: flex; flex-direction: column; gap: var(--sp-5); padding: var(--sp-6) 0; }
