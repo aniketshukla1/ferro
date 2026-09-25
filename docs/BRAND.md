@@ -1,6 +1,8 @@
 # Ferro brand
 
-**Ferro** — Latin for iron. Fast, dense, forged. Tagline: *Review code. Damn fast.*
+**Ferro** — Latin for iron. Fast, dense, forged. Tagline: *Iron-clad code review.*
+
+The tagline replaced "Review code. Damn fast." on 2026-09-25 because px0.ai uses that exact line. Avoid px0's phrasing ("Built for review. Engineered for speed.", "the IDE for humans and AI"); lean on iron, rigor and local-first instead of raw speed.
 
 ## Mark
 
@@ -9,10 +11,12 @@ three bars (vertical + top + mid). The F reads as both the initial and a forged 
 
 - Gradient: `#ff8c2e` → `#f2542d` (55%) → `#c22e3d`
 - Radius: ~22% of size. Clear space: height of the F mid-bar on all sides.
-- Web: `.mark` CSS class (`web/style.css`) + SVG favicon in `web/index.html`.
+- Web: `.mark` CSS class (`web/style.css`) + SVG favicon in `web/index.html` (legacy UI); `brandMark()` in `web/src/ui/icons.js` + `.mark` in `web/styles/shell.css` + `web/assets/favicon.svg` (new UI, three-bar F as SVG).
 - Desktop: `apps/desktop/src-tauri/icon.png` (source) → icns/ico via `tauri icon`.
 
 ## Color
+
+The new app UI (`web/next.html`) is near-monochrome: graphite (dark, default), porcelain (light) and carbon (true black), specified in `docs/spec/FRONTEND.md` § 5. The ember gradient is reserved for the mark; everything else uses neutral greys plus meaning-only color (git state, diffs, errors). The table below is the legacy UI (`web/index.html`).
 
 | Token | Forge (dark default) | Paper (light) | Mocha |
 |---|---|---|---|
