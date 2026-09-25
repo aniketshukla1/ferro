@@ -3,23 +3,45 @@
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
-use ferro::{guard::GuardConfig, server};
+use ferro_server::{guard::GuardConfig, server};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-fn app(token: &str) -> axum::Router {
-    app_with_files(token, &[]).0
-}
-
-fn app_with_files(token: &str, files: &[(&str, &[u8])]) -> (axum::Router, tempfile::TempDir) {
+fn app_with_files(
+    token: &str,
+    files: &[(&str, &[u8])],
+) -> (axum::Router, tempfile::TempDir, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     for (name, bytes) in files {
         std::fs::write(dir.path().join(name), bytes).unwrap();
     }
-    let state = Arc::new(ferro_core::Index::new(dir.path().to_path_buf()));
+    let home = tempfile::tempdir().unwrap();
+    let dirs = ferro_core::dirs::FerroDirs::new(
+        home.path().join("c"),
+        home.path().join("s"),
+        home.path().join("h"),
+    );
+    let state = server::build_state(
+        dir.path().to_path_buf(),
+        dirs,
+        ferro_server::Host::Cli,
+        "test".into(),
+    );
     let guard = Arc::new(GuardConfig::new(Some(token.into()), 7778, vec![], false));
     let last = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    (server::router(state, guard, last, true), dir)
+    (
+        server::build_router(state, guard, last, true, None),
+        dir,
+        home,
+    )
+}
+
+fn app(token: &str) -> axum::Router {
+    // Leaks the tempdirs for the test lifetime (oneshot is synchronous here).
+    let (router, dir, home) = app_with_files(token, &[]);
+    std::mem::forget(dir);
+    std::mem::forget(home);
+    router
 }
 
 fn req(method: &str, uri: &str) -> axum::http::request::Builder {
@@ -174,7 +196,7 @@ async fn security_headers_present() {
 
 #[tokio::test]
 async fn markdown_endpoint_strips_xss() {
-    let (app, _dir) = app_with_files(
+    let (app, _dir, _home) = app_with_files(
         TOKEN,
         &[(
             "evil.md",
@@ -197,7 +219,7 @@ async fn markdown_endpoint_strips_xss() {
 
 #[tokio::test]
 async fn raw_svg_has_sandbox_csp_and_inline_disposition() {
-    let (app, _dir) = app_with_files(
+    let (app, _dir, _home) = app_with_files(
         TOKEN,
         &[(
             "x.svg",
@@ -239,10 +261,21 @@ async fn symlink_escape_is_403() {
     )
     .unwrap();
     std::os::unix::fs::symlink(dir.path().join("inside.txt"), dir.path().join("ok.txt")).unwrap();
-    let state = Arc::new(ferro_core::Index::new(dir.path().to_path_buf()));
+    let home = tempfile::tempdir().unwrap();
+    let dirs = ferro_core::dirs::FerroDirs::new(
+        home.path().join("c"),
+        home.path().join("s"),
+        home.path().join("h"),
+    );
+    let state = server::build_state(
+        dir.path().to_path_buf(),
+        dirs,
+        ferro_server::Host::Cli,
+        "test".into(),
+    );
     let guard = Arc::new(GuardConfig::new(Some(TOKEN.into()), 7778, vec![], false));
     let last = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    let app = server::router(state, guard, last, true);
+    let app = server::build_router(state, guard, last, true, None);
     let get = |path: &str| {
         req("GET", &format!("/api/file?path={path}"))
             .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
@@ -267,7 +300,7 @@ async fn utf8_boundary_file_returns_valid_utf8() {
     let mut bytes = vec![b'a'; 512 * 1024 - 1];
     bytes.extend_from_slice("é".as_bytes());
     bytes.extend_from_slice(b"tail");
-    let (app, _dir) = app_with_files(TOKEN, &[("uni.txt", &bytes)]);
+    let (app, _dir, _home) = app_with_files(TOKEN, &[("uni.txt", &bytes)]);
     let r = req("GET", "/api/file?path=uni.txt")
         .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
         .body(Body::empty())

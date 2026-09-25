@@ -1,8 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
-    middleware,
-    response::{IntoResponse, Response},
+    response::IntoResponse,
     routing::{delete, get, post},
     Extension, Json, Router,
 };
@@ -10,34 +9,16 @@ use rust_embed::RustEmbed;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio_stream::StreamExt as _;
-use tower_http::trace::TraceLayer;
 
-use ferro_core::Index;
-
-#[derive(Debug, Clone)]
-pub struct ServeOpts {
-    pub host: String,
-    pub port: u16,
-    pub no_git: bool,
-    pub narrate: bool,
-    pub no_open: bool,
-    /// File to open on boot with 1-based line.
-    pub initial: Option<(String, usize)>,
-    pub token: Option<String>,
-    pub allow_hosts: Vec<String>,
-    pub no_auth: bool,
-}
+use crate::state::AppState;
 
 #[derive(RustEmbed, Clone)]
 #[folder = "../../web/"]
 struct Web;
 
-pub fn router(
-    state: Arc<Index>,
-    guard: Arc<crate::guard::GuardConfig>,
-    last_active: Arc<std::sync::Mutex<std::time::Instant>>,
-    no_git: bool,
-) -> Router {
+/// Legacy routes on the shared AppState. Layers (guards, timing, catch-panic)
+/// are installed once in [`crate::server`]; this module stays behavior-identical.
+pub fn routes(no_git: bool) -> Router<Arc<crate::state::AppState>> {
     let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/stats", get(stats))
@@ -75,110 +56,20 @@ pub fn router(
             .route("/api/git/pull", post(git_pull));
     }
     app.fallback(static_file)
-        .layer(TraceLayer::new_for_http())
-        .layer(middleware::from_fn(track_activity))
-        .layer(Extension(last_active))
-        .layer(middleware::from_fn(crate::guard::guards))
-        .layer(Extension(guard))
-        .layer(tower_http::catch_panic::CatchPanicLayer::custom(
-            panic_envelope,
-        ))
-        .with_state(state)
-}
-
-pub async fn serve(state: Arc<Index>, o: ServeOpts) {
-    let last_active = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    let listener = tokio::net::TcpListener::bind(format!("{}:{}", o.host, o.port))
-        .await
-        .expect("bind");
-    let bound = listener.local_addr().map(|a| a.port()).unwrap_or(o.port);
-    let guard = Arc::new(crate::guard::GuardConfig::new(
-        o.token.clone(),
-        bound,
-        o.allow_hosts.clone(),
-        o.no_auth,
-    ));
-    let app = router(state.clone(), guard.clone(), last_active.clone(), o.no_git);
-
-    // Idle scavenger (px0 parity): after 15s without requests, drop the
-    // highlight LRU so an idle tab settles back down.
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
-        loop {
-            tick.tick().await;
-            let idle = last_active.lock().map(|t| t.elapsed()).unwrap_or_default();
-            if idle >= std::time::Duration::from_secs(15) {
-                ferro_core::highlight::clear_cache();
-                tracing::debug!("ferro idle {}s: highlight cache cleared", idle.as_secs());
-            }
-        }
-    });
-
-    let host_out = if o.host == "0.0.0.0" {
-        "127.0.0.1"
-    } else {
-        o.host.as_str()
-    };
-    let mut url = format!("http://{}:{}/?token={}", host_out, bound, guard.token);
-    if let Some((f, l)) = &o.initial {
-        url = format!(
-            "http://{}:{}/?token={}&file={}&line={}",
-            host_out,
-            bound,
-            guard.token,
-            encode_qs(f),
-            l
-        );
-    }
-    if o.no_auth {
-        tracing::warn!("--no-auth: API auth disabled (loopback only)");
-    }
-    if o.narrate {
-        tracing::info!("ferro serving {} on {}", state.root().display(), url);
-        println!("ferro {}", url);
-    }
-
-    if !o.no_open {
-        let _ = open::that(url);
-    }
-
-    axum::serve(listener, app).await.expect("serve");
 }
 
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status":"ok","service":"ferro"}))
 }
 
-/// A panic anywhere in the stack becomes a 500 envelope, never a dropped
-/// connection (BACKEND.md § 4.4).
-fn panic_envelope(_err: Box<dyn std::any::Any + Send + 'static>) -> Response {
-    Response::builder()
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
-        .body(axum::body::Body::from(
-            serde_json::json!({ "error": { "code": "internal", "message": "internal error" } })
-                .to_string(),
-        ))
-        .unwrap()
-}
-
-async fn track_activity(
-    Extension(last): Extension<Arc<std::sync::Mutex<std::time::Instant>>>,
-    req: axum::http::Request<axum::body::Body>,
-    next: middleware::Next,
-) -> impl IntoResponse {
-    if let Ok(mut t) = last.lock() {
-        *t = std::time::Instant::now();
-    }
-    next.run(req).await
-}
-
-async fn stats(State(s): State<Arc<Index>>) -> impl IntoResponse {
+async fn stats(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let (n, ms) = s.stats();
     Json(serde_json::json!({"files": n, "indexed_ms": ms, "root": s.root().to_string_lossy()}))
 }
 
-async fn files(State(s): State<Arc<Index>>) -> impl IntoResponse {
+async fn files(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     Json(s.snapshot())
 }
 
@@ -188,7 +79,8 @@ struct Q {
     limit: Option<usize>,
 }
 
-async fn fuzzy(State(s): State<Arc<Index>>, Query(q): Query<Q>) -> impl IntoResponse {
+async fn fuzzy(State(st): State<Arc<AppState>>, Query(q): Query<Q>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let query = q.q.unwrap_or_default();
     let limit = q.limit.unwrap_or(50).min(200);
     let snap = s.snapshot();
@@ -202,7 +94,8 @@ async fn fuzzy(State(s): State<Arc<Index>>, Query(q): Query<Q>) -> impl IntoResp
     )
 }
 
-async fn search(State(s): State<Arc<Index>>, Query(q): Query<Q>) -> impl IntoResponse {
+async fn search(State(st): State<Arc<AppState>>, Query(q): Query<Q>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let query = q.q.unwrap_or_default();
     let limit = q.limit.unwrap_or(50).min(200);
     let root = s.root().to_path_buf();
@@ -224,7 +117,8 @@ struct WindowQ {
     count: Option<usize>,
 }
 
-async fn file_meta(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+async fn file_meta(State(st): State<Arc<AppState>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     match s.file_meta(&q.path) {
         Some(m) => {
             Json(serde_json::json!({"size": m.size, "total_lines": m.total_lines})).into_response()
@@ -233,7 +127,11 @@ async fn file_meta(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl 
     }
 }
 
-async fn file_window(State(s): State<Arc<Index>>, Query(q): Query<WindowQ>) -> impl IntoResponse {
+async fn file_window(
+    State(st): State<Arc<AppState>>,
+    Query(q): Query<WindowQ>,
+) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let start = q.start.unwrap_or(0);
     let count = q.count.unwrap_or(200).clamp(1, 2000);
     let s2 = s.clone();
@@ -247,7 +145,8 @@ async fn file_window(State(s): State<Arc<Index>>, Query(q): Query<WindowQ>) -> i
     }
 }
 
-async fn highlight(State(s): State<Arc<Index>>, Query(q): Query<WindowQ>) -> impl IntoResponse {
+async fn highlight(State(st): State<Arc<AppState>>, Query(q): Query<WindowQ>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let start = q.start.unwrap_or(0);
     let count = q.count.unwrap_or(200).clamp(1, 1000);
     let s2 = s.clone();
@@ -261,7 +160,8 @@ async fn highlight(State(s): State<Arc<Index>>, Query(q): Query<WindowQ>) -> imp
     }
 }
 
-async fn read_file(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+async fn read_file(State(st): State<Arc<AppState>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let Some(p) = s.safe_join(&q.path) else {
         return (StatusCode::FORBIDDEN, "traversal blocked".to_string()).into_response();
     };
@@ -278,7 +178,8 @@ async fn read_file(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl 
     }
 }
 
-async fn git_status(State(s): State<Arc<Index>>) -> impl IntoResponse {
+async fn git_status(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let root = s.root().to_path_buf();
     let out = tokio::task::spawn_blocking(move || ferro_core::git::status(&root))
         .await
@@ -300,7 +201,8 @@ struct AskBody {
 /// POST /api/ask — read-only agent over the live index.
 /// Provider resolves from server env (GEMINI_API_KEY / OPENAI_API_KEY / OLLAMA_MODEL).
 /// Never accepts keys in the request body.
-async fn ask(State(s): State<Arc<Index>>, Json(b): Json<AskBody>) -> impl IntoResponse {
+async fn ask(State(st): State<Arc<AppState>>, Json(b): Json<AskBody>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     if b.question.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "empty question".to_string()).into_response();
     }
@@ -327,7 +229,8 @@ async fn ask(State(s): State<Arc<Index>>, Json(b): Json<AskBody>) -> impl IntoRe
 /// POST /api/ask/stream — same agent, step-level SSE while it works.
 /// Events: {"kind":"thought"|"tool_start"|"tool_result"|"final", ...}.
 /// Falls back to a single JSON error when no provider is configured.
-async fn ask_stream(State(s): State<Arc<Index>>, Json(b): Json<AskBody>) -> impl IntoResponse {
+async fn ask_stream(State(st): State<Arc<AppState>>, Json(b): Json<AskBody>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     use axum::response::sse::{Event, Sse};
     if b.question.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "empty question".to_string()).into_response();
@@ -360,7 +263,8 @@ async fn ask_stream(State(s): State<Arc<Index>>, Json(b): Json<AskBody>) -> impl
     Sse::new(stream).into_response()
 }
 
-async fn diff(State(s): State<Arc<Index>>, Query(q): Query<DiffQ>) -> impl IntoResponse {
+async fn diff(State(st): State<Arc<AppState>>, Query(q): Query<DiffQ>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let root = s.root().to_path_buf();
     let rel = q.path.clone();
     // PR mode: scoped merge-base diff instead of HEAD diff.
@@ -380,14 +284,16 @@ async fn diff(State(s): State<Arc<Index>>, Query(q): Query<DiffQ>) -> impl IntoR
     (StatusCode::OK, out).into_response()
 }
 
-async fn pr_info(State(s): State<Arc<Index>>) -> impl IntoResponse {
+async fn pr_info(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     match s.pr_ctx() {
         Some(pr) => Json(serde_json::json!({"pr": pr})).into_response(),
         None => Json(serde_json::json!({"pr": null})).into_response(),
     }
 }
 
-async fn markdown(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+async fn markdown(State(st): State<Arc<AppState>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let s2 = s.clone();
     let path = q.path.clone();
     let out = tokio::task::spawn_blocking(move || ferro_core::media::render_markdown(&s2, &path))
@@ -399,7 +305,8 @@ async fn markdown(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl I
     }
 }
 
-async fn raw(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+async fn raw(State(st): State<Arc<AppState>>, Query(q): Query<FileQ>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let s2 = s.clone();
     let path = q.path.clone();
     let out = tokio::task::spawn_blocking(move || ferro_core::media::read_image_bytes(&s2, &path))
@@ -468,7 +375,8 @@ struct SubmitBody {
     body: Option<String>,
 }
 
-async fn review_apply(State(s): State<Arc<Index>>) -> impl IntoResponse {
+async fn review_apply(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let Some(pr) = s.pr_ctx() else {
         return (StatusCode::BAD_REQUEST, "not in PR mode".to_string()).into_response();
     };
@@ -517,15 +425,28 @@ async fn review_apply(State(s): State<Arc<Index>>) -> impl IntoResponse {
     Json(serde_json::json!({"id": id, "applied": applied, "transcript": t})).into_response()
 }
 
-async fn settings_get(State(s): State<Arc<Index>>) -> impl IntoResponse {
-    Json(ferro_core::settings::Settings::new(s.root().to_path_buf()).get())
+async fn settings_get(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let ws = st.ws();
+    Json(st.settings.effective(&ws.key))
 }
 
 async fn settings_put(
-    State(s): State<Arc<Index>>,
+    State(st): State<Arc<AppState>>,
     Json(patch): Json<std::collections::BTreeMap<String, serde_json::Value>>,
 ) -> impl IntoResponse {
-    match ferro_core::settings::Settings::new(s.root().to_path_buf()).save(&patch) {
+    let ws = st.ws();
+    // Legacy flat patch maps onto the workspace scope of the new store.
+    // Unknown (non-ui) keys are dropped: the new store validates strictly.
+    let scoped: std::collections::BTreeMap<String, serde_json::Value> = patch
+        .into_iter()
+        .filter(|(k, _)| {
+            k.starts_with("ui.")
+                || crate::state::SettingsStore::schema()
+                    .iter()
+                    .any(|d| d.get("key").and_then(|x| x.as_str()) == Some(k.as_str()))
+        })
+        .collect();
+    match st.settings.save(&ws.key, "workspace", scoped) {
         Ok(eff) => Json(eff).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
     }
@@ -537,7 +458,7 @@ struct PathsBody {
 }
 
 async fn git_op(
-    s: Arc<Index>,
+    s: Arc<ferro_core::Index>,
     f: impl FnOnce(&std::path::Path) -> Result<String, String> + Send + 'static,
 ) -> impl IntoResponse {
     let root = s.root().to_path_buf();
@@ -550,11 +471,16 @@ async fn git_op(
     }
 }
 
-async fn git_stage(State(s): State<Arc<Index>>, Json(b): Json<PathsBody>) -> impl IntoResponse {
+async fn git_stage(State(st): State<Arc<AppState>>, Json(b): Json<PathsBody>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     git_op(s, move |r| ferro_core::git::stage(r, &b.paths)).await
 }
 
-async fn git_unstage(State(s): State<Arc<Index>>, Json(b): Json<PathsBody>) -> impl IntoResponse {
+async fn git_unstage(
+    State(st): State<Arc<AppState>>,
+    Json(b): Json<PathsBody>,
+) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     git_op(s, move |r| ferro_core::git::unstage(r, &b.paths)).await
 }
 
@@ -563,19 +489,26 @@ struct CommitBody {
     message: String,
 }
 
-async fn git_commit(State(s): State<Arc<Index>>, Json(b): Json<CommitBody>) -> impl IntoResponse {
+async fn git_commit(
+    State(st): State<Arc<AppState>>,
+    Json(b): Json<CommitBody>,
+) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     git_op(s, move |r| ferro_core::git::commit(r, &b.message)).await
 }
 
-async fn git_push(State(s): State<Arc<Index>>) -> impl IntoResponse {
+async fn git_push(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     git_op(s, ferro_core::git::push).await
 }
 
-async fn git_pull(State(s): State<Arc<Index>>) -> impl IntoResponse {
+async fn git_pull(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     git_op(s, ferro_core::git::pull_ff).await
 }
 
-async fn git_commit_message(State(s): State<Arc<Index>>) -> impl IntoResponse {
+async fn git_commit_message(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let provider = match ferro_agent::OpenAiCompat::from_env(None, None, None) {
         Ok(p) => p,
         Err(e) => {
@@ -615,9 +548,10 @@ async fn git_commit_message(State(s): State<Arc<Index>>) -> impl IntoResponse {
 }
 
 async fn review_submit(
-    State(s): State<Arc<Index>>,
+    State(st): State<Arc<AppState>>,
     Json(b): Json<SubmitBody>,
 ) -> impl IntoResponse {
+    let s = st.ws().index.clone();
     let Some(pr) = s.pr_ctx() else {
         return (StatusCode::BAD_REQUEST, "not in PR mode".to_string()).into_response();
     };
@@ -643,8 +577,12 @@ async fn review_submit(
     }
 }
 
-async fn static_file(
+#[derive(Debug, Clone)]
+pub struct DevWeb(pub Option<String>);
+
+pub(crate) async fn static_file(
     Extension(g): Extension<Arc<crate::guard::GuardConfig>>,
+    Extension(dev): Extension<DevWeb>,
     req: axum::http::Request<axum::body::Body>,
 ) -> impl IntoResponse {
     if let Some(res) = crate::guard::bootstrap(&g, &req) {
@@ -654,25 +592,62 @@ async fn static_file(
     if path.is_empty() {
         path = "index.html".to_string();
     }
+    if path.contains("..") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    // --dev-web: serve from disk with no-store so the frontend iterates
+    // without rebuilding. Otherwise serve embedded assets with ETags.
+    if let Some(root) = dev.0.as_deref() {
+        let full = std::path::PathBuf::from(root).join(&path);
+        match std::fs::read(&full) {
+            Ok(bytes) => {
+                let mime = mime_guess(&path);
+                return (
+                    [
+                        (header::CONTENT_TYPE, mime),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    bytes,
+                )
+                    .into_response();
+            }
+            Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
+        }
+    }
     match Web::get(&path) {
         Some(f) => {
             let mime = mime_guess(&path);
-            ([(header::CONTENT_TYPE, mime)], f.data.to_vec()).into_response()
+            let bytes = f.data.to_vec();
+            let etag = weak_etag(&bytes);
+            if req
+                .headers()
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v == etag)
+            {
+                return StatusCode::NOT_MODIFIED.into_response();
+            }
+            (
+                [
+                    (header::CONTENT_TYPE, mime),
+                    (header::ETAG, etag.as_str()),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                bytes,
+            )
+                .into_response()
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
 
-fn encode_qs(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b"-_.~/".contains(&b) {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
+fn weak_etag(bytes: &[u8]) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    bytes.len().hash(&mut h);
+    bytes.iter().take(4096).for_each(|b| b.hash(&mut h));
+    format!("W/\"{:x}\"", h.finish())
 }
 
 fn mime_guess(p: &str) -> &'static str {

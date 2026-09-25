@@ -5,7 +5,7 @@
   "identifier": "ai.ferro.app",
   "build": {
     "devUrl": null,
-    "frontendDist": "../../../web",
+    "frontendDist": "../splash",
     "beforeDevCommand": "",
     "beforeBuildCommand": ""
   },
@@ -19,7 +19,7 @@
         "minHeight": 600
       }
     ],
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost"
     }

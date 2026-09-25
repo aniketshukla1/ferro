@@ -128,6 +128,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -929,6 +938,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
+name = "cty"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b365fabc795046672053e29c954733ec3b05e4be654ab130fe8f1f94d7051f35"
+
+[[package]]
 name = "darling"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1313,22 +1328,15 @@ dependencies = [
 name = "ferro"
 version = "0.1.0"
 dependencies = [
- "axum",
- "base64 0.22.1",
  "clap",
  "ferro-agent",
  "ferro-core",
+ "ferro-server",
  "open",
- "rand 0.9.5",
- "rust-embed",
  "serde",
  "serde_json",
- "similar",
  "tempfile",
  "tokio",
- "tokio-stream",
- "tower",
- "tower-http",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1370,11 +1378,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-server"
+version = "0.1.0"
+dependencies = [
+ "ammonia",
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "ferro-agent",
+ "ferro-core",
+ "libmimalloc-sys",
+ "lru",
+ "mimalloc",
+ "parking_lot",
+ "pulldown-cmark",
+ "rand 0.9.5",
+ "regex",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "similar",
+ "syntect",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+ "url",
+]
+
+[[package]]
 name = "ferro-tauri"
 version = "0.1.0"
 dependencies = [
- "ferro-agent",
+ "anyhow",
+ "async-trait",
  "ferro-core",
+ "ferro-server",
  "serde",
  "serde_json",
  "tauri",
@@ -1382,6 +1431,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -2523,6 +2573,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libmimalloc-sys"
+version = "0.1.49"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
+dependencies = [
+ "cc",
+ "cty",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2646,6 +2706,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mimalloc"
+version = "0.1.52"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
+dependencies = [
+ "libmimalloc-sys",
 ]
 
 [[package]]
@@ -4954,8 +5023,13 @@ checksum = "494815d09bf52b5548659851081238f0ca39ff638363907596da739561c62c52"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
+ "futures-util",
+ "hashbrown 0.15.5",
+ "libc",
  "pin-project-lite",
+ "slab",
  "tokio",
 ]
 
@@ -5247,6 +5321,16 @@ dependencies = [
  "memoffset",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ulid"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
+dependencies = [
+ "rand 0.9.5",
+ "web-time",
 ]
 
 [[package]]

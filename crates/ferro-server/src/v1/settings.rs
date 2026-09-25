@@ -30,9 +30,9 @@ async fn settings_get(
     let scope = p.scope.unwrap_or_else(|| "effective".into());
     let values = match scope.as_str() {
         "user" | "workspace" => {
-            serde_json::Value::Object(s.settings.raw(&scope).into_iter().collect())
+            serde_json::Value::Object(s.settings.raw(&s.ws().key, &scope).into_iter().collect())
         }
-        _ => serde_json::Value::Object(s.settings.effective().into_iter().collect()),
+        _ => serde_json::Value::Object(s.settings.effective(&s.ws().key).into_iter().collect()),
     };
     Json(serde_json::json!({
         "scope": scope,
@@ -75,7 +75,7 @@ async fn settings_put(
     };
     let eff = s
         .settings
-        .save(&scope, map)
+        .save(&s.ws().key, &scope, map)
         .map_err(ApiError::bad_request)?;
     s.bus.publish(crate::bus::ServerEvent::Settings {
         values: serde_json::json!(eff),

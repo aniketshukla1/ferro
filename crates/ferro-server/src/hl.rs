@@ -355,9 +355,35 @@ impl Highlighter {
         }
     }
 
-    /// Highlight `[start, start+count)` (0-based). Approximation replays from
-    /// up to 400 lines before the window; `exact:false` triggers one background
-    /// exact pass per version (skipped past 50 MiB / 2M lines).
+    /// Synchronous exact pass over the whole file (used by the background
+    /// job and by tests). Skipped past 50 MiB / 2M lines.
+    pub fn exact_pass_sync(path: &Path, syntax_name: &str) -> Option<Arc<Vec<String>>> {
+        let text = std::fs::read(path).ok()?;
+        if text.len() > 50 * 1024 * 1024 {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&text).into_owned();
+        let raws: Vec<&str> = text.split('\n').collect();
+        let n = if text.ends_with('\n') {
+            raws.len().saturating_sub(1)
+        } else {
+            raws.len()
+        };
+        if n > 2_000_000 {
+            return None;
+        }
+        let ss = syntax_set();
+        let syntax = ss
+            .find_syntax_by_name(syntax_name)
+            .unwrap_or_else(|| ss.find_syntax_plain_text());
+        let mut parse = ParseState::new(syntax);
+        let mut stack = ScopeStack::new();
+        let mut out = Vec::with_capacity(n.min(100_000));
+        for raw in raws.into_iter().take(n) {
+            out.push(highlight_line(raw, ss, &mut parse, &mut stack));
+        }
+        Some(Arc::new(out))
+    }
     pub fn window(
         &self,
         path: &Path,
@@ -436,30 +462,11 @@ impl Highlighter {
             let rel = rel.to_string();
             let syntax_name = syntax.name.clone();
             tokio::spawn(async move {
-                let full = tokio::task::spawn_blocking(move || {
-                    let ss = syntax_set();
-                    let syntax = ss
-                        .find_syntax_by_name(&syntax_name)
-                        .unwrap_or_else(|| ss.find_syntax_plain_text());
-                    let text = std::fs::read(path).ok()?;
-                    let text = String::from_utf8_lossy(&text).into_owned();
-                    let raws: Vec<&str> = text.split('\n').collect();
-                    let n = if text.ends_with('\n') {
-                        raws.len().saturating_sub(1)
-                    } else {
-                        raws.len()
-                    };
-                    let mut parse = ParseState::new(syntax);
-                    let mut stack = ScopeStack::new();
-                    let mut out = Vec::with_capacity(n.min(100_000));
-                    for raw in raws.into_iter().take(n) {
-                        out.push(highlight_line(raw, ss, &mut parse, &mut stack));
-                    }
-                    Some(Arc::new(out))
-                })
-                .await
-                .ok()
-                .flatten();
+                let full =
+                    tokio::task::spawn_blocking(move || Self::exact_pass_sync(&path, &syntax_name))
+                        .await
+                        .ok()
+                        .flatten();
                 inflight.lock().remove(&ver);
                 if let Some(full) = full {
                     exact.lock().insert(ver.clone(), full);
@@ -518,5 +525,31 @@ mod tests {
         assert!(html.contains("class=\"t-k\""), "{html}");
         assert!(html.contains("class=\"t-c\""), "{html}");
         let _ = ScopeStackOp::Noop;
+    }
+
+    /// B1 acceptance: 2,000-line block comment, then code. A window at line
+    /// 2,500 served from context is approximate; the exact pass is correct.
+    #[tokio::test]
+    async fn exact_pass_after_long_comment() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.py");
+        let mut src = String::from("\"\"\"\n");
+        for i in 0..2000 {
+            src.push_str(&format!("comment line {i}\n"));
+        }
+        src.push_str("\"\"\"\n");
+        for i in 0..600 {
+            src.push_str(&format!("x{i} = \"s{i}\"\n"));
+        }
+        std::fs::write(&p, &src).unwrap();
+        let h = Highlighter::new();
+        // Approximation from 400 lines of context lands inside the comment.
+        let w = h.window(&p, "big.py", 2500, 3, Some("py")).unwrap();
+        assert!(!w.exact);
+        // Exact pass: code lines are strings, not comments.
+        let full = Highlighter::exact_pass_sync(&p, "Python").unwrap();
+        assert_eq!(full.len(), 2602);
+        assert!(!full[2500].contains("t-c"), "{}", full[2500]);
+        assert!(full[2500].contains("t-s"), "{}", full[2500]);
     }
 }

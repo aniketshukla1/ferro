@@ -2,9 +2,12 @@
 
 pub mod bus;
 pub mod error;
+pub mod guard;
 pub mod hl;
 pub mod jobs;
+pub mod legacy;
 pub mod lines;
+pub mod server;
 pub mod state;
 pub mod v1;
 

@@ -97,17 +97,8 @@ fn is_repo(root: &std::path::Path) -> bool {
     root.join(".git").exists()
 }
 
-#[derive(Debug, Clone)]
-pub struct GuardConfig {
-    pub token: String,
-    pub cookie_name: String,
-    pub allow_hosts: Vec<String>,
-    pub no_auth: bool,
-}
-
 pub struct AppState {
     pub ws: arc_swap::ArcSwap<Workspace>,
-    pub guard: GuardConfig,
     pub bus: Events,
     pub jobs: JobManager,
     pub settings: SettingsStore,
@@ -126,10 +117,10 @@ impl AppState {
 }
 
 /// Settings store: defaults < user < workspace. Unknown `ui.*` passthrough.
+/// The workspace key is passed per call so workspace switches stay correct.
 #[derive(Debug, Clone)]
 pub struct SettingsStore {
     pub dirs: FerroDirs,
-    pub workspace_key: String,
 }
 
 impl SettingsStore {
@@ -181,27 +172,29 @@ impl SettingsStore {
         self.dirs.config_dir.join("settings.json")
     }
 
-    fn ws_path(&self) -> PathBuf {
-        self.dirs
-            .workspace_state_dir(&self.workspace_key)
-            .join("settings.json")
+    fn ws_path(&self, key: &str) -> PathBuf {
+        self.dirs.workspace_state_dir(key).join("settings.json")
     }
 
     /// Raw stored values for one scope (no defaults merged).
-    pub fn raw(&self, scope: &str) -> std::collections::BTreeMap<String, serde_json::Value> {
+    pub fn raw(
+        &self,
+        key: &str,
+        scope: &str,
+    ) -> std::collections::BTreeMap<String, serde_json::Value> {
         match scope {
             "user" => Self::read_file(&self.user_path()),
-            _ => Self::read_file(&self.ws_path()),
+            _ => Self::read_file(&self.ws_path(key)),
         }
     }
 
     /// Effective values: defaults < user < workspace.
-    pub fn effective(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
+    pub fn effective(&self, key: &str) -> std::collections::BTreeMap<String, serde_json::Value> {
         let mut out = Self::defaults();
         for (k, v) in Self::read_file(&self.user_path()) {
             out.insert(k, v);
         }
-        for (k, v) in Self::read_file(&self.ws_path()) {
+        for (k, v) in Self::read_file(&self.ws_path(key)) {
             out.insert(k, v);
         }
         out
@@ -211,12 +204,13 @@ impl SettingsStore {
     /// `ui.*` keys pass through unvalidated (≤ 64 KiB total).
     pub fn save(
         &self,
+        key: &str,
         scope: &str,
         patch: std::collections::BTreeMap<String, serde_json::Value>,
     ) -> Result<std::collections::BTreeMap<String, serde_json::Value>, String> {
         let path = match scope {
             "user" => self.user_path(),
-            "workspace" => self.ws_path(),
+            "workspace" => self.ws_path(key),
             _ => return Err(format!("unknown scope: {scope}")),
         };
         let mut cur = Self::read_file(&path);
@@ -246,7 +240,7 @@ impl SettingsStore {
                 .unwrap_or_default()
                 .as_bytes(),
         )?;
-        Ok(self.effective())
+        Ok(self.effective(key))
     }
 
     fn validate(key: &str, v: &serde_json::Value) -> Result<(), String> {
@@ -295,12 +289,10 @@ mod tests {
     fn scopes_merge_and_validate() {
         let t = tempfile::tempdir().unwrap();
         let dirs = FerroDirs::new(t.path().join("c"), t.path().join("s"), t.path().join("h"));
-        let st = SettingsStore {
-            dirs,
-            workspace_key: "k1".into(),
-        };
-        assert_eq!(st.effective()["theme"], serde_json::json!("forge"));
+        let st = SettingsStore { dirs };
+        assert_eq!(st.effective("k1")["theme"], serde_json::json!("forge"));
         st.save(
+            "k1",
             "user",
             [("theme".into(), serde_json::json!("paper"))]
                 .into_iter()
@@ -308,41 +300,45 @@ mod tests {
         )
         .unwrap();
         st.save(
+            "k1",
             "workspace",
             [("sidebar".into(), serde_json::json!(false))]
                 .into_iter()
                 .collect(),
         )
         .unwrap();
-        let eff = st.effective();
+        let eff = st.effective("k1");
         assert_eq!(eff["theme"], serde_json::json!("paper"));
         assert_eq!(eff["sidebar"], serde_json::json!(false));
         assert!(st
             .save(
+                "k1",
                 "workspace",
                 [("theme".into(), serde_json::json!("nope"))]
                     .into_iter()
                     .collect()
             )
             .is_err());
-        assert!(st.save("nope", Default::default()).is_err());
+        assert!(st.save("k1", "nope", Default::default()).is_err());
         // null resets to default
         st.save(
+            "k1",
             "user",
             [("theme".into(), serde_json::Value::Null)]
                 .into_iter()
                 .collect(),
         )
         .unwrap();
-        assert_eq!(st.effective()["theme"], serde_json::json!("forge"));
+        assert_eq!(st.effective("k1")["theme"], serde_json::json!("forge"));
         // ui.* passthrough
         st.save(
+            "k1",
             "user",
             [("ui.layout".into(), serde_json::json!({"a": 1}))]
                 .into_iter()
                 .collect(),
         )
         .unwrap();
-        assert_eq!(st.effective()["ui.layout"], serde_json::json!({"a": 1}));
+        assert_eq!(st.effective("k1")["ui.layout"], serde_json::json!({"a": 1}));
     }
 }
