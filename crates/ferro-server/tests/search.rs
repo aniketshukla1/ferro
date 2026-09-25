@@ -25,6 +25,10 @@ fn state() -> axum::Router {
     .unwrap();
     std::fs::write(dir.path().join("vendor/vendored.rs"), "fn serve() {}\n").unwrap();
     std::fs::write(dir.path().join("main.rs"), "fn main() {\n    serve();\n}\n").unwrap();
+    router_at(dir)
+}
+
+fn router_at(dir: tempfile::TempDir) -> axum::Router {
     // Leak the fixture dir: the router holds an absolute root path, and the
     // tempdir would otherwise be deleted on return.
     let dir = Box::leak(Box::new(dir));
@@ -251,6 +255,56 @@ async fn file_find_and_resolve() {
     assert_eq!(v["resolved"]["src/server.rs:1"]["line"], 1);
     assert_eq!(v["resolved"]["server.rs"]["path"], "src/server.rs");
     assert!(v["resolved"]["nope:1"].is_null());
+}
+
+#[tokio::test]
+async fn file_find_groups_lines_and_reads_validated_path() {
+    let app = state();
+    // "fn serve() {}": two `e`s on line 1 come back as one line, two ranges.
+    let (s, v) = j(app.clone(), "/api/v1/file/find?path=src%2Fserver.rs&q=e").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 2);
+    assert_eq!(v["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        v["matches"][0]["ranges"],
+        serde_json::json!([[4, 5], [7, 8]])
+    );
+    // Leading whitespace/slash are normalized by validation; the read uses
+    // the validated path, not the raw string.
+    let (s, v) = j(
+        app.clone(),
+        "/api/v1/file/find?path=%20%2Fsrc%2Flib.rs&q=foo",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 1);
+    let (s, _) = j(app.clone(), "/api/v1/file/find?path=src%2Fnope.rs&q=foo").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn search_stream_max_files_is_global() {
+    // Three 2000-file shards with 5 + 5 + 2 sparse matches: no single shard
+    // reaches maxFiles=8, so a per-shard cap would stream 12 files.
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..4500 {
+        let body = if i % 400 == 0 { "hit\n" } else { "miss\n" };
+        std::fs::write(dir.path().join(format!("f{i:04}.txt")), body).unwrap();
+    }
+    let app = router_at(dir);
+    let res = app
+        .oneshot(get("/api/v1/search/stream?q=hit&maxFiles=8"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 8 * 1024 * 1024)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&body).into_owned();
+    assert_eq!(text.matches("event: file").count(), 8, "{text}");
+    let done = text.split("event: done\ndata: ").nth(1).unwrap();
+    let done: serde_json::Value = serde_json::from_str(done.lines().next().unwrap()).unwrap();
+    assert_eq!(done["truncated"], true);
 }
 
 #[tokio::test]

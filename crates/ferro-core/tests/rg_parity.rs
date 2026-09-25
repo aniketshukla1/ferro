@@ -3,9 +3,8 @@
 //! globs. `#[ignore]` — needs an `rg` binary; run explicitly:
 //! `cargo test -p ferro-core --test rg_parity -- --ignored --nocapture`.
 //!
-//! The comparison is at (path, line) granularity: ferro returns one Hit per
-//! regex match while rg returns one match per line, so multi-match lines are
-//! collapsed on both sides before comparing.
+//! The comparison is at (path, line) granularity: both sides report one
+//! entry per matching line (ferro groups a line's matches into `ranges`).
 
 use ferro_core::fileindex::FileSnapshot;
 use ferro_core::scan::{Case, Mode, Query};

@@ -9,11 +9,33 @@ use axum::{
 };
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio_stream::StreamExt as _;
 
 use crate::error::ApiError;
 use crate::state::AppState;
+
+/// At most 2 concurrent full scans (§ 4.3); extra ones wait here. The permit
+/// is owned so it can move into the blocking task that does the scanning.
+pub(crate) async fn scan_permit(
+    s: &Arc<AppState>,
+) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
+    s.search_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::new(crate::error::ErrorCode::Internal, "search overloaded"))
+}
+
+/// Sets a scan's stop flag when the request future is dropped (client abort).
+pub(crate) struct StopOnDrop(pub(crate) Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -194,20 +216,20 @@ async fn search(
             serde_json::json!({ "position": pos }),
         ));
     }
-    // At most 2 concurrent full scans (§ 4.3); extra ones wait here.
-    let _permit = s
-        .search_slots
-        .acquire()
-        .await
-        .map_err(|_| ApiError::new(crate::error::ErrorCode::Internal, "search overloaded"))?;
+    let permit = scan_permit(&s).await?;
     let ws = s.ws();
     let snap = ws.index.file_index.load();
     let root = ws.root.clone();
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let out =
-        tokio::task::spawn_blocking(move || ferro_core::scan::search(&snap, &root, &query, &stop))
-            .await
-            .map_err(|_| ApiError::new(crate::error::ErrorCode::Internal, "search task failed"))?;
+    let stop = Arc::new(AtomicBool::new(false));
+    // A client abort drops this future: stop the scan, and keep the slot
+    // held by the blocking task until it has actually wound down.
+    let _stop_on_drop = StopOnDrop(stop.clone());
+    let out = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        ferro_core::scan::search(&snap, &root, &query, &stop)
+    })
+    .await
+    .map_err(|_| ApiError::new(crate::error::ErrorCode::Internal, "search task failed"))?;
     match out {
         Ok(r) => Ok(Json(to_response(r))),
         Err(e) => Err(ApiError::detail(
@@ -238,25 +260,28 @@ async fn search_stream(
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(64);
     // The semaphore is held by this worker only (released when it finishes);
     // the handler future itself must stay responsive to client disconnects.
-    let permit = s
-        .search_slots
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| ApiError::new(crate::error::ErrorCode::Internal, "search overloaded"))?;
+    let permit = scan_permit(&s).await?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let t0 = std::time::Instant::now();
-        let stop = std::sync::atomic::AtomicBool::new(false);
+        let stop = AtomicBool::new(false);
         let mut scanned = 0usize;
         let mut matched = 0usize;
+        let mut emitted = 0usize;
         let mut truncated = false;
         let mut since_progress = 0usize;
+        // maxFiles is global: each shard gets only the files still allowed.
+        let mut shard_q = query.clone();
         for shard in cands.chunks(2000) {
+            if tx.is_closed() {
+                return;
+            }
+            shard_q.max_files = query.max_files.saturating_sub(emitted).max(1);
             let (mut files, sc, mt, trunc) =
-                ferro_core::scan::search_candidates(&snap, &root, &query, &re, &stop, shard);
+                ferro_core::scan::search_candidates(&snap, &root, &shard_q, &re, &stop, shard);
             scanned += sc;
             matched += mt;
+            emitted += files.len();
             truncated = truncated || trunc;
             // search_candidates sorts per shard; global order restored at done.
             // Emit in path order per shard for stable streaming.
@@ -331,7 +356,6 @@ async fn file_find(
     if pattern.is_empty() {
         return Err(ApiError::bad_request("q required"));
     }
-    let ws = s.ws();
     let abs = super::files::resolve_pub(&s, &q.path)?;
     if abs.metadata().map(|m| !m.is_file()).unwrap_or(true) {
         return Err(ApiError::not_found(format!("not found: {}", q.path)));
@@ -349,18 +373,18 @@ async fn file_find(
         other => return Err(ApiError::bad_request(format!("bad case: {other}"))),
     };
     query.word = q.word.unwrap_or(false);
-    if let Err((msg, pos)) = ferro_core::scan::compile_query(&query) {
-        return Err(ApiError::detail(
+    let re = ferro_core::scan::compile_query(&query).map_err(|(msg, pos)| {
+        ApiError::detail(
             crate::error::ErrorCode::BadRequest,
             format!("bad regex: {msg}"),
             serde_json::json!({ "position": pos }),
-        ));
-    }
+        )
+    })?;
     let limit = q.limit.unwrap_or(10000).clamp(1, 10000);
-    let root = ws.root.clone();
-    let rel = q.path.clone();
+    let max_bytes = s.limits.max_raw_bytes;
+    // Read the path that was validated, not the raw query string.
     let out = tokio::task::spawn_blocking(move || {
-        ferro_core::scan::find_in_file(&root, &rel, &query, limit)
+        ferro_core::scan::find_in_file(&abs, &re, limit, max_bytes)
     })
     .await
     .map_err(|_| ApiError::new(crate::error::ErrorCode::Internal, "find task failed"))?;
@@ -373,11 +397,11 @@ async fn file_find(
                 "ranges": m.ranges.iter().map(|(a, b)| vec![a, b]).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
         }))),
-        Err(e) => Err(ApiError::detail(
-            crate::error::ErrorCode::BadRequest,
-            format!("bad regex: {e}"),
-            serde_json::json!({ "position": 0 }),
+        Err(e) if e.kind() == std::io::ErrorKind::FileTooLarge => Err(ApiError::new(
+            crate::error::ErrorCode::TooLarge,
+            "file over maxRawBytes",
         )),
+        Err(_) => Err(ApiError::not_found(format!("cannot read: {}", q.path))),
     }
 }
 

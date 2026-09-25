@@ -110,8 +110,14 @@ async fn search(State(st): State<Arc<AppState>>, Query(q): Query<Q>) -> impl Int
     let mut sq = ferro_core::scan::Query::literal(query);
     sq.max_files = 200;
     sq.max_per_file = 20;
+    // Same 2-scan cap and abort handling as /api/v1/search.
+    let Ok(permit) = crate::v1::search::scan_permit(&st).await else {
+        return Json(Vec::<serde_json::Value>::new()).into_response();
+    };
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _stop_on_drop = crate::v1::search::StopOnDrop(stop.clone());
     let out = tokio::task::spawn_blocking(move || {
-        let stop = std::sync::atomic::AtomicBool::new(false);
+        let _permit = permit;
         ferro_core::scan::search(&snap, &root, &sq, &stop).ok()
     })
     .await

@@ -56,13 +56,65 @@ impl Query {
         match self.case {
             Case::Sensitive => false,
             Case::Insensitive => true,
-            Case::Smart => !self.pattern.chars().any(|c| c.is_uppercase()),
+            Case::Smart => !has_literal_uppercase(&self.pattern, self.mode == Mode::Regex),
         }
     }
 
     pub fn compile(&self) -> Result<regex::bytes::Regex, String> {
         compile_query(self).map_err(|(msg, _)| msg)
     }
+}
+
+/// Smart case (rg parity): uppercase counts only when it is literal text. In a
+/// regex, escapes (`\S`, `\W`, `\p{Lu}`, `\xFF`) and group names (`(?P<Name>`)
+/// are syntax, not text.
+fn has_literal_uppercase(pattern: &str, regex: bool) -> bool {
+    if !regex {
+        return pattern.chars().any(char::is_uppercase);
+    }
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => {
+                let esc = chars.get(i + 1).copied();
+                i += 2;
+                if matches!(esc, Some('p' | 'P' | 'x' | 'u' | 'U')) {
+                    if chars.get(i) == Some(&'{') {
+                        while i < chars.len() && chars[i] != '}' {
+                            i += 1;
+                        }
+                        i += 1;
+                    } else if matches!(esc, Some('x')) {
+                        i += 2;
+                    } else if matches!(esc, Some('p' | 'P')) {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            '(' if chars.get(i + 1) == Some(&'?') => {
+                // (?P<name>…) / (?<name>…): skip the group name.
+                let mut j = i + 2;
+                if chars.get(j) == Some(&'P') {
+                    j += 1;
+                }
+                if chars.get(j) == Some(&'<') {
+                    while j < chars.len() && chars[j] != '>' {
+                        j += 1;
+                    }
+                    i = j + 1;
+                    continue;
+                }
+                i += 2;
+                continue;
+            }
+            c if c.is_uppercase() => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Compile a query, returning the message plus a best-effort error position
@@ -81,6 +133,8 @@ pub fn compile_query(q: &Query) -> Result<regex::bytes::Regex, (String, usize)> 
         .case_insensitive(q.effective_case())
         // ^/$ anchor at line boundaries (rg parity: one match per line).
         .multi_line(true)
+        // `$` also matches before `\r\n` (CRLF files).
+        .crlf(true)
         .build()
         .map_err(|e| {
             let pos = if is_regex {
@@ -221,43 +275,104 @@ fn utf16_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
-/// Convert byte ranges of a match inside `line` (valid UTF-8, lossy) to UTF-16 ranges.
-fn byte_ranges_to_utf16(line: &str, ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
-    // Prefix unit counts at every byte index (ASCII fast path inline).
-    let mut units_at = vec![0usize; line.len() + 1];
+/// UTF-16 ranges for byte ranges inside a raw line. Each invalid UTF-8
+/// sequence counts as one U+FFFD, which is what `from_utf8_lossy` renders, so
+/// the ranges line up with the lossy text sent to the client.
+fn raw_ranges_to_utf16(raw: &[u8], ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut units_at = vec![0usize; raw.len() + 1];
     let mut u = 0usize;
-    for (i, c) in line.char_indices() {
-        while units_at.len() <= i {
-            units_at.push(u);
+    let mut base = 0usize;
+    for chunk in raw.utf8_chunks() {
+        for (i, c) in chunk.valid().char_indices() {
+            // Offsets inside a multi-byte char snap to its start.
+            units_at[base + i..base + i + c.len_utf8()].fill(u);
+            u += c.len_utf16();
         }
-        units_at[i] = u;
-        u += c.len_utf16();
+        base += chunk.valid().len();
+        let bad = chunk.invalid().len();
+        if bad > 0 {
+            units_at[base..base + bad].fill(u);
+            u += 1;
+            base += bad;
+        }
     }
-    units_at[line.len()] = u;
+    units_at[raw.len()] = u;
     ranges
         .iter()
         .map(|&(a, b)| {
-            let a = a.min(line.len());
-            let b = b.min(line.len());
-            // Snap to char boundaries.
-            let snap = |mut x: usize| {
-                while x > 0 && !line.is_char_boundary(x) {
-                    x -= 1;
-                }
-                x
-            };
-            (units_at[snap(a)], units_at[snap(b).max(snap(a))])
+            let a = units_at[a.min(raw.len())];
+            (a, units_at[b.min(raw.len())].max(a))
         })
         .collect()
 }
 
-/// Snippet: the line, or a ≤400-unit window around the first match.
-fn snippet(line: &str, first: (usize, usize)) -> (String, Vec<(usize, usize)>, bool, bool) {
+/// One matching line: its byte span (terminator excluded) and the match byte
+/// ranges relative to the line start.
+struct LineMatch {
+    line: usize,
+    start: usize,
+    end: usize,
+    ranges: Vec<(usize, usize)>,
+}
+
+/// Line-oriented matching (rg parity): every match lies inside one line and
+/// all matches on a line are grouped into one [`LineMatch`]. A whole-buffer
+/// search finds the next candidate line quickly; the pattern is then re-run on
+/// that line alone, so matches never span a line terminator (`\s+` stops at
+/// `\n`) and `$` sees the line end. `on_line` returns false to stop.
+fn for_each_matching_line(
+    re: &regex::bytes::Regex,
+    bytes: &[u8],
+    mut on_line: impl FnMut(LineMatch) -> bool,
+) {
+    let mut pos = 0usize;
+    let mut line_no = 1usize;
+    let mut counted_to = 0usize;
+    while pos < bytes.len() {
+        let Some(m) = re.find_at(bytes, pos) else {
+            return;
+        };
+        let ls = memchr::memrchr(b'\n', &bytes[pos..m.start()]).map_or(pos, |p| pos + p + 1);
+        if ls >= bytes.len() {
+            return;
+        }
+        let nl = memchr::memchr(b'\n', &bytes[m.start()..]).map(|p| m.start() + p);
+        let mut le = nl.unwrap_or(bytes.len());
+        if le > ls && bytes[le - 1] == b'\r' {
+            le -= 1;
+        }
+        line_no += memchr::memchr_iter(b'\n', &bytes[counted_to..ls]).count();
+        counted_to = ls;
+        let ranges: Vec<(usize, usize)> = re
+            .find_iter(&bytes[ls..le])
+            .map(|m| (m.start(), m.end()))
+            .collect();
+        if !ranges.is_empty()
+            && !on_line(LineMatch {
+                line: line_no,
+                start: ls,
+                end: le,
+                ranges,
+            })
+        {
+            return;
+        }
+        match nl {
+            Some(p) => pos = p + 1,
+            None => return,
+        }
+    }
+}
+
+/// Snippet: the line, or a ≤400-unit window around the first match. Ranges
+/// are shifted into the window; ranges outside it are dropped.
+fn snippet(line: &str, ranges: Vec<(usize, usize)>) -> (String, Vec<(usize, usize)>, bool, bool) {
     const MAX: usize = 400;
     let total = utf16_len(line);
     if total <= MAX {
-        return (line.to_string(), vec![first], false, false);
+        return (line.to_string(), ranges, false, false);
     }
+    let first = ranges.first().copied().unwrap_or((0, 0));
     // Window around the first match start, snapped to char boundaries.
     let target = first.0.saturating_sub(80);
     let mut start_b = 0usize;
@@ -279,8 +394,19 @@ fn snippet(line: &str, first: (usize, usize)) -> (String, Vec<(usize, usize)>, b
         }
         u2 += c.len_utf16();
     }
-    let shift = line[..start_b].encode_utf16().count();
-    let ranges = vec![(first.0.saturating_sub(shift), first.1.saturating_sub(shift))];
+    let shift = utf16_len(&line[..start_b]);
+    let width = utf16_len(&line[start_b..end_b]);
+    let ranges = ranges
+        .into_iter()
+        .filter(|&(a, b)| {
+            if a == b {
+                a >= shift && a <= shift + width
+            } else {
+                a < shift + width && b > shift
+            }
+        })
+        .map(|(a, b)| (a.max(shift) - shift, b.min(shift + width) - shift))
+        .collect();
     (
         line[start_b..end_b].to_string(),
         ranges,
@@ -374,66 +500,41 @@ pub fn search_candidates(
         scanned.fetch_add(1, Ordering::Relaxed);
         let rel = &snap.paths[i];
         let full = root.join(rel);
-        let bytes: Vec<u8> = if snap.sizes.get(i).copied().unwrap_or(0) > 1024 * 1024 {
-            // mmap above 1 MiB.
+        // mmap above 1 MiB, scanned in place; small files are read.
+        let mapped;
+        let read;
+        let bytes: &[u8] = if snap.sizes.get(i).copied().unwrap_or(0) > 1024 * 1024 {
             let f = std::fs::File::open(&full).ok()?;
-            let m = unsafe { memmap2::Mmap::map(&f).ok()? };
-            if m.len() as u64 > max_bytes {
-                return None;
-            }
-            if m[..m.len().min(8192)].contains(&0) {
-                return None;
-            }
-            m.to_vec()
+            mapped = unsafe { memmap2::Mmap::map(&f).ok()? };
+            &mapped
         } else {
-            let b = std::fs::read(&full).ok()?;
-            if b.len() as u64 > max_bytes {
-                return None;
-            }
-            if b[..b.len().min(8192)].contains(&0) {
-                return None;
-            }
-            b
+            read = std::fs::read(&full).ok()?;
+            &read
         };
-        // Line starts via memchr (no per-line splitting).
-        let mut starts = vec![0usize];
-        starts.extend(memchr::memchr_iter(b'\n', &bytes).map(|p| p + 1));
+        if bytes.len() as u64 > max_bytes || bytes[..bytes.len().min(8192)].contains(&0) {
+            return None;
+        }
         let mut hits = Vec::new();
         let mut more = false;
-        for m in re.find_iter(&bytes) {
-            let (ms, me) = (m.start(), m.end());
-            let line_no = starts.partition_point(|&s| s <= ms);
-            let ls = starts[line_no - 1];
-            let mut line_end = starts.get(line_no).copied().unwrap_or(bytes.len());
-            if line_end > ls && bytes[line_end - 1] == b'\n' {
-                line_end -= 1;
-            }
-            if line_end > ls && bytes[line_end - 1] == b'\r' {
-                line_end -= 1;
-            }
+        for_each_matching_line(re, bytes, |lm| {
             if hits.len() >= per_file {
                 more = true;
-                break;
+                return false;
             }
-            let line = String::from_utf8_lossy(&bytes[ls..line_end]).into_owned();
-            let ranges16 = byte_ranges_to_utf16(&line, &[(ms - ls, me - ls)]);
-            let first = ranges16.first().copied().unwrap_or((0, 0));
-            let (text, ranges, cut_start, cut_end) = snippet(&line, first);
-            // Recompute ranges against the snippet when it was cut.
-            let ranges = if cut_start || cut_end {
-                ranges
-            } else {
-                ranges16
-            };
+            let raw = &bytes[lm.start..lm.end];
+            let line = String::from_utf8_lossy(raw);
+            let ranges16 = raw_ranges_to_utf16(raw, &lm.ranges);
+            let (text, ranges, cut_start, cut_end) = snippet(&line, ranges16);
             hits.push(Hit {
-                line: line_no,
+                line: lm.line,
                 text,
                 ranges,
                 cut_start,
                 cut_end,
                 def: is_ident_query && looks_like_def(&line, &q.pattern),
             });
-        }
+            true
+        });
         if hits.is_empty() {
             return None;
         }
@@ -467,45 +568,39 @@ pub fn search_candidates(
     )
 }
 
+/// Find in one file (Mod+F). `full` is an already-resolved path; files over
+/// `max_bytes` fail with `FileTooLarge`. `limit` caps the returned ranges;
+/// `total` counts every match.
 pub fn find_in_file(
-    root: &Path,
-    rel: &str,
-    q: &Query,
+    full: &Path,
+    re: &regex::bytes::Regex,
     limit: usize,
-) -> Result<FindResponse, String> {
-    let re = q.compile()?;
-    let full = root.join(rel.trim_start_matches('/'));
-    let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
-    let text = String::from_utf8_lossy(&bytes);
+    max_bytes: u64,
+) -> std::io::Result<FindResponse> {
+    if std::fs::metadata(full)?.len() > max_bytes {
+        return Err(std::io::ErrorKind::FileTooLarge.into());
+    }
+    let bytes = std::fs::read(full)?;
     let mut matches = Vec::new();
     let mut total = 0usize;
+    let mut kept = 0usize;
     let mut truncated = false;
-    // Byte offsets → line numbers via memchr.
-    let mut starts = vec![0usize];
-    {
-        use memchr::memchr_iter;
-        for pos in memchr_iter(b'\n', &bytes) {
-            starts.push(pos + 1);
-        }
-    }
-    for m in re.find_iter(bytes.as_slice()) {
-        total += 1;
-        if matches.len() >= limit {
+    for_each_matching_line(re, &bytes, |lm| {
+        total += lm.ranges.len();
+        let room = limit.saturating_sub(kept);
+        if room < lm.ranges.len() {
             truncated = true;
-            continue;
         }
-        let line_no = starts.partition_point(|&s| s <= m.start());
-        let ls = starts[line_no - 1];
-        let mut le = starts.get(line_no).copied().unwrap_or(bytes.len());
-        if le > ls && bytes[le - 1] == b'\n' {
-            le -= 1;
+        if room > 0 {
+            let ranges = &lm.ranges[..room.min(lm.ranges.len())];
+            kept += ranges.len();
+            matches.push(FindMatch {
+                line: lm.line,
+                ranges: raw_ranges_to_utf16(&bytes[lm.start..lm.end], ranges),
+            });
         }
-        let line = &text[ls.min(text.len())..le.min(text.len())];
-        matches.push(FindMatch {
-            line: line_no,
-            ranges: byte_ranges_to_utf16(line, &[(m.start() - ls, m.end() - ls)]),
-        });
-    }
+        true
+    });
     Ok(FindResponse {
         total,
         truncated,
@@ -781,5 +876,154 @@ mod tests {
         let r = search(&snap, dir.path(), &q, &stop).unwrap();
         assert!(r.files[0].hits[0].def);
         assert!(!r.files[0].hits[1].def);
+    }
+
+    fn regex(p: &str) -> Query {
+        let mut q = Query::literal(p);
+        q.mode = Mode::Regex;
+        q
+    }
+
+    #[test]
+    fn same_line_matches_grouped() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap = snap_for(dir.path(), &[("a.rs", "foo(foo)\nbar\nfoo\n")]);
+        let stop = AtomicBool::new(false);
+        let q = Query::literal("foo");
+        let r = search(&snap, dir.path(), &q, &stop).unwrap();
+        let hits = &r.files[0].hits;
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            (hits[0].line, hits[0].ranges.clone()),
+            (1, vec![(0, 3), (4, 7)])
+        );
+        assert_eq!((hits[1].line, hits[1].ranges.clone()), (3, vec![(0, 3)]));
+
+        let f = find_in_file(
+            &dir.path().join("a.rs"),
+            &q.compile().unwrap(),
+            100,
+            1 << 20,
+        )
+        .unwrap();
+        assert_eq!(f.total, 3);
+        assert_eq!(f.matches.len(), 2);
+        assert_eq!(f.matches[0].ranges, vec![(0, 3), (4, 7)]);
+        // The range cap applies inside a line too.
+        let f = find_in_file(&dir.path().join("a.rs"), &q.compile().unwrap(), 1, 1 << 20).unwrap();
+        assert_eq!((f.total, f.truncated), (3, true));
+        assert_eq!(f.matches.len(), 1);
+        assert_eq!(f.matches[0].ranges, vec![(0, 3)]);
+    }
+
+    #[test]
+    fn matches_never_span_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap = snap_for(dir.path(), &[("a.txt", "foo\nbar\nfoo  \nx\n")]);
+        let stop = AtomicBool::new(false);
+        let r = search(&snap, dir.path(), &regex(r"foo\s+bar"), &stop).unwrap();
+        assert!(r.files.is_empty());
+        // `\s+` stops at the line end instead of eating the newline.
+        let r = search(&snap, dir.path(), &regex(r"foo\s+"), &stop).unwrap();
+        let hits = &r.files[0].hits;
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].line, hits[0].ranges.clone()), (3, vec![(0, 5)]));
+    }
+
+    #[test]
+    fn crlf_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap = snap_for(dir.path(), &[("a.txt", "foo\r\nbar foo\r\n")]);
+        let stop = AtomicBool::new(false);
+        let q = regex("foo$");
+        let r = search(&snap, dir.path(), &q, &stop).unwrap();
+        let hits = &r.files[0].hits;
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[1].text, "bar foo");
+        let f = find_in_file(
+            &dir.path().join("a.txt"),
+            &q.compile().unwrap(),
+            100,
+            1 << 20,
+        )
+        .unwrap();
+        assert_eq!(f.total, 2);
+        assert_eq!(f.matches[1].ranges, vec![(4, 7)]);
+    }
+
+    #[test]
+    fn invalid_utf8_ranges_follow_lossy_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("latin1.txt");
+        std::fs::write(&path, b"caf\xe9 foo\n\xff\xfe\n").unwrap();
+        let q = Query::literal("foo");
+        let f = find_in_file(&path, &q.compile().unwrap(), 100, 1 << 20).unwrap();
+        // "caf\u{FFFD} foo": U+FFFD is one UTF-16 unit.
+        assert_eq!(f.matches[0].ranges, vec![(5, 8)]);
+
+        let mut snap = snap_for(dir.path(), &[]);
+        snap.paths = vec!["latin1.txt".into()];
+        snap.lower = snap.paths.clone();
+        snap.base_off = vec![0];
+        snap.sizes = vec![0];
+        snap.mtimes = vec![0];
+        let r = search(&snap, dir.path(), &q, &AtomicBool::new(false)).unwrap();
+        let h = &r.files[0].hits[0];
+        assert_eq!(h.text, "caf\u{FFFD} foo");
+        assert_eq!(h.ranges, vec![(5, 8)]);
+    }
+
+    #[test]
+    fn find_rejects_oversized_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        std::fs::write(&path, "foo\n".repeat(100)).unwrap();
+        let re = Query::literal("foo").compile().unwrap();
+        let e = find_in_file(&path, &re, 10, 100).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::FileTooLarge);
+    }
+
+    #[test]
+    fn mmap_path_scans_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut body = "x\n".repeat(700_000);
+        body.push_str("needle here\n");
+        let mut snap = snap_for(dir.path(), &[("big.txt", &body)]);
+        snap.sizes = vec![body.len() as u64];
+        let r = search(
+            &snap,
+            dir.path(),
+            &Query::literal("needle"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(r.files[0].hits[0].line, 700_001);
+    }
+
+    #[test]
+    fn smart_case_ignores_regex_syntax() {
+        assert!(!has_literal_uppercase(r"foo\S+\W\D\B", true));
+        assert!(!has_literal_uppercase(r"\p{Lu}x\pL\x{FF}\xAB", true));
+        assert!(!has_literal_uppercase(r"(?P<Name>a)(?<Other>b)", true));
+        assert!(has_literal_uppercase(r"Foo\s", true));
+        assert!(has_literal_uppercase(r"\SFoo", true));
+        // Literal mode: a backslash is text, so `\S` has an uppercase letter.
+        assert!(has_literal_uppercase(r"\S", false));
+    }
+
+    #[test]
+    fn snippet_keeps_ranges_inside_window() {
+        let line = format!(
+            "{}foo{}foo{}",
+            "a".repeat(100),
+            "b".repeat(50),
+            "c".repeat(600)
+        );
+        let (text, ranges, cut_start, cut_end) =
+            snippet(&line, vec![(100, 103), (153, 156), (700, 703)]);
+        assert!(cut_start && cut_end);
+        assert_eq!(&text[ranges[0].0..ranges[0].1], "foo");
+        assert_eq!(&text[ranges[1].0..ranges[1].1], "foo");
+        assert_eq!(ranges.len(), 2);
     }
 }
