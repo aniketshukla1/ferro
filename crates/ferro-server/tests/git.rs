@@ -241,6 +241,66 @@ async fn legacy_git_status_still_works() {
     assert_eq!(s, StatusCode::OK, "{v}");
 }
 
+#[tokio::test]
+async fn blob_lines_and_raw() {
+    let app = state();
+    // Worktree version has the extra line; HEAD version does not.
+    let (s, v) = j(app.clone(), "/api/v1/git/blob/lines?rev=HEAD&path=a.txt").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["exact"], true);
+    assert_eq!(v["mtimeMs"], 0);
+    let (s, v) = j(
+        app.clone(),
+        "/api/v1/git/blob/lines?rev=worktree&path=a.txt&hl=0",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 2);
+    assert!(v["lines"][1]["text"].as_str().unwrap().contains("modified"));
+    // Bad rev → git_failed.
+    let (s, v) = j(app.clone(), "/api/v1/git/blob/lines?rev=nope&path=a.txt").await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+    assert_eq!(v["error"]["code"], "git_failed");
+    // Raw carries the sandbox CSP.
+    let res = app
+        .clone()
+        .oneshot(get("/api/v1/git/blob/raw?rev=HEAD&path=a.txt"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res
+        .headers()
+        .get(header::CONTENT_SECURITY_POLICY)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("sandbox"));
+}
+
+#[tokio::test]
+async fn gutter_marks() {
+    let dir = {
+        let d = tempfile::tempdir().unwrap();
+        git(&["init", "-b", "main"], d.path());
+        git(&["config", "user.email", "t@t"], d.path());
+        git(&["config", "user.name", "t"], d.path());
+        git(&["config", "commit.gpgsign", "false"], d.path());
+        std::fs::write(d.path().join("g.txt"), "l1\nl2\nl3\nl4\nl5\n").unwrap();
+        git(&["add", "."], d.path());
+        git(&["commit", "-m", "init"], d.path());
+        // Modify line 2, delete line 4, append line 6.
+        std::fs::write(d.path().join("g.txt"), "l1\nL2\nl3\nl5\nl6\n").unwrap();
+        Box::leak(Box::new(d))
+    };
+    let app = plain_state_over(dir.path());
+    let (s, v) = j(app, "/api/v1/git/gutter?path=g.txt").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["added"], serde_json::json!([5]));
+    assert_eq!(v["modified"], serde_json::json!([2]));
+    assert_eq!(v["deleted"], serde_json::json!([4]));
+}
+
 fn git_commit(dir: &std::path::Path, msg: &str) {
     git(&["add", "."], dir);
     git(&["commit", "-m", msg], dir);

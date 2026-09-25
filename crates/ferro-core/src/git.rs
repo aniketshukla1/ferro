@@ -50,11 +50,16 @@ impl GitError {
 #[derive(Debug, Clone)]
 pub struct GitRepo {
     pub root: PathBuf,
+    batch: std::sync::Arc<std::sync::Mutex<CatFileBatch>>,
 }
 
 impl GitRepo {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        let batch = CatFileBatch::new(root.clone());
+        Self {
+            root,
+            batch: std::sync::Arc::new(std::sync::Mutex::new(batch)),
+        }
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -611,6 +616,161 @@ impl GitRepo {
         let out = self.run_net(&["pull", "--ff-only"])?;
         let after = self.head_sha();
         Ok((out, before != after))
+    }
+
+    // -- cat-file batch ------------------------------------------------------
+
+    /// Blob bytes at `rev:path` through the long-lived batch process.
+    pub fn blob_bytes(&self, rev: &str, path: &str) -> Result<Vec<u8>, GitError> {
+        if rev.len() > 256 || path.len() > 512 {
+            return Err(GitError::Failed {
+                args: "blob".into(),
+                stderr: "bad rev/path".into(),
+            });
+        }
+        let sha = self
+            .run_bytes(&["rev-parse", "--verify", &format!("{rev}:{path}")])
+            .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+            .map_err(|_| GitError::Failed {
+                args: "blob".into(),
+                stderr: "no such blob".into(),
+            })?;
+        if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(GitError::Failed {
+                args: "blob".into(),
+                stderr: "no such blob".into(),
+            });
+        }
+        self.batch
+            .lock()
+            .map_err(|_| GitError::Io("batch lock".into()))?
+            .read(&self.root, &sha)
+            .ok_or_else(|| GitError::Failed {
+                args: "blob".into(),
+                stderr: "no such blob".into(),
+            })
+    }
+}
+
+/// Long-lived `git cat-file --batch` reader (one per workspace, shared by
+/// clones). Respawns transparently after any failure.
+#[derive(Debug)]
+struct CatFileBatch {
+    root: PathBuf,
+    child: Option<std::process::Child>,
+    stdin: Option<std::process::ChildStdin>,
+    stdout: Option<std::io::BufReader<std::process::ChildStdout>>,
+}
+
+impl CatFileBatch {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            child: None,
+            stdin: None,
+            stdout: None,
+        }
+    }
+
+    fn ensure(&mut self) -> bool {
+        if self
+            .child
+            .as_mut()
+            .is_some_and(|c| c.try_wait().ok().flatten().is_none())
+        {
+            return true;
+        }
+        self.shutdown();
+        let mut cmd = Command::new("git");
+        cmd.arg("--no-optional-locks")
+            .arg("-c")
+            .arg("core.quotepath=off")
+            .arg("-c")
+            .arg("color.ui=false")
+            .arg("-C")
+            .arg(&self.root)
+            .arg("cat-file")
+            .arg("--batch")
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().map(std::io::BufReader::new);
+        if stdin.is_none() || stdout.is_none() {
+            return false;
+        }
+        self.child = Some(child);
+        self.stdin = stdin;
+        self.stdout = stdout;
+        true
+    }
+
+    fn shutdown(&mut self) {
+        if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        self.stdin = None;
+        self.stdout = None;
+    }
+
+    /// Read one blob; `None` on any failure (caller respawns next time).
+    fn read(&mut self, root: &Path, sha: &str) -> Option<Vec<u8>> {
+        use std::io::{BufRead, Read, Write};
+        let _ = root;
+        if !self.ensure() {
+            return None;
+        }
+        let (stdin, stdout) = match (self.stdin.as_mut(), self.stdout.as_mut()) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                self.shutdown();
+                return None;
+            }
+        };
+        if writeln!(stdin, "{sha}").is_err() {
+            self.shutdown();
+            return None;
+        }
+        stdin.flush().ok()?;
+        let mut header = String::new();
+        if stdout.read_line(&mut header).is_err() {
+            self.shutdown();
+            return None;
+        }
+        // `<sha> <type> <size>`; missing objects reply `<sha> missing`.
+        let mut parts = header.split_whitespace();
+        let (Some(_), Some(ty), Some(size)) = (parts.next(), parts.next(), parts.next()) else {
+            self.shutdown();
+            return None;
+        };
+        if ty != "blob" {
+            // Drain nothing: non-blob replies carry no body. Resync by restart.
+            self.shutdown();
+            return None;
+        }
+        let size: usize = size.parse().ok()?;
+        if size > 256 * 1024 * 1024 {
+            self.shutdown();
+            return None;
+        }
+        let mut buf = vec![0u8; size];
+        if stdout.read_exact(&mut buf).is_err() {
+            self.shutdown();
+            return None;
+        }
+        let mut nl = [0u8; 1];
+        if stdout.read_exact(&mut nl).is_err() {
+            self.shutdown();
+            return None;
+        }
+        Some(buf)
     }
 }
 

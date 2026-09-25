@@ -4,6 +4,7 @@
 
 use axum::{
     extract::{Query, State},
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
@@ -19,6 +20,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/v1/git/changes", get(changes))
         .route("/api/v1/git/diff", get(diff))
         .route("/api/v1/git/log", get(log))
+        .route("/api/v1/git/blob/lines", get(blob_lines))
+        .route("/api/v1/git/blob/raw", get(blob_raw))
+        .route("/api/v1/git/gutter", get(gutter))
         .route("/api/v1/git/stage", post(stage))
         .route("/api/v1/git/unstage", post(unstage))
         .route("/api/v1/git/discard", post(discard))
@@ -603,4 +607,302 @@ fn merge_ranges(mut v: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
         out.push((s, e));
     }
     out
+}
+
+// -- blobs and gutter ----------------------------------------------------------
+
+fn resolve_worktree(
+    g: &ferro_core::git::GitRepo,
+    rel: &str,
+) -> Result<std::path::PathBuf, ApiError> {
+    let rel = rel.trim().trim_start_matches('/');
+    if rel.is_empty() {
+        return Err(ApiError::bad_request("path required"));
+    }
+    let root = g.root.canonicalize().unwrap_or_else(|_| g.root.clone());
+    ferro_core::paths::resolve(&root, rel, ferro_core::paths::Access::Read).map_err(|e| match e {
+        ferro_core::paths::PathError::Empty => ApiError::bad_request("empty path"),
+        ferro_core::paths::PathError::Escapes | ferro_core::paths::PathError::Protected => {
+            ApiError::new(ErrorCode::Forbidden, "path outside workspace")
+        }
+    })
+}
+
+#[derive(Deserialize)]
+struct BlobLinesQ {
+    rev: Option<String>,
+    path: String,
+    from: Option<usize>,
+    count: Option<usize>,
+    #[serde(default, deserialize_with = "super::de_flag")]
+    hl: Option<bool>,
+    #[serde(rename = "maxCols")]
+    max_cols: Option<usize>,
+}
+
+fn blob_source(
+    g: &ferro_core::git::GitRepo,
+    rev: &str,
+    path: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, ApiError> {
+    if rev == "worktree" {
+        let abs = resolve_worktree(g, path)?;
+        let bytes =
+            std::fs::read(&abs).map_err(|_| ApiError::not_found(format!("cannot read: {path}")))?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(ApiError::new(ErrorCode::TooLarge, "blob over maxRawBytes"));
+        }
+        return Ok(bytes);
+    }
+    if rev == "index" {
+        let bytes = g.side_bytes(path, &ferro_core::diff::DiffSide::Index);
+        if bytes.len() as u64 > max_bytes {
+            return Err(ApiError::new(ErrorCode::TooLarge, "blob over maxRawBytes"));
+        }
+        return Ok(bytes);
+    }
+    let bytes = g.blob_bytes(rev, path).map_err(map_err)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(ApiError::new(ErrorCode::TooLarge, "blob over maxRawBytes"));
+    }
+    Ok(bytes)
+}
+
+async fn blob_lines(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<BlobLinesQ>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if q.path.len() > 512 {
+        return Err(ApiError::bad_request("path too long"));
+    }
+    let ws = s.ws();
+    let g = ws.git.as_ref().ok_or_else(no_git)?.repo.clone();
+    let rev = q.rev.unwrap_or_else(|| "HEAD".into());
+    if rev.len() > 256 {
+        return Err(ApiError::bad_request("rev too long"));
+    }
+    let from = q.from.unwrap_or(1).max(1);
+    let count = q.count.unwrap_or(500).clamp(1, s.limits.max_window_lines);
+    let max_cols = q.max_cols.unwrap_or(s.limits.max_cols).max(1);
+    let max_cols = if max_cols > s.limits.max_cols && count != 1 {
+        s.limits.max_cols
+    } else {
+        max_cols.min(1_000_000)
+    };
+    let want_hl = q.hl.unwrap_or(true);
+    let max_bytes = s.limits.max_raw_bytes;
+    let language = super::files::language_of(&q.path).map(|x| x.to_string());
+    let path = q.path.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        let bytes = blob_source(&g, &rev, &path, max_bytes)?;
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        if text.ends_with('\n') {
+            lines.pop();
+        }
+        let total = lines.len();
+        let html = highlight_side(&bytes, &path, want_hl);
+        let exact = html.is_some();
+        let mut out_lines = Vec::new();
+        for (idx, line) in lines.iter().enumerate().skip(from - 1).take(count) {
+            let n = idx + 1;
+            let units: usize = line.encode_utf16().count();
+            let (body, cut) = if units > max_cols {
+                let kept: Vec<u16> = line.encode_utf16().take(max_cols).collect();
+                (String::from_utf16_lossy(&kept), Some(units))
+            } else {
+                (line.to_string(), None)
+            };
+            let mut obj = serde_json::Map::new();
+            obj.insert("n".into(), serde_json::json!(n));
+            if want_hl {
+                if units > 20_000 {
+                    obj.insert(
+                        "html".into(),
+                        serde_json::Value::String(escape_plain(&body)),
+                    );
+                } else if let Some(h) = html.as_ref().and_then(|v| v.get(idx)) {
+                    // Window is a slice of the fully highlighted side; when
+                    // the line was cut for maxCols, re-escape the kept prefix.
+                    if cut.is_some() {
+                        obj.insert(
+                            "html".into(),
+                            serde_json::Value::String(escape_plain(&body)),
+                        );
+                    } else {
+                        obj.insert("html".into(), serde_json::Value::String(h.clone()));
+                    }
+                } else {
+                    obj.insert("text".into(), serde_json::Value::String(body));
+                }
+            } else {
+                obj.insert("text".into(), serde_json::Value::String(body));
+            }
+            if let Some(c) = cut {
+                obj.insert("cut".into(), serde_json::json!(c));
+            }
+            out_lines.push(serde_json::Value::Object(obj));
+        }
+        Ok::<_, ApiError>((out_lines, total, exact))
+    })
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))??;
+    let (lines, total, exact) = out;
+    Ok(Json(serde_json::json!({
+        "path": q.path,
+        "from": from,
+        "total": total,
+        "mtimeMs": 0,
+        "exact": exact,
+        "language": language,
+        "lines": lines,
+    })))
+}
+
+#[derive(Deserialize)]
+struct BlobRawQ {
+    rev: Option<String>,
+    path: String,
+}
+
+async fn blob_raw(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<BlobRawQ>,
+) -> impl axum::response::IntoResponse {
+    use axum::http::HeaderMap;
+    let ws = s.ws();
+    let Some(g) = ws.git.as_ref().map(|g| g.repo.clone()) else {
+        return no_git().into_response();
+    };
+    if q.path.len() > 512 {
+        return ApiError::bad_request("path too long").into_response();
+    }
+    let rev = q.rev.unwrap_or_else(|| "HEAD".into());
+    let max_bytes = s.limits.max_raw_bytes;
+    let path = q.path.clone();
+    let bytes =
+        match tokio::task::spawn_blocking(move || blob_source(&g, &rev, &path, max_bytes)).await {
+            Ok(Ok(b)) => b,
+            Ok(Err(e)) => return e.into_response(),
+            Err(_) => return ApiError::new(ErrorCode::Internal, "git task failed").into_response(),
+        };
+    let mime = if ferro_core::media::is_image(&q.path) {
+        ferro_core::media::content_type(&q.path)
+    } else if bytes[..bytes.len().min(8192)].contains(&0) {
+        "application/octet-stream"
+    } else {
+        "text/plain; charset=utf-8"
+    };
+    let name = q
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or("file")
+        .replace(['"', '\\', '\r', '\n'], "");
+    let mut headers = HeaderMap::new();
+    headers.insert(axum::http::header::CONTENT_TYPE, mime.parse().unwrap());
+    headers.insert(
+        axum::http::header::CONTENT_SECURITY_POLICY,
+        "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        format!("inline; filename=\"{name}\"").parse().unwrap(),
+    );
+    (headers, bytes).into_response()
+}
+
+#[derive(Deserialize)]
+struct GutterQ {
+    path: String,
+    base: Option<String>,
+}
+
+async fn gutter(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<GutterQ>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if q.path.len() > 512 {
+        return Err(ApiError::bad_request("path too long"));
+    }
+    let ws = s.ws();
+    let g = ws.git.as_ref().ok_or_else(no_git)?.repo.clone();
+    let base = q.base.unwrap_or_else(|| "HEAD".into());
+    if base.len() > 256 {
+        return Err(ApiError::bad_request("base too long"));
+    }
+    let path = q.path.clone();
+    let base2 = base.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        use ferro_core::diff::RowKind;
+        let raw = g
+            .diff_raw(&path, &base2, "worktree", 0, false)
+            .map_err(map_err)?;
+        if raw.binary {
+            return Ok::<_, ApiError>((Vec::new(), Vec::new(), Vec::new()));
+        }
+        let mut added = Vec::new();
+        let mut modified = Vec::new();
+        let mut deleted = Vec::new();
+        for h in &raw.hunks {
+            // new_start is the new-side position the hunk starts after, so a
+            // leading pure deletion sits before new_start + 1.
+            let mut n_cur = h.new_start;
+            let mut i = 0;
+            while i < h.rows.len() {
+                let r = &h.rows[i];
+                if r.t == RowKind::Ctx {
+                    if let Some(n) = r.n {
+                        n_cur = n;
+                    }
+                    i += 1;
+                    continue;
+                }
+                // Maximal change block.
+                let mut dels = 0usize;
+                let mut block_adds: Vec<usize> = Vec::new();
+                while i < h.rows.len() && h.rows[i].t != RowKind::Ctx {
+                    if h.rows[i].t == RowKind::Del {
+                        dels += 1;
+                        // Count contiguous del runs for deletion markers.
+                        let mut j = i;
+                        while j < h.rows.len() && h.rows[j].t == RowKind::Del {
+                            j += 1;
+                        }
+                        i = j;
+                    } else {
+                        if let Some(n) = h.rows[i].n {
+                            block_adds.push(n);
+                            n_cur = n;
+                        }
+                        i += 1;
+                    }
+                }
+                if block_adds.is_empty() {
+                    // Pure deletion: one marker per del-run. Re-walk for runs
+                    // is overkill; a pure-del block marks a single site.
+                    deleted.push(n_cur + 1);
+                    let _ = dels;
+                } else if dels == 0 {
+                    added.extend(block_adds);
+                } else {
+                    modified.extend(block_adds);
+                }
+            }
+        }
+        Ok::<_, ApiError>((added, modified, deleted))
+    })
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))??;
+    let (added, modified, deleted) = out;
+    Ok(Json(serde_json::json!({
+        "path": q.path,
+        "base": base,
+        "added": added,
+        "modified": modified,
+        "deleted": deleted,
+    })))
 }
