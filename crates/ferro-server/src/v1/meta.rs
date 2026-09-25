@@ -117,7 +117,7 @@ async fn meta(
             "files": files,
             "ms": ms,
             "generation": ws.generation.load(std::sync::atomic::Ordering::Relaxed),
-            "searchIndex": "off",
+            "searchIndex": ws.search.state().as_str(),
         },
         "features": FEATURES,
         // Remembered browsers (loopback binds): days a sign-in lasts after the last visit.

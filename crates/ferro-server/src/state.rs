@@ -84,6 +84,8 @@ pub struct Workspace {
     pub git: Option<GitRepo>,
     /// Live PR session in PR mode (B4).
     pub pr: Option<Arc<PrSession>>,
+    /// Trigram search engine (B2b): background-built, mmap-queried.
+    pub search: Arc<ferro_core::trigram::SearchEngine>,
     /// Latest status payload (B3 watcher + mutations); tree reads it for
     /// `git`/`dirty` without spawning git per request.
     pub git_status: parking_lot::RwLock<Option<ferro_core::git::GitStatus>>,
@@ -92,58 +94,48 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn local(root: PathBuf, dirs: &FerroDirs) -> Arc<Self> {
+    fn build(root: PathBuf, dirs: &FerroDirs, mode: Mode, pr: Option<Arc<PrSession>>) -> Arc<Self> {
         let index = Arc::new(ferro_core::Index::new(root.clone()));
         let key = dirs.workspace_key(index.root());
         let session_path = dirs.workspace_state_dir(&key).join("session.json");
         let git = is_repo(index.root()).then(|| GitRepo {
             root: index.root().to_path_buf(),
-            repo: ferro_core::git::GitRepo::new(index.root().to_path_buf()),
+            repo: if mode == Mode::Pr {
+                // Untrusted checkouts run every command hardened (no hooks,
+                // fsmonitor, submodule recursion or file transport).
+                ferro_core::git::GitRepo::new(index.root().to_path_buf())
+                    .with_env(ferro_forge::checkout::untrusted_env(&[], false))
+            } else {
+                ferro_core::git::GitRepo::new(index.root().to_path_buf())
+            },
         });
+        let search =
+            ferro_core::trigram::SearchEngine::new(dirs.workspace_cache_dir(&key).join("trigram"));
+        search.preload(index.file_index.load().generation);
         Arc::new(Self {
             key,
             root: index.root().to_path_buf(),
-            mode: Mode::Local,
+            mode,
             index,
             generation: AtomicU64::new(0),
             lines: crate::lines::LineIndex::new(),
             hl: Arc::new(parking_lot::Mutex::new(crate::hl::Highlighter::new())),
             git,
-            pr: None,
+            pr,
+            search,
             git_status: parking_lot::RwLock::new(None),
             review: ferro_agent::ReviewStore::default(),
             session_path,
         })
     }
 
-    /// PR-mode workspace rooted at an opened worktree. Its git handle runs
-    /// every command hardened (no hooks, fsmonitor, submodule recursion or
-    /// file transport): the checkout is untrusted code, and a repo with an
-    /// in-tree `core.hooksPath` would otherwise run the PR's own hooks on
-    /// commit or push.
+    pub fn local(root: PathBuf, dirs: &FerroDirs) -> Arc<Self> {
+        Self::build(root, dirs, Mode::Local, None)
+    }
+
+    /// PR-mode workspace rooted at an opened worktree.
     pub fn pr(root: PathBuf, session: Arc<PrSession>, dirs: &FerroDirs) -> Arc<Self> {
-        let index = Arc::new(ferro_core::Index::new(root.clone()));
-        let key = dirs.workspace_key(index.root());
-        let session_path = dirs.workspace_state_dir(&key).join("session.json");
-        let git = is_repo(index.root()).then(|| GitRepo {
-            root: index.root().to_path_buf(),
-            repo: ferro_core::git::GitRepo::new(index.root().to_path_buf())
-                .with_env(ferro_forge::checkout::untrusted_env(&[], false)),
-        });
-        Arc::new(Self {
-            key,
-            root: index.root().to_path_buf(),
-            mode: Mode::Pr,
-            index,
-            generation: AtomicU64::new(0),
-            lines: crate::lines::LineIndex::new(),
-            hl: Arc::new(parking_lot::Mutex::new(crate::hl::Highlighter::new())),
-            git,
-            pr: Some(session),
-            git_status: parking_lot::RwLock::new(None),
-            review: ferro_agent::ReviewStore::default(),
-            session_path,
-        })
+        Self::build(root, dirs, Mode::Pr, Some(session))
     }
 }
 
@@ -173,6 +165,38 @@ impl AppState {
     pub fn ws(&self) -> Arc<Workspace> {
         self.ws.load_full()
     }
+
+    /// Policy-check the trigram index (builds in the background when due).
+    /// Cheap when fresh; called after index rebuilds, on watcher batches,
+    /// and on idle.
+    pub fn ensure_search_built(&self) {
+        let ws = self.ws();
+        let eff = self.settings.effective(&ws.key);
+        let mode = eff
+            .get("search.index")
+            .and_then(|v| v.as_str())
+            .unwrap_or("auto");
+        let max_bytes = eff
+            .get("search.maxFileBytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(8 * 1024 * 1024);
+        let exclude: Vec<String> = eff
+            .get("search.exclude")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|x| x.to_string()))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["**/vendor/**".into()]);
+        ws.search.ensure_built(
+            &ws.index.file_index.load(),
+            &ws.root,
+            mode,
+            max_bytes,
+            &exclude,
+        );
+    }
 }
 
 /// Settings store: defaults < user < workspace. Unknown `ui.*` passthrough.
@@ -192,6 +216,7 @@ impl SettingsStore {
             {"key":"askMaxSteps","section":"ai","title":"Ask max steps","description":"Agent loop step cap.","type":"int","default":8,"min":1,"max":16,"scopes":["user","workspace"]},
             {"key":"search.exclude","section":"search","title":"Search excludes","description":"Extra globs excluded from search.","type":"string[]","default":["**/vendor/**"],"scopes":["user","workspace"]},
             {"key":"search.maxFileBytes","section":"search","title":"Max searched file size","description":"Files larger than this are skipped.","type":"int","default":8388608,"min":1024,"scopes":["user","workspace"]},
+            {"key":"search.index","section":"search","title":"Trigram index","description":"Background trigram index for instant search.","type":"enum","default":"auto","enum":["auto","on","off"],"scopes":["user","workspace"]},
             {"key":"git.autoRefresh","section":"git","title":"Auto refresh","description":"Refresh git status on filesystem changes.","type":"bool","default":true,"scopes":["user","workspace"]},
             {"key":"review.defaultEvent","section":"review","title":"Default review event","description":"Submit action used by default.","type":"enum","default":"COMMENT","enum":["COMMENT","APPROVE","REQUEST_CHANGES"],"scopes":["user","workspace"]},
             {"key":"ai.provider","section":"ai","title":"Provider","description":"LLM provider selection.","type":"enum","default":"auto","enum":["auto","anthropic","openai","gemini","ollama","openai-compatible","off"],"scopes":["user","workspace"]},
