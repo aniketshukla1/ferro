@@ -54,6 +54,7 @@ impl Default for Limits {
 #[derive(Debug)]
 pub struct GitRepo {
     pub root: PathBuf,
+    pub repo: ferro_core::git::GitRepo,
 }
 
 pub struct Workspace {
@@ -77,6 +78,7 @@ impl Workspace {
         let session_path = dirs.workspace_state_dir(&key).join("session.json");
         let git = is_repo(index.root()).then(|| GitRepo {
             root: index.root().to_path_buf(),
+            repo: ferro_core::git::GitRepo::new(index.root().to_path_buf()),
         });
         Arc::new(Self {
             key,

@@ -1,42 +1,1052 @@
-use std::path::Path;
-use std::process::Command;
+//! Git v2 (B3): hardened runner, typed status/changes/log, mutations.
+//! Every invocation uses `--no-optional-locks`, `-c core.quotepath=off
+//! -c color.ui=false`, `LC_ALL=C`, `GIT_OPTIONAL_LOCKS=0`; exit status is
+//! checked and stderr (4 KiB) is captured into [`GitError`]. Timeouts: 30 s
+//! default, 120 s for push/pull. Legacy String wrappers stay for the old
+//! routes and agent tools.
+
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use thiserror::Error;
+
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+const NET_TIMEOUT: Duration = Duration::from_secs(120);
+/// stderr kept for `git_failed` detail.
+const STDERR_CAP: usize = 4096;
+
+#[derive(Debug, Error, Clone)]
+pub enum GitError {
+    #[error("not a git repository")]
+    NotRepo,
+    #[error("git {args} failed: {stderr}")]
+    Failed { args: String, stderr: String },
+    #[error("git {args} timed out after {secs}s")]
+    Timeout { args: String, secs: u64 },
+    #[error("cancelled")]
+    Cancelled,
+    #[error("git error: {0}")]
+    Io(String),
+}
+
+impl GitError {
+    pub fn stderr(&self) -> String {
+        match self {
+            GitError::Failed { stderr, .. } => stderr.clone(),
+            GitError::NotRepo => "not a git repository".into(),
+            GitError::Timeout { args, secs } => format!("{args} timed out after {secs}s"),
+            GitError::Cancelled => "cancelled".into(),
+            GitError::Io(e) => e.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GitRepo {
+    pub root: PathBuf,
+}
+
+impl GitRepo {
+    pub fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut c = Command::new("git");
+        c.arg("--no-optional-locks")
+            .arg("-c")
+            .arg("core.quotepath=off")
+            .arg("-c")
+            .arg("color.ui=false")
+            .arg("-C")
+            .arg(&self.root)
+            .args(args)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("LC_ALL", "C")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null());
+        c
+    }
+
+    /// Run to completion with the default timeout.
+    pub fn run(&self, args: &[&str]) -> Result<String, GitError> {
+        self.run_cancel(args, DEFAULT_TIMEOUT, None)
+    }
+
+    /// Run with the network timeout (push/pull/fetch).
+    pub fn run_net(&self, args: &[&str]) -> Result<String, GitError> {
+        self.run_cancel(args, NET_TIMEOUT, None)
+    }
+
+    /// Run, killing the child when `stop` is set (client disconnect).
+    pub fn run_cancel(
+        &self,
+        args: &[&str],
+        timeout: Duration,
+        stop: Option<&AtomicBool>,
+    ) -> Result<String, GitError> {
+        let mut child = self
+            .command(args)
+            .spawn()
+            .map_err(|e| GitError::Io(e.to_string()))?;
+        // Drain pipes on threads: a child writing more than the pipe buffer
+        // must never block while we poll (large diffs).
+        let out_h = child.stdout.take().map(|mut h| {
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                let _ = h.read_to_end(&mut buf);
+                buf
+            })
+        });
+        let err_h = child.stderr.take().map(|mut h| {
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                let _ = h.read_to_end(&mut buf);
+                buf
+            })
+        });
+        let t0 = Instant::now();
+        let status = loop {
+            if stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(GitError::Cancelled);
+            }
+            match child.try_wait().map_err(|e| GitError::Io(e.to_string()))? {
+                Some(st) => break st,
+                None => {
+                    if t0.elapsed() > timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(GitError::Timeout {
+                            args: args.join(" "),
+                            secs: timeout.as_secs(),
+                        });
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        };
+        let stdout = out_h.and_then(|h| h.join().ok()).unwrap_or_default();
+        let stderr = err_h.and_then(|h| h.join().ok()).unwrap_or_default();
+        if status.success() {
+            return Ok(String::from_utf8_lossy(&stdout).into_owned());
+        }
+        let stderr = String::from_utf8_lossy(&stderr).into_owned();
+        if stderr.contains("not a git repository") {
+            return Err(GitError::NotRepo);
+        }
+        let mut err = stderr;
+        if err.len() > STDERR_CAP {
+            err.truncate(STDERR_CAP);
+        }
+        Err(GitError::Failed {
+            args: args.join(" "),
+            stderr: err,
+        })
+    }
+
+    /// Raw bytes (for `-z` outputs).
+    pub fn run_bytes(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
+        let out = self
+            .command(args)
+            .stdout(Stdio::piped())
+            .output()
+            .map_err(|e| GitError::Io(e.to_string()))?;
+        if out.status.success() {
+            return Ok(out.stdout);
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        if stderr.contains("not a git repository") {
+            return Err(GitError::NotRepo);
+        }
+        let mut err = stderr;
+        if err.len() > STDERR_CAP {
+            err.truncate(STDERR_CAP);
+        }
+        Err(GitError::Failed {
+            args: args.join(" "),
+            stderr: err,
+        })
+    }
+
+    /// Feed stdin (commit message via `-F -`, never argv).
+    pub fn run_stdin(&self, args: &[&str], input: &[u8]) -> Result<String, GitError> {
+        use std::io::Write;
+        let mut child = self
+            .command(args)
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| GitError::Io(e.to_string()))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(input)
+                .map_err(|e| GitError::Io(e.to_string()))?;
+        }
+        let out = child
+            .wait_with_output()
+            .map_err(|e| GitError::Io(e.to_string()))?;
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        let mut err = stderr;
+        if err.len() > STDERR_CAP {
+            err.truncate(STDERR_CAP);
+        }
+        Err(GitError::Failed {
+            args: args.join(" "),
+            stderr: err,
+        })
+    }
+
+    // -- status v2 ------------------------------------------------------
+
+    pub fn status_v2(&self) -> Result<GitStatus, GitError> {
+        let raw = self.run_bytes(&[
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--branch",
+            "--untracked-files=all",
+        ])?;
+        Ok(parse_status_v2(&raw))
+    }
+
+    pub fn head_sha(&self) -> Option<String> {
+        self.run(&["rev-parse", "HEAD"])
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    pub fn branch(&self) -> Option<String> {
+        self.run(&["rev-parse", "--abbrev-ref", "HEAD"])
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| s != "HEAD" && !s.is_empty())
+    }
+
+    // -- changes / log ---------------------------------------------------
+
+    /// Resolve a `base` form (`HEAD`, `merge-base`, `merge-base:<ref>`, any rev).
+    pub fn resolve_base(&self, base: &str) -> Result<String, GitError> {
+        if base == "HEAD" {
+            return self
+                .run(&["rev-parse", "HEAD"])
+                .map(|s| s.trim().to_string());
+        }
+        if base == "merge-base" {
+            return self.merge_base_head();
+        }
+        if let Some(r) = base.strip_prefix("merge-base:") {
+            return self
+                .run(&["merge-base", "HEAD", r])
+                .map(|s| s.trim().to_string());
+        }
+        self.run(&["rev-parse", base]).map(|s| s.trim().to_string())
+    }
+
+    fn merge_base_head(&self) -> Result<String, GitError> {
+        // Workspace default: the base is HEAD itself. PR mode (B4) resolves
+        // the merge-base against the base ref at the route layer.
+        self.run(&["rev-parse", "HEAD"])
+            .map(|s| s.trim().to_string())
+    }
+
+    /// `--numstat -z -M` file stats between base and target (`worktree` /
+    /// `index` / any rev). Untracked files count as additions.
+    pub fn changes(&self, base: &str, target: &str) -> Result<ChangeSet, GitError> {
+        let base_sha = self.resolve_base(base)?;
+        let (target_sha, mut files) = match target {
+            "worktree" => {
+                // base..index (staged) + index..worktree (unstaged), merged by path.
+                let staged = self.numstat(&[&base_sha, "--cached"])?;
+                let unstaged = self.numstat(&[])?;
+                let staged_letters = self.name_status(&[&base_sha, "--cached"])?;
+                let unstaged_letters = self.name_status(&[])?;
+                let mut files = merge_numstats(staged, unstaged, staged_letters, unstaged_letters);
+                for (path, lines) in self.untracked_with_lines()? {
+                    match files.iter_mut().find(|f| f.path == path) {
+                        Some(f) => {
+                            f.additions += lines;
+                            if f.status.0 == ChangeStatus::Untracked {
+                                f.additions = lines;
+                            }
+                        }
+                        None => files.push(ChangedFile {
+                            path,
+                            old_path: None,
+                            status: ChangeStatusStr(ChangeStatus::Untracked),
+                            additions: lines,
+                            deletions: 0,
+                            binary: false,
+                        }),
+                    }
+                }
+                (None, files)
+            }
+            "index" => {
+                let counts = self.numstat(&[&base_sha, "--cached"])?;
+                let letters = self.name_status(&[&base_sha, "--cached"])?;
+                (None, join_counts(counts, &letters))
+            }
+            rev => {
+                let sha = self
+                    .run(&["rev-parse", rev])
+                    .map(|s| s.trim().to_string())?;
+                let range = format!("{base_sha}..{sha}");
+                let counts = self.numstat(&[&range])?;
+                let letters = self.name_status(&[&range])?;
+                (Some(sha), join_counts(counts, &letters))
+            }
+        };
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let additions = files.iter().map(|f| f.additions).sum();
+        let deletions = files.iter().map(|f| f.deletions).sum();
+        Ok(ChangeSet {
+            base: base.to_string(),
+            base_sha,
+            target: target.to_string(),
+            target_sha,
+            stats: ChangeStats {
+                files: files.len(),
+                additions,
+                deletions,
+            },
+            files,
+        })
+    }
+
+    /// Parse `git diff --numstat -z -M` (plus explicit extra args) into
+    /// (path, old_path, additions, deletions, binary).
+    fn numstat(&self, extra: &[&str]) -> Result<Vec<NumstatEntry>, GitError> {
+        let mut args = vec![
+            "diff",
+            "--numstat",
+            "-z",
+            "-M",
+            "--no-color",
+            "--no-ext-diff",
+        ];
+        args.extend(extra);
+        let raw = self.run_bytes(&args)?;
+        Ok(parse_numstat(&raw))
+    }
+
+    /// Status letters + rename sources from `git diff --name-status -z -M`.
+    fn name_status(
+        &self,
+        extra: &[&str],
+    ) -> Result<std::collections::BTreeMap<String, (ChangeStatus, Option<String>)>, GitError> {
+        let mut args = vec![
+            "diff",
+            "--name-status",
+            "-z",
+            "-M",
+            "--no-color",
+            "--no-ext-diff",
+        ];
+        args.extend(extra);
+        let raw = self.run_bytes(&args)?;
+        let mut map = std::collections::BTreeMap::new();
+        let chunks: Vec<&[u8]> = raw.split(|&b| b == 0).collect();
+        let mut i = 0;
+        while i < chunks.len() {
+            let c = chunks[i];
+            i += 1;
+            if c.is_empty() {
+                continue;
+            }
+            // `<letter>[score]\t<path>`; renames consume the next chunk.
+            let text = String::from_utf8_lossy(c);
+            let mut parts = text.splitn(2, '\t');
+            let (Some(code), Some(path)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            let letter = code.chars().next().unwrap_or('M');
+            let (status, old) = match letter {
+                'A' => (ChangeStatus::Added, None),
+                'D' => (ChangeStatus::Deleted, None),
+                'R' => {
+                    let orig = chunks
+                        .get(i)
+                        .map(|b| String::from_utf8_lossy(b).into_owned());
+                    i += 1;
+                    (ChangeStatus::Renamed, orig)
+                }
+                'C' => {
+                    let orig = chunks
+                        .get(i)
+                        .map(|b| String::from_utf8_lossy(b).into_owned());
+                    i += 1;
+                    (ChangeStatus::Copied, orig)
+                }
+                'T' => (ChangeStatus::Typechange, None),
+                _ => (ChangeStatus::Modified, None),
+            };
+            map.insert(path.to_string(), (status, old));
+        }
+        Ok(map)
+    }
+
+    fn untracked_with_lines(&self) -> Result<Vec<(String, u64)>, GitError> {
+        let raw = self.run_bytes(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+        let mut out = Vec::new();
+        for chunk in raw.split(|&b| b == 0) {
+            if chunk.len() < 4 || &chunk[..3] != b"?? " {
+                continue;
+            }
+            let path = String::from_utf8_lossy(&chunk[3..]).into_owned();
+            let full = self.root.join(&path);
+            let lines = std::fs::read(&full)
+                .ok()
+                .map(|b| {
+                    if b.contains(&0) {
+                        0
+                    } else {
+                        b.iter().filter(|&&c| c == b'\n').count() as u64
+                    }
+                })
+                .unwrap_or(0);
+            out.push((path, lines));
+        }
+        Ok(out)
+    }
+
+    pub fn log(&self, limit: usize, path: Option<&str>) -> Result<Vec<Commit>, GitError> {
+        // Fields split on \x1f, records on NUL (-z). %s is one line already.
+        let mut args = vec![
+            "log".to_string(),
+            format!("--max-count={}", limit.clamp(1, 500)),
+            "--pretty=format:%H%x1f%h%x1f%an%x1f%aI%x1f%s".to_string(),
+            "-z".to_string(),
+        ];
+        if let Some(p) = path {
+            args.push("--".to_string());
+            args.push(p.to_string());
+        }
+        let raw = self.run_bytes(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+        let mut out = Vec::new();
+        for chunk in raw.split(|&b| b == 0) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let text = String::from_utf8_lossy(chunk);
+            let mut parts = text.split('\x1f');
+            let (Some(sha), Some(short), Some(author), Some(date), Some(subject)) = (
+                parts.next(),
+                parts.next(),
+                parts.next(),
+                parts.next(),
+                parts.next(),
+            ) else {
+                continue;
+            };
+            if sha.len() != 40 {
+                continue;
+            }
+            out.push(Commit {
+                sha: sha.into(),
+                short: short.into(),
+                author: author.into(),
+                date: date.into(),
+                subject: subject.into(),
+            });
+        }
+        Ok(out)
+    }
+
+    // -- mutations (every path through § 5.1) -----------------------------
+
+    fn write_paths(&self, paths: &[String]) -> Result<Vec<String>, GitError> {
+        if paths.is_empty() {
+            return Err(GitError::Failed {
+                args: "paths".into(),
+                stderr: "no paths".into(),
+            });
+        }
+        let root_canon = self
+            .root
+            .canonicalize()
+            .unwrap_or_else(|_| self.root.clone());
+        paths
+            .iter()
+            .map(|p| {
+                let abs = crate::paths::resolve(&root_canon, p, crate::paths::Access::Write)
+                    .map_err(|e| GitError::Failed {
+                        args: "resolve".into(),
+                        stderr: e.to_string(),
+                    })?;
+                abs.strip_prefix(&root_canon)
+                    .map(|r| r.to_string_lossy().to_string())
+                    .map_err(|_| GitError::Failed {
+                        args: "resolve".into(),
+                        stderr: "path escapes root".into(),
+                    })
+            })
+            .collect()
+    }
+
+    pub fn stage_paths(&self, paths: &[String]) -> Result<String, GitError> {
+        let safe = self.write_paths(paths)?;
+        let mut args = vec!["add", "--"];
+        args.extend(safe.iter().map(|s| s.as_str()));
+        self.run(&args)
+    }
+
+    pub fn unstage_paths(&self, paths: &[String]) -> Result<String, GitError> {
+        let safe = self.write_paths(paths)?;
+        let mut args = vec!["restore", "--staged", "--"];
+        args.extend(safe.iter().map(|s| s.as_str()));
+        self.run(&args)
+    }
+
+    /// Destructive: tracked → restore worktree; untracked → delete.
+    pub fn discard_paths(&self, paths: &[String]) -> Result<(), GitError> {
+        let safe = self.write_paths(paths)?;
+        // Partition via status to avoid deleting tracked content by mistake.
+        let st = self.status_v2().unwrap_or_default();
+        let mut tracked: Vec<&str> = Vec::new();
+        let mut untracked: Vec<&str> = Vec::new();
+        for p in &safe {
+            match st.files.iter().find(|f| &f.path == p) {
+                Some(f) if f.untracked => untracked.push(p),
+                _ => tracked.push(p),
+            }
+        }
+        if !tracked.is_empty() {
+            let mut args = vec!["restore", "--source=HEAD", "--worktree", "--"];
+            args.extend(tracked.iter().copied());
+            self.run(&args)?;
+        }
+        for u in untracked {
+            let abs = self.root.join(u);
+            if abs.is_file() || abs.is_symlink() {
+                std::fs::remove_file(&abs).map_err(|e| GitError::Io(e.to_string()))?;
+            } else if abs.is_dir() {
+                std::fs::remove_dir_all(&abs).map_err(|e| GitError::Io(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn commit_msg(&self, message: &str, amend: bool) -> Result<Commit, GitError> {
+        if message.trim().is_empty() {
+            return Err(GitError::Failed {
+                args: "commit".into(),
+                stderr: "empty message".into(),
+            });
+        }
+        let staged = self.run(&["diff", "--cached", "--quiet"]).is_err();
+        if !staged && !amend {
+            return Err(GitError::Failed {
+                args: "commit".into(),
+                stderr: "nothing staged".into(),
+            });
+        }
+        let mut args = vec!["commit", "-F", "-"];
+        if amend {
+            args.push("--amend");
+        }
+        self.run_stdin(&args, message.as_bytes())?;
+        let sha = self
+            .run(&["rev-parse", "HEAD"])
+            .map(|s| s.trim().to_string())?;
+        let summary = message.lines().next().unwrap_or("").to_string();
+        Ok(Commit {
+            sha: sha.clone(),
+            short: sha[..7.min(sha.len())].into(),
+            author: String::new(),
+            date: String::new(),
+            subject: summary,
+        })
+    }
+
+    pub fn push(&self) -> Result<String, GitError> {
+        self.run_net(&["push"])
+    }
+
+    /// Fast-forward only; diverged → error (route maps to 409).
+    pub fn pull_ff(&self) -> Result<(String, bool), GitError> {
+        let before = self.head_sha();
+        let out = self.run_net(&["pull", "--ff-only"])?;
+        let after = self.head_sha();
+        Ok((out, before != after))
+    }
+}
+
+// -- status v2 types -------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum GitCode {
+    M,
+    A,
+    D,
+    R,
+    C,
+    T,
+    U,
+    Untracked,
+}
+
+impl GitCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GitCode::M => "M",
+            GitCode::A => "A",
+            GitCode::D => "D",
+            GitCode::R => "R",
+            GitCode::C => "C",
+            GitCode::T => "T",
+            GitCode::U => "U",
+            GitCode::Untracked => "?",
+        }
+    }
+
+    fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            b'M' => Some(GitCode::M),
+            b'A' => Some(GitCode::A),
+            b'D' => Some(GitCode::D),
+            b'R' => Some(GitCode::R),
+            b'C' => Some(GitCode::C),
+            b'T' => Some(GitCode::T),
+            b'U' => Some(GitCode::U),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatusFile {
+    pub path: String,
+    #[serde(rename = "origPath", skip_serializing_if = "Option::is_none")]
+    pub orig_path: Option<String>,
+    pub index: Option<&'static str>,
+    pub worktree: Option<&'static str>,
+    pub untracked: bool,
+    pub conflicted: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct StatusCounts {
+    pub staged: usize,
+    pub unstaged: usize,
+    pub untracked: usize,
+    pub conflicted: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GitStatus {
+    pub branch: Option<String>,
+    pub detached: bool,
+    #[serde(rename = "headSha")]
+    pub head_sha: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+    pub files: Vec<StatusFile>,
+    pub counts: StatusCounts,
+}
+
+/// Hash of the status payload; the watcher emits `git` only when it changes.
+pub fn status_hash(st: &GitStatus) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    st.branch.hash(&mut h);
+    st.head_sha.hash(&mut h);
+    st.upstream.hash(&mut h);
+    st.ahead.hash(&mut h);
+    st.behind.hash(&mut h);
+    for f in &st.files {
+        f.path.hash(&mut h);
+        f.orig_path.hash(&mut h);
+        f.index.hash(&mut h);
+        f.worktree.hash(&mut h);
+    }
+    h.finish()
+}
+
+fn parse_status_v2(raw: &[u8]) -> GitStatus {
+    let mut st = GitStatus::default();
+    let chunks: Vec<&[u8]> = raw.split(|&b| b == 0).collect();
+    let mut i = 0;
+    while i < chunks.len() {
+        let c = chunks[i];
+        i += 1;
+        if c.is_empty() {
+            continue;
+        }
+        if c[0] == b'#' {
+            let line = String::from_utf8_lossy(c);
+            if let Some(v) = line.strip_prefix("# branch.oid ") {
+                st.head_sha = (v != "(initial)").then(|| v.to_string());
+            } else if let Some(v) = line.strip_prefix("# branch.head ") {
+                if v == "(detached)" {
+                    st.detached = true;
+                    st.branch = None;
+                } else {
+                    st.branch = Some(v.to_string());
+                }
+            } else if let Some(v) = line.strip_prefix("# branch.upstream ") {
+                st.upstream = Some(v.to_string());
+            } else if let Some(v) = line.strip_prefix("# branch.abort ") {
+                for part in v.split_whitespace() {
+                    if let Some(a) = part.strip_prefix('+') {
+                        st.ahead = a.parse().unwrap_or(0);
+                    } else if let Some(b) = part.strip_prefix('-') {
+                        st.behind = b.parse().unwrap_or(0);
+                    }
+                }
+            }
+            continue;
+        }
+        match c[0] {
+            b'1' => {
+                // 1 XY subm mH mI mW hH hI path
+                if c.len() < 6 {
+                    continue;
+                }
+                let (x, y) = (c[2], c[3]);
+                let path = path_after_fields(c, 8);
+                push_change(&mut st, path, None, x, y, false);
+            }
+            b'2' => {
+                // 2 XY subm mH mI mW hH hI Xscore newpath \0 origpath
+                if c.len() < 6 {
+                    continue;
+                }
+                let (x, y) = (c[2], c[3]);
+                let new_path = path_after_fields(c, 9);
+                let orig = chunks
+                    .get(i)
+                    .map(|b| String::from_utf8_lossy(b).into_owned());
+                i += 1;
+                push_change(&mut st, new_path, orig, x, y, false);
+            }
+            b'u' => {
+                // u XY subm m1 m2 m3 mW h1 h2 h3 path
+                if c.len() < 6 {
+                    continue;
+                }
+                let (x, y) = (c[2], c[3]);
+                let path = path_after_fields(c, 10);
+                push_change(&mut st, path, None, x, y, true);
+            }
+            b'?' => {
+                let path = String::from_utf8_lossy(c.get(2..).unwrap_or_default()).into_owned();
+                st.files.push(StatusFile {
+                    path,
+                    orig_path: None,
+                    index: None,
+                    worktree: None,
+                    untracked: true,
+                    conflicted: false,
+                });
+                st.counts.untracked += 1;
+            }
+            _ => {}
+        }
+    }
+    st.files.sort_by(|a, b| a.path.cmp(&b.path));
+    st
+}
+
+/// Path is the last space-separated field of the header line.
+fn path_after_fields(line: &[u8], n_fields_before_path: usize) -> String {
+    // Fields are space-separated; the path is everything after the nth space.
+    // (Paths are verbatim under -z, and may contain spaces — hence count.)
+    let mut spaces = 0;
+    for (idx, &b) in line.iter().enumerate() {
+        if b == b' ' {
+            spaces += 1;
+            if spaces == n_fields_before_path {
+                return String::from_utf8_lossy(&line[idx + 1..]).into_owned();
+            }
+        }
+    }
+    String::from_utf8_lossy(line).into_owned()
+}
+
+fn push_change(
+    st: &mut GitStatus,
+    path: String,
+    orig: Option<String>,
+    x: u8,
+    y: u8,
+    unmerged: bool,
+) {
+    let index = GitCode::from_byte(x).map(|c| c.as_str());
+    let worktree = GitCode::from_byte(y).map(|c| c.as_str());
+    let conflicted = unmerged || x == b'U' || y == b'U';
+    if !conflicted {
+        if index.is_some() {
+            st.counts.staged += 1;
+        }
+        if worktree.is_some() {
+            st.counts.unstaged += 1;
+        }
+    } else {
+        st.counts.conflicted += 1;
+    }
+    st.files.push(StatusFile {
+        path,
+        orig_path: orig,
+        index,
+        worktree,
+        untracked: false,
+        conflicted,
+    });
+}
+
+// -- changes types ----------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ChangeStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    Typechange,
+    Untracked,
+}
+
+impl ChangeStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChangeStatus::Added => "A",
+            ChangeStatus::Modified => "M",
+            ChangeStatus::Deleted => "D",
+            ChangeStatus::Renamed => "R",
+            ChangeStatus::Copied => "C",
+            ChangeStatus::Typechange => "T",
+            ChangeStatus::Untracked => "?",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChangedFile {
+    pub path: String,
+    #[serde(rename = "oldPath", skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+    pub status: ChangeStatusStr,
+    pub additions: u64,
+    pub deletions: u64,
+    pub binary: bool,
+}
+
+/// Serialize `status` as the single-letter code API.md expects.
+#[derive(Debug, Clone, Copy)]
+pub struct ChangeStatusStr(pub ChangeStatus);
+
+impl Serialize for ChangeStatusStr {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.0.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ChangeStats {
+    pub files: usize,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChangeSet {
+    pub base: String,
+    #[serde(rename = "baseSha")]
+    pub base_sha: String,
+    pub target: String,
+    #[serde(rename = "targetSha")]
+    pub target_sha: Option<String>,
+    pub stats: ChangeStats,
+    pub files: Vec<ChangedFile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Commit {
+    pub sha: String,
+    pub short: String,
+    pub author: String,
+    pub date: String,
+    pub subject: String,
+}
+
+fn parse_numstat(raw: &[u8]) -> Vec<NumstatEntry> {
+    // -z: records are `<add>\t<del>\t<path>\0[<orig>\0 for renames]`.
+    // A chunk is a record only if the first two tab-fields are counts;
+    // anything else is a rename-orig continuation of the previous record.
+    let mut out: Vec<NumstatEntry> = Vec::new();
+    for c in raw.split(|&b| b == 0) {
+        if c.is_empty() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(c);
+        let mut parts = text.splitn(3, '\t');
+        let (Some(add), Some(del), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+            // Continuation chunk: orig path of the previous rename record.
+            if let Some(prev) = out.last_mut() {
+                prev.old_path = Some(text.into_owned());
+            }
+            continue;
+        };
+        let counts = add == "-"
+            || del == "-"
+            || (add.bytes().all(|b| b.is_ascii_digit()) && del.bytes().all(|b| b.is_ascii_digit()));
+        if !counts {
+            if let Some(prev) = out.last_mut() {
+                prev.old_path = Some(text.into_owned());
+            }
+            continue;
+        }
+        let binary = add == "-" || del == "-";
+        let (add_n, del_n) = if binary {
+            (0, 0)
+        } else {
+            (add.parse().unwrap_or(0), del.parse().unwrap_or(0))
+        };
+        out.push(NumstatEntry {
+            path: path.to_string(),
+            old_path: None,
+            additions: add_n,
+            deletions: del_n,
+            binary,
+        });
+    }
+    out
+}
+
+#[derive(Debug, Clone)]
+struct NumstatEntry {
+    path: String,
+    old_path: Option<String>,
+    additions: u64,
+    deletions: u64,
+    binary: bool,
+}
+
+fn join_counts(
+    counts: Vec<NumstatEntry>,
+    letters: &std::collections::BTreeMap<String, (ChangeStatus, Option<String>)>,
+) -> Vec<ChangedFile> {
+    counts
+        .into_iter()
+        .map(|e| {
+            let (status, old) = letters
+                .get(&e.path)
+                .cloned()
+                .unwrap_or((ChangeStatus::Modified, None));
+            ChangedFile {
+                path: e.path,
+                old_path: old.or(e.old_path),
+                status: ChangeStatusStr(status),
+                additions: e.additions,
+                deletions: e.deletions,
+                binary: e.binary,
+            }
+        })
+        .collect()
+}
+
+fn merge_numstats(
+    staged: Vec<NumstatEntry>,
+    unstaged: Vec<NumstatEntry>,
+    staged_letters: std::collections::BTreeMap<String, (ChangeStatus, Option<String>)>,
+    unstaged_letters: std::collections::BTreeMap<String, (ChangeStatus, Option<String>)>,
+) -> Vec<ChangedFile> {
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<String, ChangedFile> = BTreeMap::new();
+    for e in staged {
+        let (status, old) = staged_letters
+            .get(&e.path)
+            .cloned()
+            .unwrap_or((ChangeStatus::Modified, None));
+        map.insert(
+            e.path.clone(),
+            ChangedFile {
+                path: e.path,
+                old_path: old.or(e.old_path),
+                status: ChangeStatusStr(status),
+                additions: e.additions,
+                deletions: e.deletions,
+                binary: e.binary,
+            },
+        );
+    }
+    for e in unstaged {
+        match map.get_mut(&e.path) {
+            Some(f) => {
+                f.additions += e.additions;
+                f.deletions += e.deletions;
+                f.binary = f.binary || e.binary;
+                // Staged letter wins; fill rename source if the staged side
+                // lacked one.
+                if let Some((_, old)) = unstaged_letters.get(&e.path) {
+                    if f.old_path.is_none() {
+                        f.old_path = old.clone();
+                    }
+                }
+            }
+            None => {
+                let (status, old) = unstaged_letters
+                    .get(&e.path)
+                    .cloned()
+                    .unwrap_or((ChangeStatus::Modified, None));
+                map.insert(
+                    e.path.clone(),
+                    ChangedFile {
+                        path: e.path,
+                        old_path: old.or(e.old_path),
+                        status: ChangeStatusStr(status),
+                        additions: e.additions,
+                        deletions: e.deletions,
+                        binary: e.binary,
+                    },
+                );
+            }
+        }
+    }
+    map.into_values().collect()
+}
+
+// -- legacy String wrappers (old routes + agent tools) ----------------------
 
 pub fn status(root: &Path) -> String {
-    run(root, &["status", "--porcelain=v1", "-b"])
+    GitRepo::new(root.to_path_buf())
+        .run(&["status", "--porcelain=v1", "-b"])
+        .unwrap_or_default()
 }
 
 pub fn diff_head(root: &Path, rel: Option<&str>) -> String {
+    let repo = GitRepo::new(root.to_path_buf());
     match rel {
-        Some(r) => run(root, &["diff", "HEAD", "--", r]),
-        None => run(root, &["diff", "HEAD"]),
+        Some(r) => repo.run(&["diff", "HEAD", "--", r]).unwrap_or_default(),
+        None => repo.run(&["diff", "HEAD"]).unwrap_or_default(),
     }
 }
 
 #[allow(dead_code)]
 pub fn merge_base(root: &Path, target: &str) -> String {
-    run(root, &["merge-base", "HEAD", target])
-}
-
-fn run(root: &Path, args: &[&str]) -> String {
-    let out = Command::new("git").arg("-C").arg(root).args(args).output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
-        Err(e) => format!("git error: {e}"),
-    }
+    GitRepo::new(root.to_path_buf())
+        .run(&["merge-base", "HEAD", target])
+        .unwrap_or_default()
 }
 
 fn run_check(root: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .map_err(|e| format!("git error: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).to_string())
-    }
+    GitRepo::new(root.to_path_buf())
+        .run(args)
+        .map_err(|e| e.stderr())
 }
 
 /// Dry-run a unified diff against the working tree. Ok(()) means it applies cleanly.
@@ -63,6 +1073,7 @@ pub fn apply(root: &Path, patch: &str) -> Result<(), String> {
 
 /// Revert paths to HEAD and delete listed untracked files.
 pub fn revert(root: &Path, tracked: &[String], untracked: &[String]) -> Result<(), String> {
+    let repo = GitRepo::new(root.to_path_buf());
     let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut safe_tracked = Vec::with_capacity(tracked.len());
     for t in tracked {
@@ -85,6 +1096,7 @@ pub fn revert(root: &Path, tracked: &[String], untracked: &[String]) -> Result<(
             std::fs::remove_file(&p).map_err(|e| e.to_string())?;
         }
     }
+    let _ = repo;
     Ok(())
 }
 
@@ -123,60 +1135,40 @@ pub fn unstage(root: &Path, paths: &[String]) -> Result<String, String> {
 }
 
 pub fn commit(root: &Path, message: &str) -> Result<String, String> {
-    if message.trim().is_empty() {
-        return Err("empty message".into());
-    }
-    let staged = run_check(root, &["diff", "--cached", "--quiet"]).is_err();
-    if !staged {
-        return Err("nothing staged".into());
-    }
-    run_check(root, &["commit", "-m", message])
+    GitRepo::new(root.to_path_buf())
+        .commit_msg(message, false)
+        .map(|c| c.sha)
+        .map_err(|e| e.stderr())
 }
 
 pub fn push(root: &Path) -> Result<String, String> {
-    run_check(root, &["push"])
+    GitRepo::new(root.to_path_buf())
+        .push()
+        .map_err(|e| e.stderr())
 }
 
 pub fn pull_ff(root: &Path) -> Result<String, String> {
-    run_check(root, &["pull", "--ff-only"])
+    GitRepo::new(root.to_path_buf())
+        .pull_ff()
+        .map(|(o, _)| o)
+        .map_err(|e| e.stderr())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn repo() -> tempfile::TempDir {
+    pub(crate) fn repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let r = dir.path();
-        for args in [
-            vec!["init", "-b", "main"],
-            vec!["config", "user.email", "t@t"],
-            vec!["config", "user.name", "t"],
-            vec!["config", "commit.gpgsign", "false"],
-        ] {
-            assert!(Command::new("git")
-                .arg("-C")
-                .arg(r)
-                .args(&args)
-                .status()
-                .unwrap()
-                .success());
-        }
+        let repo = GitRepo::new(r.to_path_buf());
+        repo.run(&["init", "-b", "main"]).unwrap();
+        repo.run(&["config", "user.email", "t@t"]).unwrap();
+        repo.run(&["config", "user.name", "t"]).unwrap();
+        repo.run(&["config", "commit.gpgsign", "false"]).unwrap();
         std::fs::write(r.join("a.txt"), "one\n").unwrap();
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(r)
-            .args(["add", "."])
-            .status()
-            .unwrap()
-            .success());
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(r)
-            .args(["commit", "-m", "init"])
-            .status()
-            .unwrap()
-            .success());
+        repo.run(&["add", "."]).unwrap();
+        repo.run(&["commit", "-m", "init"]).unwrap();
         dir
     }
 
@@ -190,6 +1182,63 @@ mod tests {
         commit(dir.path(), "should fail").unwrap_err();
         stage(dir.path(), &["a.txt".to_string()]).unwrap();
         let out = commit(dir.path(), "second").unwrap();
-        assert!(out.contains("second") || out.contains("1 file changed"));
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn status_v2_shapes() {
+        let dir = repo();
+        let repo = GitRepo::new(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
+        std::fs::write(dir.path().join("new.txt"), "new\n").unwrap();
+        // Rename: commit first so the rename is staged.
+        std::fs::write(dir.path().join("r.txt"), "r\n").unwrap();
+        repo.run(&["add", "."]).unwrap();
+        repo.run(&["commit", "-m", "second"]).unwrap();
+        repo.run(&["mv", "r.txt", "renamed.txt"]).unwrap();
+        let st = repo.status_v2().unwrap();
+        assert_eq!(st.branch.as_deref(), Some("main"));
+        assert!(!st.detached);
+        assert!(st.head_sha.is_some_and(|s| s.len() == 40));
+        let ren = st.files.iter().find(|f| f.path == "renamed.txt").unwrap();
+        assert_eq!(ren.orig_path.as_deref(), Some("r.txt"));
+        assert_eq!(ren.index, Some("R"));
+        // Fresh untracked file.
+        std::fs::write(dir.path().join("fresh.txt"), "f\n").unwrap();
+        let st = repo.status_v2().unwrap();
+        let fresh = st.files.iter().find(|f| f.path == "fresh.txt").unwrap();
+        assert!(fresh.untracked);
+        assert_eq!(st.counts.untracked, 1);
+    }
+
+    #[test]
+    fn not_a_repo_and_bad_rev() {
+        let dir = tempfile::tempdir().unwrap();
+        let gr = GitRepo::new(dir.path().to_path_buf());
+        assert!(matches!(gr.status_v2(), Err(GitError::NotRepo)));
+        let dir = repo();
+        let gr = GitRepo::new(dir.path().to_path_buf());
+        let err = gr.run(&["rev-parse", "no-such-rev"]).unwrap_err();
+        assert!(matches!(err, GitError::Failed { .. }));
+        assert!(err.stderr().len() <= STDERR_CAP);
+    }
+
+    #[test]
+    fn changes_numstat_and_log() {
+        let dir = repo();
+        let repo = GitRepo::new(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(dir.path().join("u.txt"), "l1\nl2\n").unwrap();
+        let cs = repo.changes("HEAD", "worktree").unwrap();
+        assert_eq!(cs.base, "HEAD");
+        assert_eq!(cs.target, "worktree");
+        let a = cs.files.iter().find(|f| f.path == "a.txt").unwrap();
+        assert_eq!((a.additions, a.deletions), (2, 0));
+        let u = cs.files.iter().find(|f| f.path == "u.txt").unwrap();
+        assert_eq!(u.status.0, ChangeStatus::Untracked);
+        assert_eq!(u.additions, 2);
+        let log = repo.log(10, None).unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].subject, "init");
     }
 }
