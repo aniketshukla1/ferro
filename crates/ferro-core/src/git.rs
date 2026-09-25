@@ -22,6 +22,8 @@ const STDERR_CAP: usize = 4096;
 pub enum GitError {
     #[error("not a git repository")]
     NotRepo,
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error("git {args} failed: {stderr}")]
     Failed { args: String, stderr: String },
     #[error("git {args} timed out after {secs}s")]
@@ -36,6 +38,7 @@ impl GitError {
     pub fn stderr(&self) -> String {
         match self {
             GitError::Failed { stderr, .. } => stderr.clone(),
+            GitError::Forbidden(e) => e.clone(),
             GitError::NotRepo => "not a git repository".into(),
             GitError::Timeout { args, secs } => format!("{args} timed out after {secs}s"),
             GitError::Cancelled => "cancelled".into(),
@@ -480,16 +483,18 @@ impl GitRepo {
             .iter()
             .map(|p| {
                 let abs = crate::paths::resolve(&root_canon, p, crate::paths::Access::Write)
-                    .map_err(|e| GitError::Failed {
-                        args: "resolve".into(),
-                        stderr: e.to_string(),
+                    .map_err(|e| match e {
+                        crate::paths::PathError::Escapes | crate::paths::PathError::Protected => {
+                            GitError::Forbidden(e.to_string())
+                        }
+                        _ => GitError::Failed {
+                            args: "resolve".into(),
+                            stderr: e.to_string(),
+                        },
                     })?;
                 abs.strip_prefix(&root_canon)
                     .map(|r| r.to_string_lossy().to_string())
-                    .map_err(|_| GitError::Failed {
-                        args: "resolve".into(),
-                        stderr: "path escapes root".into(),
-                    })
+                    .map_err(|_| GitError::Forbidden("path escapes root".into()))
             })
             .collect()
     }

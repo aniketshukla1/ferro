@@ -3,6 +3,7 @@
 pub mod desktop;
 pub mod events;
 pub mod files;
+pub mod git;
 pub mod highlight;
 pub mod jobs;
 pub mod markdown;
@@ -29,6 +30,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(markdown::routes())
         .merge(highlight::routes())
         .merge(outline::routes())
+        .merge(git::routes())
         .merge(search::routes())
         .merge(jobs::routes())
         .merge(workspace::routes())
