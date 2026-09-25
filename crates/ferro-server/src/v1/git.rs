@@ -347,15 +347,11 @@ async fn pull_pr(
     let out = tokio::task::spawn_blocking(move || {
         let repo = ferro_core::git::GitRepo::new(ws2.root.clone()).with_env(env);
         let pref = format!("refs/ferro/pr/{n}");
+        let remote_ref = session2.pr_ref.pull_ref();
         // Forced: after a force-push the checks below report divergence
         // instead of the fetch itself failing.
-        repo.run_net(&[
-            "fetch",
-            "--",
-            &remote,
-            &ferro_forge::checkout::pr_refspec(n),
-        ])
-        .map_err(map_err)?;
+        repo.run_net(&["fetch", "--", &remote, &format!("{remote_ref}:{pref}")])
+            .map_err(map_err)?;
         let head = repo.run(&["rev-parse", "HEAD"]).map_err(map_err)?;
         let fetched = repo.run(&["rev-parse", &pref]).map_err(map_err)?;
         let head = head.trim().to_string();

@@ -55,8 +55,8 @@ fn render_comment(c: &ferro_forge::github::ForgeComment) -> serde_json::Value {
 async fn threads(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
     let (_, pr) = session(&s)?;
     let (threads, conversation) = tokio::join!(
-        pr.github.threads(&pr.pr_ref),
-        pr.github.conversation(&pr.pr_ref)
+        pr.client.threads(&pr.pr_ref),
+        pr.client.conversation(&pr.pr_ref)
     );
     let threads = threads.map_err(forge_err)?;
     let conversation = conversation.map_err(forge_err)?;
@@ -95,22 +95,27 @@ async fn reply(
     if text.trim().is_empty() {
         return Err(ApiError::bad_request("body required"));
     }
-    // Reply targets take the thread's head comment id; drafts store the
-    // GraphQL thread id, so resolve it through a fresh thread list.
-    let comment_id: u64 = if let Ok(n) = id.parse::<u64>() {
-        n
-    } else {
-        let threads = pr.github.threads(&pr.pr_ref).await.map_err(forge_err)?;
-        threads
-            .iter()
-            .find(|t| t.id == id)
-            .and_then(|t| t.comments.first())
-            .and_then(|c| c.id.parse::<u64>().ok())
-            .ok_or_else(|| ApiError::not_found("no such thread".to_string()))?
-    };
+    // Reply targets: GitHub takes the thread's head comment id (resolve
+    // GraphQL thread ids through a fresh list); GitLab takes the
+    // discussion id directly.
+    let target =
+        if pr.pr_ref.provider == ferro_forge::Provider::GitLab && id.parse::<u64>().is_err() {
+            ferro_forge::ReplyTarget::Discussion(id.clone())
+        } else if let Ok(n) = id.parse::<u64>() {
+            ferro_forge::ReplyTarget::Comment(n)
+        } else {
+            let threads = pr.client.threads(&pr.pr_ref).await.map_err(forge_err)?;
+            let cid = threads
+                .iter()
+                .find(|t| t.id == id)
+                .and_then(|t| t.comments.first())
+                .and_then(|c| c.id.parse::<u64>().ok())
+                .ok_or_else(|| ApiError::not_found("no such thread".to_string()))?;
+            ferro_forge::ReplyTarget::Comment(cid)
+        };
     let c = pr
-        .github
-        .reply(&pr.pr_ref, comment_id, text)
+        .client
+        .reply(&pr.pr_ref, target, text)
         .await
         .map_err(forge_err)?;
     Ok(Json(render_comment(&c)))
@@ -128,7 +133,7 @@ async fn conversation(
         return Err(ApiError::bad_request("body required"));
     }
     let c = pr
-        .github
+        .client
         .post_comment(&pr.pr_ref, text)
         .await
         .map_err(forge_err)?;
@@ -236,7 +241,7 @@ async fn submit(
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let (ws, pr) = session(&s)?;
-    if !pr.github.has_token() {
+    if !pr.client.has_token() {
         return Err(crate::v1::pr::no_token());
     }
     let v: serde_json::Value = serde_json::from_slice(&body)
@@ -278,31 +283,63 @@ async fn submit(
             start_side: d.start_line.map(|_| d.side.clone()),
         });
     }
-    let resp = pr
-        .github
-        .submit_review(&pr.pr_ref, &head_sha, event, &review_body, &comments)
-        .await
-        .map_err(forge_err)?;
-    let mut posted = comments.len();
-    // Reply drafts post after the review; failures stay as drafts.
-    let live_threads = pr.github.threads(&pr.pr_ref).await.map_err(forge_err)?;
-    for (draft_id, thread_id, text) in replies {
-        let cid = live_threads
-            .iter()
-            .find(|t| t.id == thread_id)
-            .and_then(|t| t.comments.first())
-            .and_then(|c| c.id.parse::<u64>().ok());
-        match cid {
-            Some(cid) => match pr.github.reply(&pr.pr_ref, cid, &text).await {
-                Ok(_) => {
-                    posted += 1;
-                    pr.store.remove(&draft_id);
-                }
+    let is_gitlab = pr.pr_ref.provider == ferro_forge::Provider::GitLab;
+    // GitLab stages reply drafts first — bulk_publish publishes them
+    // together with the inline drafts below.
+    let mut staged_replies = Vec::new();
+    if is_gitlab {
+        for (draft_id, thread_id, text) in replies {
+            match pr.client.reply_draft(&pr.pr_ref, &thread_id, &text).await {
+                Ok(_) => staged_replies.push(draft_id),
                 Err(e) => {
                     failed.push(serde_json::json!({ "draftId": draft_id, "error": e.to_string() }))
                 }
-            },
-            None => failed.push(serde_json::json!({ "draftId": draft_id, "error": "thread gone" })),
+            }
+        }
+        replies = Vec::new();
+    }
+    let resp = pr
+        .client
+        .submit_review(&pr.pr_ref, &head_sha, event, &review_body, &comments)
+        .await
+        .map_err(forge_err)?;
+    let mut posted = comments.len() + staged_replies.len();
+    for draft_id in staged_replies {
+        pr.store.remove(&draft_id);
+    }
+    if !is_gitlab {
+        // Reply drafts post after the review; failures stay as drafts.
+        let live_threads = pr.client.threads(&pr.pr_ref).await.map_err(forge_err)?;
+        for (draft_id, thread_id, text) in replies {
+            let cid = live_threads
+                .iter()
+                .find(|t| t.id == thread_id)
+                .and_then(|t| t.comments.first())
+                .and_then(|c| c.id.parse::<u64>().ok());
+            match cid {
+                Some(cid) => {
+                    match pr
+                        .client
+                        .reply(&pr.pr_ref, ferro_forge::ReplyTarget::Comment(cid), &text)
+                        .await
+                    {
+                        Ok(_) => {
+                            posted += 1;
+                            pr.store.remove(&draft_id);
+                        }
+                        Err(e) => failed.push(
+                            serde_json::json!({ "draftId": draft_id, "error": e.to_string() }),
+                        ),
+                    }
+                }
+                None => {
+                    failed.push(serde_json::json!({ "draftId": draft_id, "error": "thread gone" }))
+                }
+            }
+        }
+    } else {
+        for (draft_id, _, _) in replies {
+            pr.store.remove(&draft_id);
         }
     }
     // Posted drafts leave the store; failed ones stay.

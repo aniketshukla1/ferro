@@ -191,6 +191,7 @@ fn pr_state_full(mock: &str, token: Option<&str>) -> PrFixture {
         "test".into(),
     );
     let pref = ferro_forge::ForgeRef {
+        provider: ferro_forge::Provider::GitHub,
         host: "github.com".into(),
         owner: "o".into(),
         repo: "r".into(),
@@ -231,11 +232,11 @@ fn pr_state_full(mock: &str, token: Option<&str>) -> PrFixture {
     let session = Arc::new(ferro_server::state::PrSession {
         pr_ref: pref,
         meta: parking_lot::RwLock::new(meta),
-        github: Arc::new(ferro_forge::GitHub::new(
+        client: Arc::new(ferro_forge::ForgeClient::GitHub(ferro_forge::GitHub::new(
             format!("{mock}/api"),
             format!("{mock}/graphql"),
             token.map(|s| s.into()),
-        )),
+        ))),
         token: token.map(|s| s.into()),
         token_source: None,
         worktree: parking_lot::RwLock::new(opened),

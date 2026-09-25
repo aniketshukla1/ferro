@@ -19,7 +19,7 @@ pub enum Mode {
 pub struct PrSession {
     pub pr_ref: ferro_forge::ForgeRef,
     pub meta: parking_lot::RwLock<ferro_forge::github::PullMeta>,
-    pub github: std::sync::Arc<ferro_forge::GitHub>,
+    pub client: std::sync::Arc<ferro_forge::ForgeClient>,
     /// Memory only, never serialized or logged (refresh re-opens worktrees).
     pub token: Option<String>,
     pub token_source: Option<ferro_forge::TokenSource>,

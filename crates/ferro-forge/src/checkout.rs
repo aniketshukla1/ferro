@@ -219,17 +219,23 @@ pub fn remote_matches(remote_url: &str, r: &ForgeRef) -> bool {
         }
     }
     let segs: Vec<&str> = s.split('/').filter(|x| !x.is_empty()).collect();
-    if segs.len() < 3 {
+    // Locate the host segment (case-insensitive, port-tolerant); the owner
+    // is everything between host and repo, so subgroups match too.
+    let Some(hi) = segs.iter().position(|h| {
+        h.split(':')
+            .next()
+            .unwrap_or(h)
+            .eq_ignore_ascii_case(&r.host)
+    }) else {
+        return false;
+    };
+    let rest = &segs[hi + 1..];
+    if rest.len() < 2 {
         return false;
     }
-    let (host_seg, owner, repo) = (
-        segs[segs.len() - 3],
-        segs[segs.len() - 2],
-        segs[segs.len() - 1],
-    );
-    // Strip :port from the host segment.
-    let host_seg = host_seg.split(':').next().unwrap_or(host_seg);
-    host_seg.eq_ignore_ascii_case(&r.host) && owner == r.owner && repo == r.repo
+    let repo = rest[rest.len() - 1];
+    let owner = rest[..rest.len() - 1].join("/");
+    repo == r.repo && owner == r.owner
 }
 
 /// Open (or reuse) a worktree for the PR.
@@ -538,6 +544,22 @@ mod tests {
         assert!(remote_matches(
             "https://ghe.corp.example:8443/o/r.git",
             &ghe
+        ));
+        // Subgroup namespaces match on the full owner path.
+        let gl = ForgeRef {
+            provider: crate::Provider::GitLab,
+            host: "git.example.com".into(),
+            owner: "group/sub".into(),
+            repo: "proj".into(),
+            number: 9,
+        };
+        assert!(remote_matches(
+            "/srv/mirrors/git.example.com/group/sub/proj",
+            &gl
+        ));
+        assert!(!remote_matches(
+            "/srv/mirrors/git.example.com/group/other/proj",
+            &gl
         ));
     }
 }

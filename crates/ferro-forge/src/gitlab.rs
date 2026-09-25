@@ -212,6 +212,18 @@ impl GitLab {
         Ok(id.to_string())
     }
 
+    /// Clone URL of the source (head) project, for fork-aware pushes.
+    pub async fn source_clone_url(&self, r: &ForgeRef) -> Result<String, ForgeError> {
+        let id = self.source_project(r).await?;
+        let v = self
+            .get(&format!("{}/projects/{}", self.api_base, id))
+            .await?;
+        v.get("http_url_to_repo")
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| ForgeError::Schema("clone url".into()))
+    }
+
     pub async fn checks(&self, r: &ForgeRef, _sha: &str) -> Result<Checks, ForgeError> {
         // Approvals stand in for CI here; pipelines stay out of scope.
         match self.approvals(r).await {
