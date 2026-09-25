@@ -1,6 +1,8 @@
 # ferro
 
-Ferro is a fast local code review tool for humans and AI.
+**Iron-clad code review.** Ferro is a local-first workbench for reading, searching and
+reviewing code and pull requests on your own machine, with an optional AI agent as a
+second reviewer.
 
 ## Install
 
