@@ -222,6 +222,15 @@ function registerCommands({ shell, editor, palette, find, getTree, getSearch, ai
   bindKey('?', help);
   command({ id: 'ai.ask', title: 'Ask AI', category: 'AI', icon: 'sparkles', keys: ['Mod+I'], run: () => { shell.toggleInspector(true); aiTab.show(); } });
 
+  // Security: sign-out is immediate for this browser; "all browsers" goes through
+  // Settings → Security, which explains it and asks for a second click.
+  const canSignOut = () => has('auth.logout');
+  command({
+    id: 'auth.logout', title: 'Sign Out of This Browser', category: 'Security', icon: 'lock', when: canSignOut,
+    run: () => api.logout(false).then(() => location.reload(), (e) => toast({ kind: 'error', title: 'Could not sign out', message: e.message })),
+  });
+  command({ id: 'auth.logoutAll', title: 'Sign Out of All Browsers…', category: 'Security', icon: 'lock', when: canSignOut, run: () => load.settings().then((m) => m.openSettings({ section: 'security' })) });
+
   // Tabs
   command({ id: 'tab.close', title: 'Close Tab', category: 'Tabs', icon: 'x', keys: ['Alt+W'], desktopKeys: ['Mod+W'], when: hasFile, run: () => editor.close() });
   command({ id: 'tab.reopen', title: 'Reopen Closed Tab', category: 'Tabs', icon: 'history', keys: ['Alt+Shift+T'], desktopKeys: ['Mod+Shift+T'], run: () => editor.reopenClosed() });

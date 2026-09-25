@@ -21,10 +21,20 @@ Docker: `docker build -t ferro . && docker run -p 7777:7777 -v "$(pwd):/src:ro" 
 
 ## Security
 
-Every serve prints a URL with a one-time token (`http://127.0.0.1:<port>/?token=…`).
-The browser keeps it in an `HttpOnly; SameSite=Strict` cookie; scripts and other
-origins get `401/403`. For automation use `Authorization: Bearer <token>` or
-`--token`/`FERRO_TOKEN`. `--no-auth` works on loopback binds only.
+Every serve prints a URL with a one-time token (`http://127.0.0.1:<port>/?token=…`),
+so other websites and programs on your machine can't read your code or run git
+through ferro. Opening the link signs the browser in with an `HttpOnly;
+SameSite=Strict` cookie; scripts and other origins get `401/403`.
+
+On this computer (127.0.0.1 / localhost) the browser is also **remembered for 30
+days after each visit**, across restarts and ports, so you open the link once per
+browser. The signing key lives in ferro's state dir (`auth/browser.key`, mode
+0600), never in a repository. Settings → Security signs out this browser or every
+browser (that rotates the key; the printed link still works). Servers reachable
+from other machines never remember browsers.
+
+For automation use `Authorization: Bearer <token>` or `--token`/`FERRO_TOKEN`
+(a fixed token keeps the link stable). `--no-auth` works on loopback binds only.
 
 ## Run — CLI (browser)
 

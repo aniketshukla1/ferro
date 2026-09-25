@@ -116,6 +116,8 @@ export const api = {
   jobs: () => request('jobs'),
   rebuildIndex: () => request('index/rebuild', { method: 'POST', body: {} }),
   openExternal: (url) => request('desktop/open-external', { method: 'POST', body: { url } }),
+  /** Sign this browser out; `all` also signs out every other browser (the printed link still works). */
+  logout: (all = false) => request('auth/logout', { method: 'POST', query: all ? { all: 1 } : undefined, body: {} }),
   rawUrl: (path) => (transport.rawUrl ? transport.rawUrl(path) : apiUrl('file/raw', { path }).toString()),
 };
 

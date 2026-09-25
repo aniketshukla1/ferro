@@ -9,6 +9,7 @@ use crate::state::{AppState, Mode};
 /// Exactly the flags this binary implements. The frontend gates on these.
 pub const FEATURES: &[&str] = &[
     "v1",
+    "auth.logout",
     "events",
     "settings",
     "session",
@@ -52,7 +53,10 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new().route("/api/v1/meta", get(meta))
 }
 
-async fn meta(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
+async fn meta(
+    State(s): State<Arc<AppState>>,
+    axum::Extension(g): axum::Extension<Arc<crate::guard::GuardConfig>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let ws = s.ws();
     let (files, ms) = ws.index.stats();
     let (is_repo, branch, head_sha) = match &ws.git {
@@ -93,6 +97,11 @@ async fn meta(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>,
             "searchIndex": "off",
         },
         "features": FEATURES,
+        // Remembered browsers (loopback binds): days a sign-in lasts after the last visit.
+        "auth": {
+            "remember": g.device.is_some(),
+            "rememberDays": if g.device.is_some() { crate::guard::DEVICE_TTL_SECS / 86_400 } else { 0 },
+        },
         "limits": {
             "maxWindowLines": s.limits.max_window_lines,
             "maxCols": s.limits.max_cols,

@@ -2,7 +2,7 @@
 // frontend's own ui.* keys. Edits save immediately to the chosen scope (user | workspace);
 // "Reset" sends null for that key. Live effects (theme, font size, icon tint) apply at once.
 import { h, mount } from '../core/dom.js';
-import { api } from '../core/api.js';
+import { api, has } from '../core/api.js';
 import { store } from '../core/store.js';
 import { debounce } from '../core/util.js';
 import { icon } from '../ui/icons.js';
@@ -26,8 +26,58 @@ const SECTIONS = [
   ['review', 'Review', 'git-pull-request'],
   ['ai', 'AI', 'sparkles'],
   ['harness', 'Agents', 'terminal'],
+  ['security', 'Security', 'lock'],
   ['updates', 'Updates', 'refresh'],
 ];
+
+/** Settings → Security: remembered-browser status and sign-out (not a stored setting). */
+const SECURITY_DEF = {
+  key: 'auth.browsers',
+  section: 'security',
+  title: 'Signed-in browsers',
+  description: 'Remember this browser, sign out of this browser, sign out of all browsers.',
+  type: 'security',
+};
+
+async function signOut(everywhere) {
+  try {
+    await api.logout(everywhere);
+    location.reload();
+  } catch (e) {
+    toast({ kind: 'error', title: 'Could not sign out', message: e.message });
+  }
+}
+
+function securityField(d) {
+  const auth = store.get('meta')?.auth;
+  const days = auth?.remember ? auth.rememberDays : 0;
+  const status = days
+    ? `This browser stays signed in for ${days} days after each visit, even when ferro restarts. It applies to 127.0.0.1 and localhost on this computer.`
+    : 'This browser stays signed in until you close it. Remembering browsers is off because this ferro can be reached from other computers.';
+  const one = h('button', { class: 'btn', on: { click: () => signOut(false) } }, icon('lock', 'sm'), 'Sign out of this browser');
+  const allLabel = h('span', null, 'Sign out of all browsers');
+  let armedAt = 0;
+  const all = h('button', {
+    class: 'btn',
+    on: {
+      click: () => {
+        if (Date.now() - armedAt < 5000) { signOut(true); return; }
+        // Two clicks: this also ends every other open session.
+        armedAt = Date.now();
+        all.classList.add('danger');
+        allLabel.textContent = 'Click again to sign out everywhere';
+        setTimeout(() => {
+          if (Date.now() - armedAt >= 5000) { all.classList.remove('danger'); allLabel.textContent = 'Sign out of all browsers'; }
+        }, 5100);
+      },
+    },
+  }, icon('lock', 'sm'), allLabel);
+  return h('div', { class: 'field security-field' },
+    h('div', { class: 'f-title' }, d.title),
+    h('p', { class: 'f-desc' }, status),
+    h('p', { class: 'f-desc' }, 'Signing out of all browsers ends every other open session too. The link ferro printed when it started signs you back in.'),
+    h('div', { class: 'row sec-actions' }, one, all));
+}
 
 // Backend keys for the legacy UI (un-namespaced) are not shown in the new UI.
 const hiddenKey = (k) => !k.key.includes('.') || k.section === 'ui';
@@ -80,7 +130,7 @@ export async function openSettings({ section = 'appearance' } = {}) {
   } catch (e) {
     toast({ kind: 'error', title: 'Settings are unavailable', message: e.message });
   }
-  const defs = [...UI_KEYS, ...schema];
+  const defs = [...UI_KEYS, ...schema, ...(has('auth.logout') ? [SECURITY_DEF] : [])];
   const present = new Set(defs.map((d) => d.section));
   const sections = SECTIONS.filter(([id]) => present.has(id));
   for (const d of defs) if (!SECTIONS.some(([id]) => id === d.section) && !sections.some(([id]) => id === d.section)) sections.push([d.section, d.section[0].toUpperCase() + d.section.slice(1), 'sliders']);
@@ -192,8 +242,11 @@ export async function openSettings({ section = 'appearance' } = {}) {
   function renderMain() {
     const q = filter.value.trim();
     const list = defs.filter((d) => (q ? matchesFilter(d) : d.section === current));
-    const out = [h('div', { class: 'set-scope' }, h('span', null, 'Saving to'), scopeSeg,
-      h('span', null, scope === 'user' ? 'for every workspace' : 'for this workspace only'))];
+    // Security holds actions, not stored settings: no scope switch there.
+    const out = list.some((d) => d.type !== 'security')
+      ? [h('div', { class: 'set-scope' }, h('span', null, 'Saving to'), scopeSeg,
+        h('span', null, scope === 'user' ? 'for every workspace' : 'for this workspace only'))]
+      : [];
     if (!list.length) out.push(h('div', { class: 'empty' }, h('p', null, 'No settings match.')));
     let lastSection = null;
     for (const d of list) {
@@ -204,6 +257,8 @@ export async function openSettings({ section = 'appearance' } = {}) {
       if (d.type === 'theme') {
         gallery = themeGallery();
         out.push(h('div', { class: 'field theme-field' }, h('div', { class: 'f-title' }, d.title), h('div', { class: 'f-desc' }, d.description), gallery.el));
+      } else if (d.type === 'security') {
+        out.push(securityField(d));
       } else out.push(field(d));
     }
     mount(main, out);

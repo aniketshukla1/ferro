@@ -20,7 +20,7 @@ const MOCK_SCHEMA = [
 
 const FEATURES = [
   'v1', 'events', 'settings', 'session', 'tree', 'file', 'hl.classes', 'hl.exact', 'markdown.v2', 'outline',
-  'jobs', 'workspace.open', 'metrics', 'fuzzy.v2', 'search.v2', 'search.regex', 'file.find', 'paths.resolve', 'git.status.v2',
+  'jobs', 'workspace.open', 'metrics', 'fuzzy.v2', 'search.v2', 'search.regex', 'file.find', 'paths.resolve', 'git.status.v2', 'auth.logout',
 ];
 const LIMITS = { maxWindowLines: 1000, maxCols: 4000, maxRawBytes: 33554432, maxMarkdownBytes: 4194304, maxSearchFiles: 1000, maxDiffRows: 20000 };
 
@@ -46,6 +46,7 @@ export function createMockServer(opts) {
     workspace: { root: '/Users/you/ferro', name: 'ferro', key: 'a1b2c3d4e5f60718', git: true, branch: 'main', headSha: '9377e11a4c1f0f5d2d8b0a6f1e2d3c4b5a697886' },
     index: state.index,
     features: FEATURES,
+    auth: { remember: true, rememberDays: 30 },
     limits: LIMITS,
     pr: null,
   });
@@ -188,6 +189,8 @@ export function createMockServer(opts) {
     'GET git/status': () => repo.gitStatus(),
     'GET metrics': () => metrics(started),
     'GET jobs': () => ({ jobs: [] }),
+    // Mock mode has no real session: sign-out just succeeds.
+    'POST auth/logout': (q) => ({ ok: true, all: q.all === '1' || q.all === 'true' }),
     'POST index/rebuild': () => {
       const id = `j_${Date.now().toString(36)}`;
       emit('job', { id, kind: 'index.rebuild', state: 'running', startedAt: new Date().toISOString() });

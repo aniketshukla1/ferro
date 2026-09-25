@@ -28,6 +28,10 @@
 .set-main { flex: 1; min-width: 0; overflow: auto; padding: var(--sp-6) var(--sp-8) var(--sp-9); }
 .set-scope .seg { margin: 0 2px; }
 .theme-field { display: block; }
+.security-field { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-3); }
+.security-field .f-desc { max-width: 560px; line-height: 1.5; }
+.sec-actions { gap: var(--sp-4); margin-top: var(--sp-3); flex-wrap: wrap; }
+.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, var(--border-strong)); }
 .theme-field .f-desc { margin: 2px 0 var(--sp-5); }
 textarea.input { height: auto; min-height: 64px; padding: 6px 10px; resize: vertical; font: 12px/1.5 var(--font-mono); }
 .field .f-control textarea.input { width: 280px; }

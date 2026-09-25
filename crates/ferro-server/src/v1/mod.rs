@@ -1,5 +1,6 @@
 //! /api/v1 route handlers (BACKEND.md § 6 B1 surface).
 
+pub mod auth;
 pub mod desktop;
 pub mod events;
 pub mod files;
@@ -21,6 +22,7 @@ use crate::state::AppState;
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .merge(meta::routes())
+        .merge(auth::routes())
         .merge(events::routes())
         .merge(settings::routes())
         .merge(session::routes())

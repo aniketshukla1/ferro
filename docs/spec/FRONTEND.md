@@ -468,6 +468,7 @@ Acceptance per milestone: its feature sections' checks pass, the e2e suite for i
 | Panels | search (Aa / ab / .*; hits trimmed to the match), outline (follows cursor), Changes (branch header, conflicts / staged / modified / untracked) | include/exclude fields, streaming search |
 | Settings | schema-driven form (B1 keys + `ui.*`), sections, search, user/workspace scope, save on change, per-key reset, live theme / code size / icon tint | raw JSON editor (F6) |
 | Other | light/dark toggle, shortcuts sheet (falls back to the command palette), narrow-screen overlays | — |
+| Sign-in | paste-link-or-token screen; remembered browsers (30 days after each visit on 127.0.0.1/localhost, across restarts and ports; `meta.auth`); Settings → Security and palette commands sign out this browser or every browser (`POST /auth/logout[?all=1]`) | — |
 
 Backend review of B0 + B1 (2026-09-25): 10 findings plus the two open requests above, all fixed on `fix/b1-review` with regression tests (114 Rust tests). Per-line highlight HTML and line text no longer carry `\n`/`\r`. `/events` accepts `metrics=1`. `maxCols` holds with highlighting on. Highlight windows read only the lookback plus the window, without holding the workspace lock. Markdown: externalImages counts real `<img>` only, `../` links resolve, `#anchor` links survive, attributes are escaped once, and entities unescape once. The token redirect keeps the requested page (never scheme-relative). Writes are refused into `.git`/`.hg`/`.svn` through symlinks and case variants.
 

@@ -184,12 +184,15 @@ pub async fn serve_with(
     bound: u16,
     o: ServeOpts,
 ) -> ServerHandle {
-    let guard = Arc::new(GuardConfig::new(
-        o.token.clone(),
-        bound,
-        o.allow_hosts.clone(),
-        o.no_auth,
-    ));
+    let mut guard_cfg = GuardConfig::new(o.token.clone(), bound, o.allow_hosts.clone(), o.no_auth);
+    // "Remember this browser" only where nobody else can reach the server.
+    if !o.no_auth && crate::guard::is_loopback_bind(&o.host) {
+        match crate::guard::DeviceKey::load_or_create(&state.dirs.state_dir) {
+            Ok(k) => guard_cfg = guard_cfg.with_device_key(k),
+            Err(e) => tracing::warn!("remembering browsers is off: {e}"),
+        }
+    }
+    let guard = Arc::new(guard_cfg);
     let last_active = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let app = build_router(
         state.clone(),
