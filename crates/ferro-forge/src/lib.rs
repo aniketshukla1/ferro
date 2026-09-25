@@ -7,6 +7,7 @@ pub mod checkout;
 pub mod error;
 pub mod github;
 pub mod parse;
+pub mod store;
 pub mod token;
 
 pub use checkout::{open_pr, CheckoutOpts, OpenedPr};
