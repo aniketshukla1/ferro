@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::provider::{ChatMessage, LlmClient};
 use crate::tools::{self, ToolCall, ToolResult};
-use crate::{Access, Sandbox};
+use crate::Sandbox;
 use ferro_core::Index;
 
 #[derive(Debug, Clone, Serialize)]
@@ -201,9 +201,19 @@ impl<C: LlmClient> Agent<C> {
                     name: call.name.clone(),
                     args,
                 });
-                // Sandbox gate lives in dispatch via check; resolve write paths here.
-                let _ = self.sandbox.check(Access::Read);
-                let result = tools::dispatch(&self.index, &self.sandbox, &call);
+                // Tools do blocking IO (full-tree grep); keep them off the
+                // async runtime (D20). Index/Sandbox are Sync; the call moves.
+                let idx = self.index.clone();
+                let sb = self.sandbox.clone();
+                let call2 = call.clone();
+                let result =
+                    tokio::task::spawn_blocking(move || tools::dispatch(&idx, &sb, &call2))
+                        .await
+                        .unwrap_or_else(|e| ToolResult {
+                            ok: false,
+                            output: format!("tool task failed: {e}"),
+                            truncated: false,
+                        });
                 send(AgentEvent::ToolResult {
                     name: call.name.clone(),
                     ok: result.ok,

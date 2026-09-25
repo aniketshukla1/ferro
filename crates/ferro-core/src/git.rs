@@ -63,13 +63,24 @@ pub fn apply(root: &Path, patch: &str) -> Result<(), String> {
 
 /// Revert paths to HEAD and delete listed untracked files.
 pub fn revert(root: &Path, tracked: &[String], untracked: &[String]) -> Result<(), String> {
-    if !tracked.is_empty() {
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut safe_tracked = Vec::with_capacity(tracked.len());
+    for t in tracked {
+        let p = crate::paths::resolve(&root_canon, t, crate::paths::Access::Write)
+            .map_err(|e| e.to_string())?;
+        let rel = p
+            .strip_prefix(&root_canon)
+            .map_err(|_| "path escapes root".to_string())?;
+        safe_tracked.push(rel.to_string_lossy().to_string());
+    }
+    if !safe_tracked.is_empty() {
         let mut args = vec!["checkout", "HEAD", "--"];
-        args.extend(tracked.iter().map(|s| s.as_str()));
+        args.extend(safe_tracked.iter().map(|s| s.as_str()));
         run_check(root, &args)?;
     }
     for u in untracked {
-        let p = root.join(u.trim_start_matches('/'));
+        let p = crate::paths::resolve(&root_canon, u, crate::paths::Access::Write)
+            .map_err(|e| e.to_string())?;
         if p.is_file() {
             std::fs::remove_file(&p).map_err(|e| e.to_string())?;
         }
@@ -77,12 +88,27 @@ pub fn revert(root: &Path, tracked: &[String], untracked: &[String]) -> Result<(
     Ok(())
 }
 
+fn resolve_write_args(root: &Path, paths: &[String]) -> Result<Vec<String>, String> {
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    paths
+        .iter()
+        .map(|p| {
+            let abs = crate::paths::resolve(&root_canon, p, crate::paths::Access::Write)
+                .map_err(|e| e.to_string())?;
+            abs.strip_prefix(&root_canon)
+                .map(|r| r.to_string_lossy().to_string())
+                .map_err(|_| "path escapes root".to_string())
+        })
+        .collect()
+}
+
 pub fn stage(root: &Path, paths: &[String]) -> Result<String, String> {
     if paths.is_empty() {
         return Err("no paths".into());
     }
+    let safe = resolve_write_args(root, paths)?;
     let mut args = vec!["add", "--"];
-    args.extend(paths.iter().map(|s| s.as_str()));
+    args.extend(safe.iter().map(|s| s.as_str()));
     run_check(root, &args)
 }
 
@@ -90,8 +116,9 @@ pub fn unstage(root: &Path, paths: &[String]) -> Result<String, String> {
     if paths.is_empty() {
         return Err("no paths".into());
     }
+    let safe = resolve_write_args(root, paths)?;
     let mut args = vec!["reset", "HEAD", "--"];
-    args.extend(paths.iter().map(|s| s.as_str()));
+    args.extend(safe.iter().map(|s| s.as_str()));
     run_check(root, &args)
 }
 

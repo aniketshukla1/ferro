@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
     middleware,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Extension, Json, Router,
 };
@@ -23,13 +23,21 @@ pub struct ServeOpts {
     pub no_open: bool,
     /// File to open on boot with 1-based line.
     pub initial: Option<(String, usize)>,
+    pub token: Option<String>,
+    pub allow_hosts: Vec<String>,
+    pub no_auth: bool,
 }
 
 #[derive(RustEmbed, Clone)]
 #[folder = "../../web/"]
 struct Web;
 
-pub async fn serve(state: Arc<Index>, o: ServeOpts) {
+pub fn router(
+    state: Arc<Index>,
+    guard: Arc<crate::guard::GuardConfig>,
+    last_active: Arc<std::sync::Mutex<std::time::Instant>>,
+    no_git: bool,
+) -> Router {
     let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/stats", get(stats))
@@ -42,7 +50,7 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
         .route("/api/highlight", get(highlight))
         .route("/api/ask", post(ask))
         .route("/api/ask/stream", post(ask_stream));
-    if !o.no_git {
+    if !no_git {
         app = app
             .route("/api/git-status", get(git_status))
             .route("/api/diff", get(diff));
@@ -57,7 +65,7 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
         .route("/api/review/submit", post(review_submit))
         .route("/api/review/apply", post(review_apply))
         .route("/api/settings", get(settings_get).put(settings_put));
-    if !o.no_git {
+    if !no_git {
         app = app
             .route("/api/git/stage", post(git_stage))
             .route("/api/git/unstage", post(git_unstage))
@@ -66,13 +74,31 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
             .route("/api/git/push", post(git_push))
             .route("/api/git/pull", post(git_pull));
     }
-    let last_active = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    let app = app
-        .fallback(static_file)
+    app.fallback(static_file)
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(track_activity))
-        .layer(Extension(last_active.clone()))
-        .with_state(state.clone());
+        .layer(Extension(last_active))
+        .layer(middleware::from_fn(crate::guard::guards))
+        .layer(Extension(guard))
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(
+            panic_envelope,
+        ))
+        .with_state(state)
+}
+
+pub async fn serve(state: Arc<Index>, o: ServeOpts) {
+    let last_active = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", o.host, o.port))
+        .await
+        .expect("bind");
+    let bound = listener.local_addr().map(|a| a.port()).unwrap_or(o.port);
+    let guard = Arc::new(crate::guard::GuardConfig::new(
+        o.token.clone(),
+        bound,
+        o.allow_hosts.clone(),
+        o.no_auth,
+    ));
+    let app = router(state.clone(), guard.clone(), last_active.clone(), o.no_git);
 
     // Idle scavenger (px0 parity): after 15s without requests, drop the
     // highlight LRU so an idle tab settles back down.
@@ -88,24 +114,24 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
         }
     });
 
-    let listener = tokio::net::TcpListener::bind(format!("{}:{}", o.host, o.port))
-        .await
-        .expect("bind");
-    let bound = listener.local_addr().map(|a| a.port()).unwrap_or(o.port);
     let host_out = if o.host == "0.0.0.0" {
         "127.0.0.1"
     } else {
         o.host.as_str()
     };
-    let mut url = format!("http://{}:{}/", host_out, bound);
+    let mut url = format!("http://{}:{}/?token={}", host_out, bound, guard.token);
     if let Some((f, l)) = &o.initial {
         url = format!(
-            "http://{}:{}/?file={}&line={}",
+            "http://{}:{}/?token={}&file={}&line={}",
             host_out,
             bound,
+            guard.token,
             encode_qs(f),
             l
         );
+    }
+    if o.no_auth {
+        tracing::warn!("--no-auth: API auth disabled (loopback only)");
     }
     if o.narrate {
         tracing::info!("ferro serving {} on {}", state.root().display(), url);
@@ -121,6 +147,19 @@ pub async fn serve(state: Arc<Index>, o: ServeOpts) {
 
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status":"ok","service":"ferro"}))
+}
+
+/// A panic anywhere in the stack becomes a 500 envelope, never a dropped
+/// connection (BACKEND.md § 4.4).
+fn panic_envelope(_err: Box<dyn std::any::Any + Send + 'static>) -> Response {
+    Response::builder()
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(axum::body::Body::from(
+            serde_json::json!({ "error": { "code": "internal", "message": "internal error" } })
+                .to_string(),
+        ))
+        .unwrap()
 }
 
 async fn track_activity(
@@ -229,7 +268,7 @@ async fn read_file(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl 
     match tokio::fs::read_to_string(&p).await {
         Ok(t) => {
             let out = if t.len() > 512 * 1024 {
-                t[..512 * 1024].to_string()
+                ferro_core::text::truncate_utf8(&t, 512 * 1024).to_string()
             } else {
                 t
             };
@@ -367,7 +406,28 @@ async fn raw(State(s): State<Arc<Index>>, Query(q): Query<FileQ>) -> impl IntoRe
         .await
         .unwrap_or(None);
     match out {
-        Some((bytes, mime)) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
+        Some((bytes, mime)) => {
+            // D3: SVG opened directly cannot run script; sniffing off; inline disposition.
+            let name = q
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or("file")
+                .replace(['"', '\\', '\r', '\n'], "");
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, mime.parse().unwrap());
+            headers.insert(
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
+                    .parse()
+                    .unwrap(),
+            );
+            headers.insert(
+                header::CONTENT_DISPOSITION,
+                format!("inline; filename=\"{name}\"").parse().unwrap(),
+            );
+            (headers, bytes).into_response()
+        }
         None => (StatusCode::NOT_FOUND, "not found".to_string()).into_response(),
     }
 }
@@ -583,8 +643,14 @@ async fn review_submit(
     }
 }
 
-async fn static_file(uri: axum::http::Uri) -> impl IntoResponse {
-    let mut path = uri.path().trim_start_matches('/').to_string();
+async fn static_file(
+    Extension(g): Extension<Arc<crate::guard::GuardConfig>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> impl IntoResponse {
+    if let Some(res) = crate::guard::bootstrap(&g, &req) {
+        return res;
+    }
+    let mut path = req.uri().path().trim_start_matches('/').to_string();
     if path.is_empty() {
         path = "index.html".to_string();
     }

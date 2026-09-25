@@ -11,13 +11,18 @@ curl -fsSL https://raw.githubusercontent.com/aniketshukla1/ferro/main/install.sh
 Or build from source (Rust stable): `cargo build --release -p ferro`.
 Docker: `docker build -t ferro . && docker run -p 7777:7777 -v "$(pwd):/src:ro" ferro`
 
-- `ferro` CLI: single static Rust binary, browser UI, zero runtime deps
-- `Ferro` desktop: Tauri 2 native app, same `ferro-core`, offline, no server
-- Sub-ms startup goal, ~20MB RSS goal, background indexing
-- Fuzzy file find, whole-tree regex search, file viewer
-- Native git: status + diff vs HEAD
-- Phase 2 (next): built-in agent with sandbox + apply/rollback
-- Phase 3: team/enterprise — auth, TLS, shared reviews, MCP
+- `ferro` CLI: single static Rust binary, browser UI (needs `git` for repo features)
+- `Ferro` desktop: Tauri 2 native app, same core, offline
+- Background indexing with persistent cache, fuzzy file find, full-text search, file viewer
+- Native git: status + diff vs HEAD, PR review with inline drafts
+- Built-in agent with sandbox + patch apply (needs an LLM key, never committed)
+
+## Security
+
+Every serve prints a URL with a one-time token (`http://127.0.0.1:<port>/?token=…`).
+The browser keeps it in an `HttpOnly; SameSite=Strict` cookie; scripts and other
+origins get `401/403`. For automation use `Authorization: Bearer <token>` or
+`--token`/`FERRO_TOKEN`. `--no-auth` works on loopback binds only.
 
 ## Run — CLI (browser)
 

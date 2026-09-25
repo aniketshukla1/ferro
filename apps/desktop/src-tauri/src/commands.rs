@@ -81,7 +81,7 @@ pub async fn read_file(state: State<'_, CoreState>, path: String) -> Result<Stri
         .await
         .map_err(|_| "not found".to_string())?;
     if t.len() > 512 * 1024 {
-        Ok(t[..512 * 1024].to_string())
+        Ok(ferro_core::text::truncate_utf8(&t, 512 * 1024).to_string())
     } else {
         Ok(t)
     }
