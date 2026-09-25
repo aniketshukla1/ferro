@@ -266,7 +266,7 @@ fn fetch_refs(
             &[
                 "fetch",
                 "origin",
-                &format!("pull/{}/head:refs/ferro/pr/{}", r.number, r.number),
+                &format!("{}:refs/ferro/pr/{}", r.pull_ref(), r.number),
                 &format!("+{base_ref}:refs/ferro/base"),
             ],
             NET_TIMEOUT,
@@ -289,7 +289,7 @@ fn open_in_local(
         &[
             "fetch",
             "origin",
-            &format!("pull/{}/head:refs/ferro/pr/{}", r.number, r.number),
+            &format!("{}:refs/ferro/pr/{}", r.pull_ref(), r.number),
             &format!("+{}:refs/ferro/base", meta.base_ref),
         ],
         NET_TIMEOUT,
@@ -447,6 +447,7 @@ mod tests {
     #[test]
     fn remote_shapes() {
         let r = ForgeRef {
+            provider: crate::Provider::GitHub,
             host: "github.com".into(),
             owner: "o".into(),
             repo: "r".into(),
@@ -474,6 +475,7 @@ mod tests {
             assert!(!remote_matches(bad, &r), "{bad}");
         }
         let ghe = ForgeRef {
+            provider: crate::Provider::GitHub,
             host: "ghe.corp.example".into(),
             owner: "o".into(),
             repo: "r".into(),
