@@ -250,6 +250,17 @@ mod tests {
             "<h1 id=\"a\">t</h1><p id=\"b\">u</p>",
             "<img src=\"https://x/y.png\" alt=\"i\">",
             "<img src=\"data:text/html,<script>alert(1)</script>\">",
+            "<object data=\"javascript:alert(1)\"></object>",
+            "<embed src=\"x\" onload=\"alert(1)\">",
+            "<applet code=\"x\">y</applet>",
+            "<base href=\"https://evil.example/\">",
+            "<meta http-equiv=\"refresh\" content=\"0;url=javascript:alert(1)\">",
+            "<link rel=\"stylesheet\" href=\"javascript:alert(1)\">",
+            "<svg><animate onbegin=\"alert(1)\"/>",
+            "<details open ontoggle=\"alert(1)\">",
+            "<video><source src=\"x\" onerror=\"alert(1)\">",
+            "<table background=\"javascript:alert(1)\">",
+            "<a href=\"JaVaScRiPt:alert(1)\">x</a>",
         ];
         for html in cases {
             let out = sanitize_html(html);

@@ -51,6 +51,10 @@ pub struct Cli {
     #[arg(short = 'y', long = "yes", default_value_t = false)]
     pub yes: bool,
 
+    /// Serve static files from disk (frontend iteration, no-store).
+    #[arg(long)]
+    pub dev_web: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

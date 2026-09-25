@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use ferro::server;
 use tracing_subscriber::EnvFilter;
 
 use cli::{Cli, Commands};
@@ -55,16 +54,16 @@ async fn serve(cli: Cli) -> AnyhowResult {
     if cli.no_auth && cli.host != "127.0.0.1" && cli.host != "localhost" && cli.host != "::1" {
         return Err("--no-auth is only allowed on loopback binds".into());
     }
-    // PR mode: `ferro https://github.com/owner/repo/pull/N`
-    if let Some(raw) = cli.path.as_ref().and_then(|p| p.to_str()) {
-        if let Some(info) = ferro_core::pr::parse_pr_url(raw) {
-            return serve_pr(cli, info).await;
-        }
-    }
     // file:line launch: serve the repository root, open the file at the line.
     let mut initial: Option<(String, usize)> = None;
     let root = match cli.path.clone() {
         Some(p) => {
+            // PR mode: `ferro https://github.com/owner/repo/pull/N`
+            if let Some(raw) = p.to_str() {
+                if let Some(info) = ferro_core::pr::parse_pr_url(raw) {
+                    return serve_pr(cli, info).await;
+                }
+            }
             let s = p.to_string_lossy().to_string();
             match launch_target(&s) {
                 (r, Some((rel, l))) => {
@@ -79,26 +78,37 @@ async fn serve(cli: Cli) -> AnyhowResult {
             .unwrap_or_else(|_| PathBuf::from(".")),
     };
 
-    let state = Arc::new(ferro_core::Index::new(root.clone()));
-    let bg = state.clone();
-    tokio::spawn(async move { bg.rebuild().await });
-
-    server::serve(
-        state,
-        server::ServeOpts {
-            host: cli.host,
-            port: cli.port,
-            no_git: cli.no_git,
-            narrate: !cli.quiet,
-            no_open: cli.no_open,
-            initial,
-            token: cli.token.or_else(|| std::env::var("FERRO_TOKEN").ok()),
-            allow_hosts: allow_hosts(cli.allow_host),
-            no_auth: cli.no_auth,
-        },
+    let dirs = ferro_core::dirs::FerroDirs::resolve();
+    let o = ferro_server::server::ServeOpts {
+        host: cli.host.clone(),
+        port: cli.port,
+        no_git: cli.no_git,
+        narrate: !cli.quiet,
+        no_open: cli.no_open,
+        initial,
+        token: cli.token.or_else(|| std::env::var("FERRO_TOKEN").ok()),
+        allow_hosts: allow_hosts(cli.allow_host),
+        no_auth: cli.no_auth,
+        dev_web: cli.dev_web.clone(),
+    };
+    let h = ferro_server::server::serve(
+        root,
+        dirs,
+        ferro_server::Host::Cli,
+        env!("CARGO_PKG_VERSION").to_string(),
+        o,
     )
     .await;
+    if !cli.no_open {
+        let _ = open::that(&h.url);
+    }
+    wait_shutdown(h).await;
     Ok(())
+}
+
+async fn wait_shutdown(h: ferro_server::server::ServerHandle) {
+    let _ = tokio::signal::ctrl_c().await;
+    let _ = h.shutdown.send(());
 }
 
 /// Split `path:line` (line = trailing :digits, file must exist or parent dir must).
@@ -226,8 +236,14 @@ async fn serve_pr(cli: Cli, info: ferro_core::pr::PrInfo) -> AnyhowResult {
         work.base_ref,
         &work.base_sha[..8.min(work.base_sha.len())]
     );
-    let state = Arc::new(ferro_core::Index::new(work.dir.clone()));
-    state.set_pr(ferro_core::pr::PrCtx {
+    let dirs = ferro_core::dirs::FerroDirs::resolve();
+    let state = ferro_server::server::build_state(
+        work.dir.clone(),
+        dirs,
+        ferro_server::Host::Cli,
+        env!("CARGO_PKG_VERSION").to_string(),
+    );
+    state.ws().index.set_pr(ferro_core::pr::PrCtx {
         owner: work.info.owner.clone(),
         repo: work.info.repo.clone(),
         number: work.info.number,
@@ -235,28 +251,29 @@ async fn serve_pr(cli: Cli, info: ferro_core::pr::PrInfo) -> AnyhowResult {
         base_sha: work.base_sha.clone(),
         head_sha: work.head_sha.clone(),
     });
-    let bg = state.clone();
-    tokio::spawn(async move { bg.rebuild().await });
     // Keep the ephemeral worktree alive for the serve lifetime.
     let _keep = work;
     if cli.no_auth && cli.host != "127.0.0.1" && cli.host != "localhost" && cli.host != "::1" {
         return Err("--no-auth is only allowed on loopback binds".into());
     }
-    server::serve(
-        state,
-        server::ServeOpts {
-            host: cli.host,
-            port: cli.port,
-            no_git: cli.no_git,
-            narrate: !cli.quiet,
-            no_open: cli.no_open,
-            initial: None,
-            token: cli.token.or_else(|| std::env::var("FERRO_TOKEN").ok()),
-            allow_hosts: allow_hosts(cli.allow_host),
-            no_auth: cli.no_auth,
-        },
-    )
-    .await;
+    let o = ferro_server::server::ServeOpts {
+        host: cli.host.clone(),
+        port: cli.port,
+        no_git: cli.no_git,
+        narrate: !cli.quiet,
+        no_open: cli.no_open,
+        initial: None,
+        token: cli.token.or_else(|| std::env::var("FERRO_TOKEN").ok()),
+        allow_hosts: allow_hosts(cli.allow_host),
+        no_auth: cli.no_auth,
+        dev_web: cli.dev_web.clone(),
+    };
+    let (listener, bound) = ferro_server::server::bind_walk(&o.host, o.port).await;
+    let h = ferro_server::server::serve_with(state, listener, bound, o).await;
+    if !cli.no_open {
+        let _ = open::that(&h.url);
+    }
+    wait_shutdown(h).await;
     Ok(())
 }
 
