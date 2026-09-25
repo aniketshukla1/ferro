@@ -2,7 +2,7 @@
 //! Origin carries `refs/pull/7/head` like GitHub's pull refs.
 
 use ferro_forge::{CheckoutOpts, ForgeRef, OpenedPr};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
@@ -216,5 +216,75 @@ fn local_repo_path_reuses_remote() {
     );
     let bare = dirs.cache_dir.join("repos/github.com/o/r.git");
     assert!(!bare.exists(), "path A must not create a bare mirror");
-    let _ = PathBuf::from(".");
+}
+
+#[test]
+fn gc_removes_old_merged_worktrees() {
+    use ferro_forge::{gc_worktrees, WorktreeEntry};
+    let home = tempfile::tempdir().unwrap();
+    let state = home.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    // Old merged worktree (dir present, old mtime).
+    let old_wt = state.join("worktrees/old");
+    std::fs::create_dir_all(&old_wt).unwrap();
+    // Recent merged worktree: kept (age gate).
+    let new_wt = state.join("worktrees/new");
+    std::fs::create_dir_all(&new_wt).unwrap();
+    // Missing dir: stale registration dropped.
+    let gone = state.join("worktrees/gone");
+    let entries = vec![
+        WorktreeEntry {
+            dir: old_wt.clone(),
+            main_repo: old_wt.clone(),
+            url: "https://github.com/o/r/pull/1".into(),
+            opened_at: "".into(),
+        },
+        WorktreeEntry {
+            dir: new_wt.clone(),
+            main_repo: new_wt.clone(),
+            url: "https://github.com/o/r/pull/2".into(),
+            opened_at: "".into(),
+        },
+        WorktreeEntry {
+            dir: gone.clone(),
+            main_repo: gone.clone(),
+            url: "https://github.com/o/r/pull/3".into(),
+            opened_at: "".into(),
+        },
+        WorktreeEntry {
+            dir: new_wt.clone(),
+            main_repo: new_wt.clone(),
+            url: "not a url".into(),
+            opened_at: "".into(),
+        },
+    ];
+    std::fs::write(
+        state.join("worktrees.json"),
+        serde_json::to_string(&entries).unwrap(),
+    )
+    .unwrap();
+    // Backdate the old dir 8 days (creation time is now for both).
+    let eight_days = std::time::Duration::from_secs(8 * 86400);
+    let old_time = std::time::SystemTime::now() - eight_days;
+    set_mtime(&old_wt, old_time);
+    let removed = gc_worktrees(&state, 7, &|r| {
+        if r.number == 1 {
+            Some("merged".into())
+        } else {
+            Some("open".into())
+        }
+    });
+    assert_eq!(removed, vec![old_wt.clone()]);
+    assert!(!old_wt.exists());
+    assert!(new_wt.exists());
+}
+
+#[cfg(unix)]
+fn set_mtime(p: &std::path::Path, t: std::time::SystemTime) {
+    std::fs::File::open(p).unwrap().set_modified(t).unwrap();
+}
+
+#[cfg(not(unix))]
+fn set_mtime(_p: &std::path::Path, _t: std::time::SystemTime) {
+    // Age gate untestable here; gc still drops the missing dir.
 }

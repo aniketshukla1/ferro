@@ -30,6 +30,91 @@ pub struct OpenedPr {
     pub reused: bool,
 }
 
+/// Central registry of PR worktrees (drives `ferro gc`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WorktreeEntry {
+    pub dir: PathBuf,
+    pub main_repo: PathBuf,
+    pub url: String,
+    pub opened_at: String,
+}
+
+fn registry_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("worktrees.json")
+}
+
+fn read_registry(state_dir: &Path) -> Vec<WorktreeEntry> {
+    let Ok(text) = std::fs::read_to_string(registry_path(state_dir)) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+fn write_registry(state_dir: &Path, entries: &[WorktreeEntry]) {
+    if std::fs::create_dir_all(state_dir).is_err() {
+        return;
+    }
+    if let Ok(bytes) = serde_json::to_string_pretty(entries) {
+        let _ = ferro_core::settings::atomic_write(&registry_path(state_dir), bytes.as_bytes());
+    }
+}
+
+fn now_iso() -> String {
+    use time::format_description::well_known::Rfc3339;
+    time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default()
+}
+
+/// Remove worktrees of merged/closed PRs older than `older_than_days`.
+/// `state_of` returns "merged"/"closed"/"open" (None = unknown, skipped).
+/// Returns removed dirs. Stale registry entries (dir gone) are dropped.
+pub fn gc_worktrees(
+    state_dir: &Path,
+    older_than_days: u64,
+    state_of: &dyn Fn(&ForgeRef) -> Option<String>,
+) -> Vec<PathBuf> {
+    let entries = read_registry(state_dir);
+    let mut kept = Vec::new();
+    let mut removed = Vec::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for e in entries {
+        let age_ok = std::fs::metadata(&e.dir)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| now.saturating_sub(d.as_secs()) > older_than_days * 86400)
+            .unwrap_or(false);
+        let Some(url) = super::parse::parse_pr_url(&e.url) else {
+            if e.dir.exists() {
+                kept.push(e);
+            }
+            continue;
+        };
+        if !e.dir.exists() {
+            // Stale registration; also prune the main repo's list.
+            let main = ferro_core::git::GitRepo::new(e.main_repo.clone());
+            let _ = main.run(&["worktree", "prune"]);
+            continue;
+        }
+        match state_of(&url).as_deref() {
+            Some("merged") | Some("closed") if age_ok => {
+                let main = ferro_core::git::GitRepo::new(e.main_repo.clone());
+                let _ = main.run(&["worktree", "remove", "--force", &e.dir.to_string_lossy()]);
+                let _ = std::fs::remove_dir_all(&e.dir);
+                let _ = main.run(&["worktree", "prune"]);
+                removed.push(e.dir);
+            }
+            _ => kept.push(e),
+        }
+    }
+    write_registry(state_dir, &kept);
+    removed
+}
+
 pub fn worktree_dir(state_dir: &Path, r: &ForgeRef) -> PathBuf {
     state_dir
         .join("worktrees")
@@ -279,6 +364,7 @@ fn attach_worktree(
     )
     .map_err(|_| ForgeError::Schema("worktree add failed".into()))?;
     harden(&wt, opts)?;
+    register_worktree(dirs, r, repo, &wt);
     progress("merge-base");
     let cur = ferro_core::git::GitRepo::new(wt.clone());
     let mb = merge_base(&cur, &meta.base_sha)?;
@@ -310,6 +396,25 @@ fn merge_base(wt: &ferro_core::git::GitRepo, base_sha: &str) -> Result<String, F
         })
         .map_err(|_| ForgeError::Schema("merge-base failed".into()))?;
     Ok(mb.trim().to_string())
+}
+
+/// Record the worktree for `ferro gc` (idempotent per dir).
+fn register_worktree(
+    dirs: &ferro_core::dirs::FerroDirs,
+    r: &ForgeRef,
+    repo: &ferro_core::git::GitRepo,
+    wt: &Path,
+) {
+    let mut entries = read_registry(&dirs.state_dir);
+    if !entries.iter().any(|e| e.dir == wt) {
+        entries.push(WorktreeEntry {
+            dir: wt.to_path_buf(),
+            main_repo: repo.root.clone(),
+            url: r.html_url(),
+            opened_at: now_iso(),
+        });
+        write_registry(&dirs.state_dir, &entries);
+    }
 }
 
 /// Hardened config for untrusted checkouts: no hooks, no fsmonitor, no

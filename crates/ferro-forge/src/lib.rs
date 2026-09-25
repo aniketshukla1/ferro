@@ -10,7 +10,7 @@ pub mod parse;
 pub mod store;
 pub mod token;
 
-pub use checkout::{open_pr, CheckoutOpts, OpenedPr};
+pub use checkout::{gc_worktrees, open_pr, CheckoutOpts, OpenedPr, WorktreeEntry};
 pub use error::ForgeError;
 pub use github::GitHub;
 pub use parse::{parse_pr_url, ForgeRef};

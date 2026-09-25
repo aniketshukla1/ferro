@@ -328,12 +328,78 @@ async fn run_open_job(
         });
     });
     crate::watch::start(s);
+    start_poll(s, session.clone());
     s.bus.publish(crate::bus::ServerEvent::Workspace {
         key,
         root: opened.dir.to_string_lossy().to_string(),
         mode: "pr".into(),
     });
     job_done(s, job_id, pr_meta_json(&ws, &session));
+}
+
+/// Poll remote metadata + threads every 60 s (ETag-cached in the client).
+/// Emits `pr` / `threads` on change. Stops when the workspace moves on.
+fn start_poll(s: &Arc<AppState>, session: Arc<PrSession>) {
+    let s2 = s.clone();
+    tokio::spawn(async move {
+        let mut last_threads = threads_hash(&session).await;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            // Still the active PR session?
+            let live = s2
+                .ws()
+                .pr
+                .as_ref()
+                .map(|p| Arc::ptr_eq(p, &session))
+                .unwrap_or(false);
+            if !live {
+                break;
+            }
+            // Metadata first (cheap, ETag-cached).
+            match session.github.pull(&session.pr_ref).await {
+                Ok(meta) => {
+                    let changed = meta.head_sha != session.meta.read().head_sha
+                        || meta.updated_at != session.meta.read().updated_at
+                        || meta.merged != session.meta.read().merged
+                        || meta.state != session.meta.read().state;
+                    if changed {
+                        *session.meta.write() = meta;
+                        let ws = s2.ws();
+                        s2.bus.publish(crate::bus::ServerEvent::Pr {
+                            pr: pr_meta_json(&ws, &session),
+                        });
+                    }
+                }
+                Err(_) => continue,
+            }
+            let h = threads_hash(&session).await;
+            if h != last_threads {
+                last_threads = h;
+                s2.bus
+                    .publish(crate::bus::ServerEvent::Threads { changed: true });
+            }
+        }
+    });
+}
+
+/// Best-effort hash of the thread list (ids, flags, comment ids + bodies).
+async fn threads_hash(session: &Arc<PrSession>) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let Ok(threads) = session.github.threads(&session.pr_ref).await else {
+        return 0;
+    };
+    let mut h = DefaultHasher::new();
+    for t in &threads {
+        t.id.hash(&mut h);
+        t.resolved.hash(&mut h);
+        t.outdated.hash(&mut h);
+        for c in &t.comments {
+            c.id.hash(&mut h);
+            c.body.hash(&mut h);
+        }
+    }
+    h.finish()
 }
 
 async fn refresh(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {

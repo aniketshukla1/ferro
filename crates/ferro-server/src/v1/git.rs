@@ -240,6 +240,9 @@ async fn commit(
 
 async fn push(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
     let ws = s.ws();
+    if let Some(session) = ws.pr.as_ref() {
+        return push_pr(&s, &ws, session).await;
+    }
     let g = ws.git.as_ref().ok_or_else(no_git)?.repo.clone();
     tokio::task::spawn_blocking(move || {
         g.push().map_err(map_err).and_then(|output| {
@@ -253,6 +256,9 @@ async fn push(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>,
 
 async fn pull(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
     let ws = s.ws();
+    if let Some(session) = ws.pr.as_ref() {
+        return pull_pr(&s, &ws, session).await;
+    }
     let g = ws.git.as_ref().ok_or_else(no_git)?.repo.clone();
     tokio::task::spawn_blocking(move || {
         g.pull_ff().map_err(map_err).and_then(|(output, updated)| {
@@ -263,6 +269,110 @@ async fn pull(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>,
     .await
     .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))?
     .map(Json)
+}
+
+// -- PR-mode push/pull -----------------------------------------------------------
+// Push `HEAD:refs/heads/<headRef>` to the head repo URL (fork-aware), never
+// forced. Pull fetches the PR head and fast-forwards only a clean,
+// ancestor worktree; anything else is a 409.
+
+async fn push_pr(
+    _s: &Arc<AppState>,
+    ws: &Arc<crate::state::Workspace>,
+    session: &Arc<crate::state::PrSession>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let token = session.token.clone().ok_or_else(|| {
+        ApiError::detail(
+            ErrorCode::Unauthorized,
+            "no forge token",
+            serde_json::json!({ "hint": "set GITHUB_TOKEN / GH_TOKEN, `gh auth login`, or the OS keychain (B8)" }),
+        )
+    })?;
+    let meta = session.meta.read().clone();
+    let url = meta
+        .head_clone_url
+        .clone()
+        .unwrap_or_else(|| session.pr_ref.clone_url());
+    let refspec = format!("HEAD:refs/heads/{}", meta.head_ref);
+    let auth = ferro_forge::token::git_auth_env(&url, &token);
+    let repo = ferro_core::git::GitRepo::new(ws.root.clone()).with_env(auth);
+    let out = tokio::task::spawn_blocking(move || repo.run_net(&["push", &url, &refspec]))
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))?;
+    let ok = out.is_ok();
+    session
+        .can_push_known
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    *session.can_push.write() = Some(ok);
+    match out {
+        Ok(output) => {
+            let ws2 = ws.clone();
+            let st = tokio::task::spawn_blocking(move || {
+                fresh_status(&ferro_core::git::GitRepo::new(ws2.root.clone()), &ws2)
+            })
+            .await
+            .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))??;
+            Ok(Json(serde_json::json!({ "output": output, "status": st })))
+        }
+        Err(e) => Err(map_err(e)),
+    }
+}
+
+async fn pull_pr(
+    _s: &Arc<AppState>,
+    ws: &Arc<crate::state::Workspace>,
+    session: &Arc<crate::state::PrSession>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let n = session.pr_ref.number;
+    let auth = session
+        .token
+        .clone()
+        .map(|t| ferro_forge::token::git_auth_env(&session.pr_ref.clone_url(), &t))
+        .unwrap_or_default();
+    let ws2 = ws.clone();
+    let session2 = session.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        let repo = ferro_core::git::GitRepo::new(ws2.root.clone()).with_env(auth);
+        let pref = format!("refs/ferro/pr/{n}");
+        repo.run_net(&["fetch", "origin", &format!("pull/{n}/head:{pref}")])
+            .map_err(map_err)?;
+        let head = repo.run(&["rev-parse", "HEAD"]).map_err(map_err)?;
+        let fetched = repo.run(&["rev-parse", &pref]).map_err(map_err)?;
+        let head = head.trim().to_string();
+        let fetched = fetched.trim().to_string();
+        if head == fetched {
+            let st = fresh_status(&repo, &ws2)?;
+            return Ok::<_, ApiError>((String::new(), false, st));
+        }
+        // Clean tree required.
+        let dirty = !repo.status_v2().map_err(map_err)?.files.is_empty();
+        if dirty {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "worktree dirty; stash or discard first",
+            ));
+        }
+        // Ancestor required (never forced).
+        let ancestor = repo
+            .run(&["merge-base", "--is-ancestor", &head, &fetched])
+            .is_ok();
+        if !ancestor {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "PR head diverged; refresh to rebase",
+            ));
+        }
+        let output = repo.run(&["reset", "--hard", &fetched]).map_err(map_err)?;
+        session2.worktree.write().head_sha = fetched;
+        let st = fresh_status(&repo, &ws2)?;
+        Ok((output, true, st))
+    })
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))??;
+    let (output, updated, st) = out;
+    Ok(Json(
+        serde_json::json!({ "output": output, "updated": updated, "status": st }),
+    ))
 }
 
 // -- file diff ---------------------------------------------------------------
