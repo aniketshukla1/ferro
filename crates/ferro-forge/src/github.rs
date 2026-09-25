@@ -618,6 +618,7 @@ pub struct ReviewThread {
     pub start_line: Option<u64>,
     pub side: String,
     pub original_line: Option<u64>,
+    pub commit_sha: Option<String>,
     pub outdated: bool,
     pub resolved: bool,
     pub comments: Vec<ForgeComment>,
@@ -636,6 +637,11 @@ impl ReviewThread {
             start_line: v.get("startLine").and_then(|n| n.as_u64()),
             side: side.into(),
             original_line: v.get("originalLine").and_then(|n| n.as_u64()),
+            commit_sha: v
+                .get("commit")
+                .and_then(|c| c.get("oid"))
+                .and_then(|o| o.as_str())
+                .map(|s| s.into()),
             outdated: v
                 .get("isOutdated")
                 .and_then(|b| b.as_bool())
@@ -710,4 +716,4 @@ pub struct SubmitResponse {
     pub state: String,
 }
 
-const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{id isResolved isOutdated path line startLine diffSide originalLine comments(first:100){nodes{id databaseId author{login avatarUrl}body createdAt url}}}pageInfo{hasNextPage endCursor}}}}}";
+const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{id isResolved isOutdated path line startLine diffSide originalLine commit{oid} comments(first:100){nodes{id databaseId author{login avatarUrl}body createdAt url}}}pageInfo{hasNextPage endCursor}}}}}";

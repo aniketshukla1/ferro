@@ -20,7 +20,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/v1/pr/refresh", post(refresh))
 }
 
-fn forge_err(e: ferro_forge::ForgeError) -> ApiError {
+pub(crate) fn forge_err(e: ferro_forge::ForgeError) -> ApiError {
     let code = match e.code() {
         "bad_request" => ErrorCode::BadRequest,
         "unauthorized" => ErrorCode::Unauthorized,
