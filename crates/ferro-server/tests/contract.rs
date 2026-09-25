@@ -179,12 +179,40 @@ async fn file_lines_window() {
     assert!(v["lines"].as_array().unwrap().is_empty());
     // maxCols cut is flagged.
     let (s, v) = j(
-        app,
+        app.clone(),
         "/api/v1/file/lines?path=main.rs&from=1&count=3&hl=0&maxCols=4",
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["lines"][0]["cut"], 11);
+    // Review fix: with highlighting on, a cut line is still truncated plain text
+    // (highlighted HTML would carry the whole line and ignore maxCols).
+    let (s, v) = j(
+        app.clone(),
+        "/api/v1/file/lines?path=main.rs&from=1&count=3&hl=1&maxCols=4",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["lines"][0]["cut"], 11);
+    assert_eq!(v["lines"][0]["text"], "fn m");
+    assert!(v["lines"][0].get("html").is_none(), "{v}");
+    // Line 2 is also over 4 units (cut); line 3 (`}`) fits and keeps its HTML.
+    assert!(v["lines"][1]["cut"].is_number(), "{v}");
+    assert_eq!(v["lines"][2]["html"], "}", "{v}");
+    assert!(v["lines"][2].get("cut").is_none(), "{v}");
+}
+
+/// Review fix: CRLF files never leak `\r` or `\n` into highlighted lines.
+#[tokio::test]
+async fn crlf_lines_have_no_terminators() {
+    let (app, d, _h) = state();
+    std::fs::write(d.path().join("w.rs"), "//! doc\r\nfn a() {} // c\r\n").unwrap();
+    let (s, v) = j(app, "/api/v1/file/lines?path=w.rs&from=1&count=2&hl=1").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    for l in v["lines"].as_array().unwrap() {
+        let html = l["html"].as_str().or(l["text"].as_str()).unwrap();
+        assert!(!html.contains('\r') && !html.contains('\n'), "{l}");
+    }
 }
 
 #[tokio::test]

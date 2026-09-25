@@ -55,7 +55,7 @@ export function connectEvents({ metrics = true } = {}) {
     source = t.events({ onEvent: dispatch, onOpen, onError: onDown, metrics });
     return;
   }
-  // API.md says ?metrics=1 but B1 parses a strict bool; "true" works with both.
+  // API.md says ?metrics=1; early B1 builds only parsed a strict bool, so send "true" (accepted by all).
   const es = new EventSource(t.eventsUrl({ metrics: metrics ? 'true' : undefined }));
   source = es;
   es.onopen = onOpen;

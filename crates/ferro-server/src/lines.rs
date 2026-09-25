@@ -131,9 +131,12 @@ pub fn read_window_bytes_with(
             got += r;
         }
         buf.truncate(got);
-        // Strip one trailing \n (the offset table already accounts for it).
+        // Strip the terminator (\n or \r\n); the offset table already accounts for it.
         if buf.last() == Some(&b'\n') {
             buf.pop();
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
         }
         out.push((n + 1, std::mem::take(&mut buf)));
     }
@@ -160,6 +163,20 @@ mod tests {
         assert_eq!(win[1], (3, b"l3".to_vec()));
         let (win, _) = read_window_bytes_with(&idx, &p, 99, 5).unwrap();
         assert!(win.is_empty());
+    }
+
+    #[test]
+    fn crlf_terminators_are_stripped() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("crlf.txt");
+        std::fs::write(&p, "a\r\nb\r\nc").unwrap();
+        let idx = LineIndex::new();
+        let (win, total) = read_window_bytes_with(&idx, &p, 1, 3).unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(
+            win,
+            vec![(1, b"a".to_vec()), (2, b"b".to_vec()), (3, b"c".to_vec())]
+        );
     }
 
     #[test]

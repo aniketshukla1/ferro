@@ -20,6 +20,29 @@ pub enum PathError {
     Protected,
 }
 
+/// VCS metadata directories, compared ASCII case-insensitively (APFS/NTFS are
+/// case-insensitive, so `.GIT/hooks` is `.git/hooks`).
+fn is_vcs_dir(seg: &str) -> bool {
+    [".git", ".hg", ".svn"]
+        .iter()
+        .any(|p| seg.eq_ignore_ascii_case(p))
+}
+
+/// Writes must not land in VCS metadata even through a symlink: check the
+/// resolved path's components below the root, not just the requested text.
+fn guard_write(root: &Path, resolved: PathBuf, access: Access) -> Result<PathBuf, PathError> {
+    if access == Access::Write {
+        let below = resolved.strip_prefix(root).unwrap_or(&resolved);
+        if below
+            .components()
+            .any(|c| matches!(c, Component::Normal(s) if s.to_str().is_some_and(is_vcs_dir)))
+        {
+            return Err(PathError::Protected);
+        }
+    }
+    Ok(resolved)
+}
+
 pub fn resolve(root: &Path, rel: &str, access: Access) -> Result<PathBuf, PathError> {
     // Canonical root when it exists so every later comparison is consistent
     // (macOS /tmp is a symlink). When the root itself is missing there is
@@ -56,12 +79,13 @@ pub fn resolve(root: &Path, rel: &str, access: Access) -> Result<PathBuf, PathEr
             return Err(PathError::Escapes);
         }
     }
-    if access == Access::Write {
-        for seg in rel.split('/').filter(|s| !s.is_empty() && *s != ".") {
-            if seg == ".git" || seg == ".hg" || seg == ".svn" {
-                return Err(PathError::Protected);
-            }
-        }
+    if access == Access::Write
+        && rel
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .any(is_vcs_dir)
+    {
+        return Err(PathError::Protected);
     }
     // Join to the root. When the root is canonical, every comparison below
     // is symlink-aware; otherwise the lexical containment check stands alone.
@@ -71,7 +95,7 @@ pub fn resolve(root: &Path, rel: &str, access: Access) -> Result<PathBuf, PathEr
         if root_canon.is_some() {
             let rc = root_canon.as_deref().unwrap();
             if canon == rc || canon.starts_with(rc) {
-                return Ok(canon);
+                return guard_write(rc, canon, access);
             }
             return Err(PathError::Escapes);
         }
@@ -110,7 +134,7 @@ pub fn resolve(root: &Path, rel: &str, access: Access) -> Result<PathBuf, PathEr
                         other => clean.push(other.as_os_str()),
                     }
                 }
-                return Ok(clean);
+                return guard_write(rc, clean, access);
             }
             return Err(PathError::Escapes);
         }
@@ -204,5 +228,43 @@ mod tests {
         // Missing targets resolve (existence is checked by the caller layer).
         assert!(resolve(&root, ".git/config", Access::Read).is_ok());
         assert!(resolve(&root, "src/main.rs", Access::Write).is_ok());
+    }
+
+    /// Review fix: case variants and symlinks into VCS metadata are writes into it.
+    #[test]
+    fn vcs_dirs_protected_case_insensitively_and_through_symlinks() {
+        let r = root();
+        let root = r.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        for p in [
+            ".GIT/config",
+            ".Git/hooks/pre-commit",
+            "sub/.HG/x",
+            ".SvN/y",
+        ] {
+            assert_eq!(
+                resolve(&root, p, Access::Write),
+                Err(PathError::Protected),
+                "{p}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join(".git"), root.join("link")).unwrap();
+            // Missing target below the link (new hook) and an existing directory.
+            assert_eq!(
+                resolve(&root, "link/hooks/pre-commit", Access::Write),
+                Err(PathError::Protected)
+            );
+            assert_eq!(
+                resolve(&root, "link/hooks", Access::Write),
+                Err(PathError::Protected)
+            );
+            // Reads through the same link stay allowed (inside the workspace).
+            assert!(resolve(&root, "link/hooks", Access::Read).is_ok());
+        }
+        // Names that merely contain the letters are fine.
+        assert!(resolve(&root, "docs/.gitignore-notes/x", Access::Write).is_ok());
+        assert!(resolve(&root, "my.git/x", Access::Write).is_ok());
     }
 }

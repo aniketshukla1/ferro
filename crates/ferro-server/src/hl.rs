@@ -195,6 +195,10 @@ pub fn highlight_line(
     parse: &mut ParseState,
     stack: &mut ScopeStack,
 ) -> String {
+    // Output covers the line's content only, never its terminator (`\n`, `\r\n`):
+    // scopes that end at the newline (line and doc comments) must not pull it in.
+    let content = line.trim_end_matches('\n').trim_end_matches('\r');
+    let end = content.len();
     let with_nl;
     let src = if line.ends_with('\n') {
         line
@@ -204,7 +208,7 @@ pub fn highlight_line(
     };
     let ops = match parse.parse_line(src, ss) {
         Ok(ops) => ops,
-        Err(_) => return escape_text(line),
+        Err(_) => return escape_text(content),
     };
     let mut out = String::with_capacity(line.len() + 32);
     let mut pos = 0usize;
@@ -232,20 +236,20 @@ pub fn highlight_line(
                 flush(&mut out, &mut run, &mut open);
                 open = cls;
             }
-            run.push_str(&src[pos..off]);
+            // Clamp to the content: the terminator is not part of the line.
+            let (a, b) = (pos.min(end), off.min(end));
+            run.push_str(&src[a..b]);
             pos = off;
         }
         let _ = stack.apply(op);
     }
-    if pos < src.len() {
-        // Trailing newline slice is not part of the line.
-        let tail = src[pos..].trim_end_matches('\n');
+    if pos < end {
         let cls = class_for(stack.as_slice());
         if cls != open {
             flush(&mut out, &mut run, &mut open);
             open = cls;
         }
-        run.push_str(tail);
+        run.push_str(&src[pos..end]);
     }
     flush(&mut out, &mut run, &mut open);
     out
@@ -300,6 +304,9 @@ fn file_ver(path: &Path) -> Option<(FileVer, u64)> {
 /// Windowed highlighter with exact-pass cache (B1).
 /// Windows LRU is byte-budgeted (64 MiB); exact passes are cached per file
 /// version (8 files) and announced through `on_exact` for `hl` events.
+/// Cloning is cheap and shares every cache: callers clone it out of the
+/// workspace mutex instead of holding that lock while highlighting.
+#[derive(Clone)]
 pub struct Highlighter {
     windows: Arc<parking_lot::Mutex<lru::LruCache<String, HlWindow>>>,
     windows_bytes: Arc<parking_lot::Mutex<usize>>,
@@ -384,13 +391,20 @@ impl Highlighter {
         }
         Some(Arc::new(out))
     }
+    /// Highlight `count` lines from 0-based `start` of a file with `total` lines.
+    /// Cache hits cost nothing; a miss replays up to 400 lines of context before
+    /// the window, fetched through `load(first, n)` (0-based first line, line
+    /// count, content without terminators) so only those lines are read (O(window)).
+    #[allow(clippy::too_many_arguments)]
     pub fn window(
         &self,
         path: &Path,
         rel: &str,
         start: usize,
         count: usize,
+        total: usize,
         language: Option<&str>,
+        load: impl FnOnce(usize, usize) -> Option<Vec<String>>,
     ) -> Option<HlWindow> {
         let ss = syntax_set();
         let syntax = find_syntax(ss, language, Some(path));
@@ -427,22 +441,17 @@ impl Highlighter {
         }
         // Approximate: replay from up to 400 lines before the window.
         let from = start.saturating_sub(400);
-        let text = std::fs::read(path).ok()?;
-        let text = String::from_utf8_lossy(&text);
-        let all: Vec<&str> = text.split('\n').collect();
-        // Trailing newline does not add a line.
-        let total = if text.ends_with('\n') {
-            all.len().saturating_sub(1)
-        } else {
-            all.len()
-        };
+        let raws = load(from, start - from + count)?;
         let mut parse = ParseState::new(syntax);
         let mut stack = ScopeStack::new();
-        let mut lines = Vec::new();
-        for (i, raw) in all.iter().enumerate().skip(from).take(start - from + count) {
+        let mut lines = Vec::with_capacity(count);
+        for (i, raw) in raws.iter().enumerate() {
             let html = highlight_line(raw, ss, &mut parse, &mut stack);
-            if i >= start {
-                lines.push(HlLine { n: i + 1, html });
+            if from + i >= start {
+                lines.push(HlLine {
+                    n: from + i + 1,
+                    html,
+                });
             }
         }
         let w = HlWindow {
@@ -544,12 +553,56 @@ mod tests {
         std::fs::write(&p, &src).unwrap();
         let h = Highlighter::new();
         // Approximation from 400 lines of context lands inside the comment.
-        let w = h.window(&p, "big.py", 2500, 3, Some("py")).unwrap();
+        let idx = crate::lines::LineIndex::new();
+        let total = idx.total_lines(&p).unwrap();
+        let mut asked = None;
+        let w = h
+            .window(&p, "big.py", 2500, 3, total, Some("py"), |first, n| {
+                asked = Some((first, n));
+                let (win, _) = crate::lines::read_window_bytes_with(&idx, &p, first + 1, n).ok()?;
+                Some(
+                    win.into_iter()
+                        .map(|(_, b)| String::from_utf8_lossy(&b).into_owned())
+                        .collect(),
+                )
+            })
+            .unwrap();
         assert!(!w.exact);
+        assert_eq!(w.total, 2602);
+        assert_eq!(
+            w.lines.iter().map(|l| l.n).collect::<Vec<_>>(),
+            vec![2501, 2502, 2503]
+        );
+        // Only the 400-line lookback plus the window is read, not the file.
+        assert_eq!(asked, Some((2100, 403)));
         // Exact pass: code lines are strings, not comments.
         let full = Highlighter::exact_pass_sync(&p, "Python").unwrap();
         assert_eq!(full.len(), 2602);
         assert!(!full[2500].contains("t-c"), "{}", full[2500]);
         assert!(full[2500].contains("t-s"), "{}", full[2500]);
+    }
+
+    /// Review fix: scopes that end at the newline (doc and line comments) must
+    /// not pull the terminator into the HTML, and CRLF must not leave `\r`.
+    #[test]
+    fn line_html_never_contains_the_terminator() {
+        let ss = syntax_set();
+        for (ext, line) in [
+            ("rs", "//! Ferro HTTP boundary"),
+            ("rs", "let x = 1; // trailing"),
+            ("py", "x = 1  # comment"),
+            ("rs", "let s = \"crlf\";\r"),
+            ("rs", "/// doc\r\n"),
+        ] {
+            let syntax = ss.find_syntax_by_extension(ext).unwrap();
+            let mut parse = ParseState::new(syntax);
+            let mut stack = ScopeStack::new();
+            let html = highlight_line(line, ss, &mut parse, &mut stack);
+            assert!(
+                !html.contains('\n') && !html.contains('\r'),
+                "{line:?} -> {html:?}"
+            );
+            assert!(html.contains("t-"), "{html}");
+        }
     }
 }
