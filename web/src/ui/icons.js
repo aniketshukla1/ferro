@@ -116,7 +116,10 @@ export function markGlyph() {
   return svg;
 }
 
-/** A <span class="mark"> brand mark. */
+/** The tagline, in one place (docs/BRAND.md). */
+export const TAGLINE = 'Iron-clad code review.';
+
+/** A <span class="mark"> brand mark: the forge square (ember gradient, white F; docs/BRAND.md). */
 export function brandMark(cls = '') {
   const span = document.createElement('span');
   span.className = `mark ${cls}`.trim();

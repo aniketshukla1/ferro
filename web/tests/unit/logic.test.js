@@ -116,7 +116,7 @@ test('joinPath resolves relative markdown links inside the workspace', async () 
 });
 
 test('search hits drop indentation and keep the match in view', async () => {
-  const { focusHit } = await import('../../src/features/panels.js');
+  const { focusHit } = await import('../../src/core/text.js');
   const a = focusHit('        server::build_router(state)', [[16, 28]]);
   assert.equal(a.text, 'server::build_router(state)');
   assert.deepEqual(a.ranges, [[8, 20]]);

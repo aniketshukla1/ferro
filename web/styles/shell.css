@@ -31,13 +31,23 @@
 .brand { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: var(--r-md); }
 .brand:hover { background: var(--hover); }
 
+/* the forge square (docs/BRAND.md): the one place the UI keeps brand color */
 .mark {
   position: relative; flex: none;
   display: inline-grid; place-items: center;
-  width: 20px; height: 20px; border-radius: 6px;
-  background: var(--fg);
+  width: 22px; height: 22px; border-radius: 22%;
+  background: linear-gradient(135deg, #ff8c2e 0%, #f2542d 55%, #c22e3d 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
-.mark svg { width: 62%; height: 62%; fill: var(--bg-chrome); stroke: none; }
+.mark svg { width: 62%; height: 62%; fill: #fff; stroke: none; }
+.mark.sm { width: 16px; height: 16px; }
+.mark.lg { width: 40px; height: 40px; }
+
+/* boot splash (static markup in next.html, replaced when the shell mounts) */
+.boot { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg-chrome); }
+.boot .mark { animation: boot-in var(--dur-3) 160ms both, boot-pulse 1.4s ease-in-out 600ms infinite; }
+@keyframes boot-in { from { opacity: 0; transform: scale(0.94); } }
+@keyframes boot-pulse { 50% { opacity: 0.55; } }
 
 .ws-chip {
   display: flex; align-items: center; gap: var(--sp-4);

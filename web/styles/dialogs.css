@@ -84,7 +84,7 @@ textarea.input { height: auto; min-height: 64px; padding: 6px 10px; resize: vert
   background: var(--bg-1);
   box-shadow: var(--shadow-lg);
 }
-.auth-card .mark { width: 32px; height: 32px; border-radius: 9px; margin-bottom: var(--sp-3); }
+.auth-card .mark { width: 36px; height: 36px; margin-bottom: var(--sp-3); }
 .auth-card h1 { font-size: var(--fs-xl); font-weight: 600; letter-spacing: var(--tracking-tight); }
 .auth-card > .i { color: var(--fg-muted); }
 .auth-code {

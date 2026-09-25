@@ -51,7 +51,11 @@
 
 .home-hints { display: flex; flex-wrap: wrap; gap: var(--sp-4) var(--sp-7); padding-top: var(--sp-6); border-top: 1px solid var(--border); }
 .home-hints li { display: inline-flex; align-items: center; gap: var(--sp-3); color: var(--fg-muted); font-size: var(--fs-sm); }
-.home-foot { color: var(--fg-faint); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.home-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); color: var(--fg-faint); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.home-foot .mark { margin-right: 2px; }
+.home-foot .hf-name { color: var(--fg); font-weight: 600; font-size: var(--fs-sm); letter-spacing: var(--tracking-tight); }
+.home-foot .hf-tag { color: var(--fg-muted); }
+.home-foot .hm-dot { color: var(--fg-faint); }
 
 @media (max-width: 760px) {
   .home-inner { width: calc(100% - 32px); padding-top: 6vh; }

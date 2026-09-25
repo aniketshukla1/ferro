@@ -1,4 +1,6 @@
 // ferro frontend entry: boot, feature wiring, commands and shortcuts.
+// Boot graph: shell, tree, tabs, code viewer, home, status bar. Everything else loads on first
+// use and is warmed up while the browser is idle (FRONTEND.md § 3.1).
 import { h, mount } from './core/dom.js';
 import { api, has } from './core/api.js';
 import { store } from './core/store.js';
@@ -6,24 +8,32 @@ import { bus } from './core/bus.js';
 import { connectEvents } from './core/sse.js';
 import { installKeymap, setHostGetter, bindKey } from './core/keys.js';
 import { command, execute } from './core/commands.js';
+import { debounce, lazy, whenIdle } from './core/util.js';
 import { installTooltips, toast } from './ui/overlay.js';
 import { icon } from './ui/icons.js';
 import { buildShell } from './features/shell.js';
 import { session } from './features/session.js';
 import { applySettingsTheme, cycleTheme, toggleLightDark } from './features/themes.js';
-import { compatGitStatus } from './features/compat.js';
-import { debounce } from './core/util.js';
+import { applyUiSettings } from './features/prefs.js';
 import { createHome } from './features/home.js';
 import { createEditor } from './features/editor.js';
 import { createTree } from './features/tree.js';
-import { createPalette } from './features/palette.js';
 import { createStatusBar } from './features/status.js';
-import { renderChangesPanel, renderSearchPanel, renderOutlinePanel } from './features/panels.js';
-import { showKeyboardHelp, showAuthScreen, watchConnection, renderInfoTab, renderAiTab } from './features/chrome.js';
-import { openSettings, applyUiSettings } from './features/settings.js';
-import { createFind } from './features/find.js';
+import { watchConnection } from './features/connection.js';
+
+// On-demand modules (same URL as the static import would use, so the module map dedupes them).
+const load = {
+  palette: lazy(() => import('./features/palette.js')),
+  panels: lazy(() => import('./features/panels.js')),
+  find: lazy(() => import('./features/find.js')),
+  settings: lazy(() => import('./features/settings.js')),
+  chrome: lazy(() => import('./features/chrome.js')),
+  compat: lazy(() => import('./features/compat.js')),
+  markdown: lazy(() => import('./features/markdown.js')),
+};
 
 async function boot() {
+  performance.mark('ferro:boot');
   const root = document.getElementById('app');
   const params = new URLSearchParams(location.search);
   const mockMode = params.has('mock') ? (params.get('mock') || '1') : null;
@@ -46,7 +56,7 @@ async function boot() {
     ]);
   } catch (e) {
     root.removeAttribute('aria-busy');
-    if (e.status === 401) showAuthScreen(root);
+    if (e.status === 401) (await load.chrome()).showAuthScreen(root);
     else showOffline(root, e);
     return;
   }
@@ -60,6 +70,7 @@ async function boot() {
 
   const autoReveal = () => store.get('settings')?.['ui.autoReveal'] !== false;
   const shell = buildShell(root);
+  performance.mark('ferro:shell');
   const home = createHome({ onOpen: (p, o) => editor.open(p, o) });
   const editor = createEditor(shell, { home });
   // On narrow screens the sidebar overlays the editor: close it once a file is chosen.
@@ -93,20 +104,23 @@ async function boot() {
     },
     onShow: ({ focus }) => { if (focus) tree?.focus(); },
   });
-  let changes = null;
-  const changesPanel = shell.registerPanel({ id: 'changes', title: 'Changes', icon: 'git-compare', keys: ['Mod+Shift+G'], render: (s) => { changes = renderChangesPanel(s, { onOpen }); } });
   let search = null;
-  shell.registerPanel({ id: 'search', title: 'Search', icon: 'search', keys: ['Mod+Shift+F'], render: (s) => { search = renderSearchPanel(s, { onOpen }); }, onShow: ({ focus }) => { if (focus) search?.focus(); } });
   let outline = null;
-  shell.registerPanel({ id: 'outline', title: 'Outline', icon: 'list-tree', render: (s) => { outline = renderOutlinePanel(s, { editor }); }, onShow: ({ focus }) => { if (focus) outline?.focus(); } });
+  const changesPanel = shell.registerPanel({ id: 'changes', title: 'Changes', icon: 'git-compare', keys: ['Mod+Shift+G'], render: async (s) => { (await load.panels()).renderChangesPanel(s, { onOpen }); } });
+  shell.registerPanel({ id: 'search', title: 'Search', icon: 'search', keys: ['Mod+Shift+F'], render: async (s) => { search = (await load.panels()).renderSearchPanel(s, { onOpen }); }, onShow: ({ focus }) => { if (focus) search?.focus(); } });
+  shell.registerPanel({ id: 'outline', title: 'Outline', icon: 'list-tree', render: async (s) => { outline = (await load.panels()).renderOutlinePanel(s, { editor }); }, onShow: ({ focus }) => { if (focus) outline?.focus(); } });
   store.subscribe('git', (g) => changesPanel.setBadge(g ? g.counts.staged + g.counts.unstaged + g.counts.untracked : 0));
 
-  // ---------- inspector ----------
-  const aiTab = shell.registerInspectorTab({ id: 'ai', title: 'AI', icon: 'sparkles', render: renderAiTab });
-  shell.registerInspectorTab({ id: 'info', title: 'Info', icon: 'info', render: renderInfoTab });
+  // ---------- inspector (tabs render the first time the inspector is shown) ----------
+  const aiTab = shell.registerInspectorTab({ id: 'ai', title: 'AI', icon: 'sparkles', render: async (el) => (await load.chrome()).renderAiTab(el) });
+  shell.registerInspectorTab({ id: 'info', title: 'Info', icon: 'info', render: async (el) => (await load.chrome()).renderInfoTab(el) });
 
-  const palette = createPalette({ editor, onOpen });
-  const find = createFind({ editor, host: shell.viewsEl });
+  // Palette and find are created on first use; these proxies keep call sites synchronous-looking.
+  const getPalette = lazy(async () => (await load.palette()).createPalette({ editor, onOpen }));
+  const palette = { open: (...a) => getPalette().then((p) => p.open(...a)) };
+  const getFind = lazy(async () => (await load.find()).createFind({ editor, host: shell.viewsEl }));
+  const find = { open: () => getFind().then((f) => f.open()), next: () => getFind().then((f) => f.next()), prev: () => getFind().then((f) => f.prev()) };
+
   createStatusBar(shell.statusEl, { editor, mockMode });
   watchConnection(shell.banners);
   bus.on('toast', (t) => toast(t));
@@ -117,6 +131,7 @@ async function boot() {
   if (narrow.matches) session.data.layout.sidebar = false;
   shell.applyLayout();
   editor.restore(session.data);
+  performance.mark('ferro:ready');
 
   // Settings changed here or in another window: apply presentation keys live.
   let codeFs = store.get('settings')?.['ui.codeFontSize'];
@@ -143,7 +158,8 @@ async function boot() {
 
   connectEvents({ metrics: true });
   // Git status: the v1 endpoint once B3 ships, the legacy porcelain text until then (refreshed on fs events).
-  const refreshGit = () => (has('git.status.v2') ? api.gitStatus() : compatGitStatus()).then((g) => store.set('git', g)).catch(() => {});
+  const refreshGit = () => (has('git.status.v2') ? api.gitStatus() : load.compat().then((m) => m.compatGitStatus()))
+    .then((g) => store.set('git', g)).catch(() => {});
   if (has('git.status.v2') || meta.workspace?.git) {
     refreshGit();
     if (!has('git.status.v2')) bus.on('ev:fs', debounce(refreshGit, 600));
@@ -151,6 +167,9 @@ async function boot() {
   bus.on('git:refresh', refreshGit);
   if (has('metrics')) api.metrics().then((m) => store.set('metrics', m)).catch(() => {});
   if (mockMode) document.documentElement.classList.add('mock');
+
+  // Warm the on-demand modules once the first screen has settled.
+  whenIdle(() => { for (const f of Object.values(load)) f().catch(() => {}); });
 }
 
 function showOffline(root, e) {
@@ -176,7 +195,14 @@ function registerCommands({ shell, editor, palette, find, getTree, getSearch, ai
   command({ id: 'palette.commands', title: 'Show All Commands', category: 'Go', icon: 'command', keys: ['Mod+Shift+P'], inInput: true, run: (q) => palette.open(`>${typeof q === 'string' ? q : ''}`) });
   command({ id: 'palette.symbols', title: 'Go to Symbol in File…', category: 'Go', icon: 'at', keys: ['Mod+Shift+O'], run: () => palette.open('@') });
   command({ id: 'palette.line', title: 'Go to Line…', category: 'Go', icon: 'enter', keys: ['Mod+G'], run: () => palette.open(':') });
-  command({ id: 'palette.search', title: 'Search in Files', category: 'Go', icon: 'search', keys: ['Mod+Shift+F'], inInput: true, run: () => { shell.showPanel('search'); getSearch()?.focus(window.getSelection()?.toString().trim().split('\n')[0] || ''); } });
+  command({
+    id: 'palette.search', title: 'Search in Files', category: 'Go', icon: 'search', keys: ['Mod+Shift+F'], inInput: true,
+    run: async () => {
+      const q = window.getSelection()?.toString().trim().split('\n')[0] || ''; // read before the panel may load
+      await shell.showPanel('search');
+      getSearch()?.focus(q);
+    },
+  });
   command({ id: 'nav.back', title: 'Go Back', category: 'Go', icon: 'chevron-left', keys: ['Alt+ArrowLeft'], run: () => editor.back() });
   command({ id: 'nav.forward', title: 'Go Forward', category: 'Go', icon: 'chevron-right', keys: ['Alt+ArrowRight'], run: () => editor.forward() });
   command({ id: 'view.home', title: 'Go Home', category: 'Go', icon: 'panel-left', run: () => editor.showHome() });
@@ -184,15 +210,16 @@ function registerCommands({ shell, editor, palette, find, getTree, getSearch, ai
   // View
   command({ id: 'view.sidebar', title: 'Toggle Sidebar', category: 'View', icon: 'panel-left', keys: ['Mod+B'], run: () => shell.toggleSidebar() });
   command({ id: 'view.inspector', title: 'Toggle Inspector', category: 'View', icon: 'panel-right', keys: ['Mod+J'], run: () => shell.toggleInspector() });
-  command({ id: 'panel.files', title: 'Show Explorer', category: 'View', icon: 'files', keys: ['Mod+Shift+E'], inInput: true, run: () => shell.showPanel('files') });
+  command({ id: 'panel.files', title: 'Show Files', category: 'View', icon: 'files', keys: ['Mod+Shift+E'], inInput: true, run: () => shell.showPanel('files') });
   command({ id: 'panel.changes', title: 'Show Changes', category: 'View', icon: 'git-compare', keys: ['Mod+Shift+G'], inInput: true, run: () => shell.showPanel('changes') });
   command({ id: 'panel.outline', title: 'Show Outline', category: 'View', icon: 'list-tree', run: () => shell.showPanel('outline') });
   command({ id: 'theme.pick', title: 'Color Theme…', category: 'Preferences', icon: 'contrast', run: () => palette.open('', { special: 'theme' }) });
   command({ id: 'theme.cycle', title: 'Next Color Theme', category: 'Preferences', icon: 'contrast', run: () => { const t = cycleTheme(); toast({ title: `Theme: ${t.name}`, timeout: 1500 }); } });
   command({ id: 'theme.toggle', title: 'Toggle Light / Dark', category: 'Preferences', icon: 'contrast', keys: ['Alt+Shift+L'], run: () => toggleLightDark() });
-  command({ id: 'settings.open', title: 'Open Settings', category: 'Preferences', icon: 'sliders', keys: ['Mod+,'], run: () => openSettings() });
-  command({ id: 'help.keys', title: 'Keyboard Shortcuts', category: 'Help', icon: 'keyboard', keys: ['Mod+/'], run: () => showKeyboardHelp() });
-  bindKey('?', () => showKeyboardHelp());
+  command({ id: 'settings.open', title: 'Open Settings', category: 'Preferences', icon: 'settings', keys: ['Mod+,'], run: () => load.settings().then((m) => m.openSettings()) });
+  const help = () => load.chrome().then((m) => m.showKeyboardHelp());
+  command({ id: 'help.keys', title: 'Keyboard Shortcuts', category: 'Help', icon: 'keyboard', keys: ['Mod+/'], run: help });
+  bindKey('?', help);
   command({ id: 'ai.ask', title: 'Ask AI', category: 'AI', icon: 'sparkles', keys: ['Mod+I'], run: () => { shell.toggleInspector(true); aiTab.show(); } });
 
   // Tabs

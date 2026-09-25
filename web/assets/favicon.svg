@@ -1,14 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <style>
-    .tile { fill: #16161a; }
-    .ink { fill: #ededf0; }
-    @media (prefers-color-scheme: dark) {
-      .tile { fill: #ededf0; }
-      .ink { fill: #0f0f11; }
-    }
-  </style>
-  <rect class="tile" x="1" y="1" width="30" height="30" rx="8"/>
-  <rect class="ink" x="10.6" y="7.3" width="4.2" height="17.4" rx="1.1"/>
-  <rect class="ink" x="10.6" y="7.3" width="11.5" height="4.2" rx="1.1"/>
-  <rect class="ink" x="10.6" y="14.3" width="9" height="3.8" rx="1.1"/>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff8c2e"/>
+      <stop offset=".55" stop-color="#f2542d"/>
+      <stop offset="1" stop-color="#c22e3d"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="30" height="30" rx="7" fill="url(#g)"/>
+  <g fill="#fff">
+    <rect x="10.6" y="7.3" width="4.2" height="17.4" rx="1.1"/>
+    <rect x="10.6" y="7.3" width="11.5" height="4.2" rx="1.1"/>
+    <rect x="10.6" y="14.3" width="9" height="3.8" rx="1.1"/>
+  </g>
 </svg>

@@ -32,20 +32,6 @@ const SECTIONS = [
 // Backend keys for the legacy UI (un-namespaced) are not shown in the new UI.
 const hiddenKey = (k) => !k.key.includes('.') || k.section === 'ui';
 
-/** Apply ui.* values that change presentation. Called at boot and on every settings change. */
-export function applyUiSettings(values = {}) {
-  const root = document.documentElement;
-  const fs = Number(values['ui.codeFontSize']);
-  if (fs >= 10 && fs <= 20) {
-    root.style.setProperty('--code-fs', `${fs}px`);
-    root.style.setProperty('--code-lh', `${Math.round(fs * 1.54)}px`);
-  } else {
-    root.style.removeProperty('--code-fs');
-    root.style.removeProperty('--code-lh');
-  }
-  root.classList.toggle('icons-color', values['ui.fileIconColors'] === true);
-}
-
 const tok = (cls, text) => h('span', { class: cls }, text);
 function preview() {
   return h('div', { class: 'tc-code', 'aria-hidden': 'true' },

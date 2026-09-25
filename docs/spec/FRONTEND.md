@@ -79,7 +79,8 @@ web/
       commands.js       command registry {id, title, keys, desktopKeys, when(), run()}
       virtual.js        VirtualList: fixed rows, keyed recycling, scaled scrolling (variable heights: F2)
       match.js          client fuzzy match/rank (commands, symbols, loaded tree nodes)
-      util.js           debounce, rafThrottle, LRU, formatters, paths (joinPath), safe storage
+      util.js           debounce, rafThrottle, LRU, lazy(), whenIdle(), formatters, paths (joinPath), safe storage
+      text.js           pure text helpers (search-hit trimming)
       (F4) stream.js    fetch-based SSE parser for POST streams (AI ask)
     ui/
       icons.js          inline SVG icon set (createElementNS), file-type icons
@@ -88,7 +89,8 @@ web/
       shell.js  tree.js  editor.js (tabs, history, view cache)  viewer.js (code + image, find decorations)
       markdown.js (preview/source document view)  find.js (find bar + in-browser engine)
       palette.js  panels.js (changes, search, outline)  home.js  status.js
-      settings.js (schema-driven form, ui.* keys)  themes.js  session.js  chrome.js (help sheet, auth, banner, inspector tabs)
+      settings.js (schema-driven form, ui.* keys)  prefs.js (applies ui.* at boot)  themes.js  session.js
+      chrome.js (help sheet, auth screen, inspector tabs)  connection.js (reconnect banner)
       compat.js         legacy fallbacks: /api/fuzzy, /api/search, /api/git-status (§ 3.3); deleted at the flip
       (F2) diff.js  git.js   (F3) review.js   (F4) ai.js   (F5) nav.js   (F6) vim.js
     mock/               in-browser mock server + event stream + markdown renderer (§ 3.4)
@@ -99,7 +101,7 @@ web/
     (F1) e2e/           Playwright (dev-only package.json)
 ```
 
-Every module still loads up front (207 KB uncompressed, 61 KB gzip; CSS 67 KB), over the 80 KB budget in § 9. Next step: move the palette, the sidebar panels, settings, markdown, find, and the help sheet behind `import()` on first use, preloaded during idle time after boot. From F2 on, diff, review, AI, navigation, and vim load the same way. The shell, tree, tabs, viewer, and status bar stay in the initial graph (`<link rel="modulepreload">`).
+Loading: the boot graph is the static import closure of `main.js`: shell, tree, tabs, code viewer, home, status bar and core (23 modules, 136 KB uncompressed). `next.html` lists exactly these as `<link rel="modulepreload">`, so they download in parallel. The palette, sidebar panels, find, settings, help sheet, inspector tabs, markdown view and legacy fallbacks load with `import()` on first use (`lazy()` in `core/util.js`) and are warmed during idle time after the first screen (`whenIdle()`). Panels may render asynchronously (`showPanel` resolves once rendered); inspector tabs render only when the inspector is visible. `tests/unit/bootgraph.test.js` fails if an on-demand module leaks into the boot graph, if the preload list drifts, or if the graph exceeds the budget in § 9. From F2 on, diff, review, AI, navigation and vim load the same way.
 
 ### 3.2 State
 
@@ -157,7 +159,7 @@ On `workspace` or `resync` events the app resets every slice and refetches (no p
 
 ## 5. Design system
 
-Direction (2026-09-25 redesign): calm, precise, near-monochrome, a Swiss-style tool UI. Hierarchy comes from type weight, spacing and surface elevation. The "accent" is the foreground itself (white on graphite, ink on porcelain). Hue appears only where it carries meaning: strings and numbers in code, git state, diffs, errors, find hits. No gradients, glows or decorative color.
+Direction (2026-09-25 redesign): calm, precise, near-monochrome, a Swiss-style tool UI. Hierarchy comes from type weight, spacing and surface elevation. The "accent" is the foreground itself (white on graphite, ink on porcelain). Hue appears only where it carries meaning: strings and numbers in code, git state, diffs, errors, find hits. The one exception is the logo (the ember forge square); otherwise no gradients, glows or decorative color.
 
 ### 5.1 Layout
 
@@ -202,7 +204,7 @@ Syntax is deliberately restrained: keywords and punctuation are greys, function 
 
 ### 5.4 Icons and motion
 
-Inline SVG built by `ui/icons.js` with `createElementNS` (Lucide-style strokes, 24-unit viewBox, `currentColor`): no extra request, CSP-safe. File and folder icons are neutral (`--fg-faint`) and differ by glyph, not color. The brand mark is a monochrome rounded square with the F cut out; the favicon follows the OS light/dark setting. Motion 90–200 ms with a decelerating curve (exits faster than entrances), opacity and transform only, disabled under `prefers-reduced-motion`.
+Inline SVG built by `ui/icons.js` with `createElementNS` (Lucide-style strokes, 24-unit viewBox, `currentColor`): no extra request, CSP-safe. File and folder icons are neutral (`--fg-faint`) and differ by glyph, not color. The brand mark is the forge square from `docs/BRAND.md` (ember gradient `#ff8c2e → #f2542d → #c22e3d`, white three-bar F, radius 22 %), drawn as SVG by `brandMark()` in the top bar, the home footer (with the tagline "Iron-clad code review."), the auth screen, the boot splash in `next.html` and the favicon. Motion 90–200 ms with a decelerating curve (exits faster than entrances), opacity and transform only, disabled under `prefers-reduced-motion`.
 
 ---
 
@@ -402,7 +404,7 @@ Normal/visual modes over the caret and selection model (motions, search, marks, 
 | Interaction | Budget |
 |---|---|
 | Shell first paint after HTML response (localhost) | ≤ 50 ms |
-| Initial JS (core graph, uncompressed) | ≤ 80 KB; total ≤ 350 KB |
+| Boot graph JS (static closure of `main.js`, uncompressed, comments included) | ≤ 150 KB, enforced by `bootgraph.test.js` (2026-09-25: 136 KB, 23 modules); everything ≤ 350 KB |
 | Palette keystroke → results painted (after response) | ≤ 16 ms |
 | Code view paint (≈ 60 rows) | ≤ 4 ms; 60 fps fling on a 400k-line file |
 | Tab switch to a cached file | ≤ 16 ms |
@@ -412,6 +414,8 @@ Normal/visual modes over the caret and selection model (motions, search, marks, 
 
 The latency HUD (`ui.hud`, off by default; `Mod+Alt+P` toggles) shows frame times, long tasks, and per-request client and server times (`Server-Timing`). The status bar always shows the last search/fuzzy server time.
 
+The boot budget was 80 KB until 2026-09-25. It assumed a minifier, but the no-build rule keeps comments and whitespace, and the boot graph must include the code viewer because sessions reopen files. Boot marks (`performance.mark`) are `ferro:boot`, `ferro:shell` and `ferro:ready`. Measured against B1 `--dev-web` (no-store, nothing cached): shell mounted at 102 ms and ready at 132 ms after navigation start, including the meta/settings/session round trips.
+
 ---
 
 ## 10. Testing
@@ -420,6 +424,7 @@ The latency HUD (`ui.hud`, off by default; `Mod+Alt+P` toggles) shows frame time
 - **E2E** (Playwright, Chromium + WebKit + Firefox, `web/tests/e2e`): boot + auth screen; tree with 20k files; open and fling a 400k-line file; palette modes and the stale-response race; streaming search + cancel; find-in-file past 512 KB; markdown XSS canary; diff split/unified with intraline; draft + submit (mock); AI findings accept/dismiss (mock); keyboard map on macOS and Linux key layouts; axe scans.
 - Two targets: mock mode (every PR) and a real backend on a fixture repo (after B1).
 - Syntax: `node web/tests/tools/check-syntax.mjs` parses every module as ESM from stdin (plain `node --check file.js` misses ESM syntax errors).
+- Boot graph: `bootgraph.test.js` walks the static imports from `main.js` (on-demand modules excluded, preload list equal, size budget).
 - CI: `.github/workflows/web.yml` (frontend-owned) runs the syntax check and the unit tests. Mock e2e joins it next.
 
 ---
@@ -450,7 +455,7 @@ Acceptance per milestone: its feature sections' checks pass, the e2e suite for i
 
 ## 13. Status (2026-09-25)
 
-**Redesigned and running on the real B1 backend** (branch `fe/F1-redesign`). The graphite, porcelain and carbon themes replaced the six colorful F0 themes, and a sidebar switcher replaced the icon rail (§ 5). 24 unit tests pass and all 41 modules parse. Checked against B1: tree, tabs, session restore, code viewer, palette, search, outline, Changes, markdown preview, settings, find, image view, events stream. Checked in mock mode: the same set plus the 60k-file and auth variants.
+**Redesigned and running on the real B1 backend** (branch `fe/F1-redesign`). The graphite, porcelain and carbon themes replaced the six colorful F0 themes, and a sidebar switcher replaced the icon rail (§ 5). The forge-square logo (docs/BRAND.md) is the one colored element, and the tagline is now "Iron-clad code review." (px0.ai uses "Review code. Damn fast."). Features load on demand (§ 3.1): the boot graph went from 29 modules / 208 KB to 23 / 136 KB. 27 unit tests pass and all 45 modules parse. Checked against B1: tree, tabs, session restore, code viewer, palette, search, outline, Changes, markdown preview, settings, find, image view, events stream. Checked in mock mode: the same set plus the 60k-file and auth variants.
 
 | Area | Built | Still missing |
 |---|---|---|
@@ -471,8 +476,8 @@ Open requests for the backend (not in API.md § 15 yet: this worktree cannot edi
 
 Open items (frontend):
 
-1. Initial JS is 207 KB (budget 80 KB, § 9): lazy-load as described in § 3.1.
+1. Budgets still to measure in CI: palette keystroke paint, code view paint, long tasks (§ 9), via the Playwright suite.
 2. Flip `next.html` → `index.html` once B2a is merged, then delete `compat.js`.
 3. Playwright e2e plus axe checks (§ 10).
-4. The desktop app icons (`apps/desktop/src-tauri/icons`) still show the old orange mark; they belong to the desktop side.
+4. Desktop side (not frontend-owned): the splash in `apps/desktop/splash/index.html` still uses the old `#1a1a1a` background and a text "F"; the app icons already show the forge square.
 

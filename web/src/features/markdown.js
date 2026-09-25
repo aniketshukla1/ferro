@@ -11,8 +11,6 @@ import { icon } from '../ui/icons.js';
 import { toast } from '../ui/overlay.js';
 import { createCodeView } from './viewer.js';
 
-export const isMarkdown = (meta) => !!meta?.markdown || meta?.language === 'Markdown';
-
 export function createMarkdownView(path, meta, { onOpen, preferSource = false }) {
   const article = h('article', { class: 'md' });
   const notice = h('div', { class: 'md-notice', hidden: true });

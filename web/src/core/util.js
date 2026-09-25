@@ -118,6 +118,18 @@ export const uid = (prefix = 'u') => `${prefix}${Date.now().toString(36)}${(seq+
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Memoize an async factory (e.g. a dynamic import); a failed attempt is retried next call. */
+export function lazy(factory) {
+  let p = null;
+  return () => (p ||= Promise.resolve().then(factory).catch((e) => { p = null; throw e; }));
+}
+
+/** Run after the page settles: idle time when available, otherwise a short timeout. */
+export function whenIdle(fn, timeout = 1500) {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(() => fn(), { timeout });
+  else setTimeout(fn, 200);
+}
+
 /** localStorage that never throws (private mode, blocked storage). */
 export const storage = {
   get(key, fallback = null) {

@@ -3,10 +3,11 @@ import { h, mount, markRanges } from '../core/dom.js';
 import { api, has, isAbort } from '../core/api.js';
 import { store } from '../core/store.js';
 import { bus } from '../core/bus.js';
-import { execute } from '../core/commands.js';
 import { debounce, basename, dirname, formatMs, plural } from '../core/util.js';
 import { icon, fileIcon, folderIcon } from '../ui/icons.js';
+import { focusHit } from '../core/text.js';
 import { compatSearch } from './compat.js';
+import { revealDir } from './tree.js';
 
 const GIT_LABEL = { M: 'Modified', A: 'Added', D: 'Deleted', R: 'Renamed', C: 'Copied', T: 'Type changed', U: 'Conflict', '?': 'Untracked' };
 
@@ -16,28 +17,6 @@ function listRow({ path, code, onClick, active, dir }) {
     h('span', { class: 'lr-name' }, basename(path)),
     h('span', { class: 'lr-dir' }, dirname(path)),
     code ? h('span', { class: `gitc ${code === '?' ? 'A' : code}`, title: GIT_LABEL[code] }, code === '?' ? 'U' : code) : null);
-}
-
-/**
- * Fit a hit line to a narrow column: drop indentation and, when the first match starts far
- * right, cut the prefix behind an ellipsis. Ranges are UTF-16 offsets and shift with the text.
- */
-export function focusHit(text, ranges = [], lead = 16) {
-  let t = text.replace(/\s+$/, '');
-  let cut = t.length - t.trimStart().length;
-  const first = ranges.length ? ranges[0][0] : 0;
-  if (first - cut > lead + 8) cut = first - lead;
-  if (!cut) return { text: t, ranges };
-  const prefix = cut > t.length - t.trimStart().length ? '…' : '';
-  t = prefix + t.slice(cut);
-  const shift = prefix.length - cut;
-  return { text: t, ranges: ranges.map(([a, b]) => [Math.max(prefix.length, a + shift), b + shift]).filter(([a, b]) => b > a) };
-}
-
-/** Show a folder in the Files panel. */
-export function revealDir(path) {
-  execute('panel.files');
-  bus.emit('tree:reveal', { path });
 }
 
 // ---------- Changes ----------

@@ -4,9 +4,9 @@ import { keysEl } from '../core/keys.js';
 import { execute } from '../core/commands.js';
 import { store } from '../core/store.js';
 import { basename, dirname, formatBytes, formatCount, formatMs, plural } from '../core/util.js';
-import { icon, fileIcon, folderIcon } from '../ui/icons.js';
+import { icon, fileIcon, folderIcon, brandMark, TAGLINE } from '../ui/icons.js';
 import { session } from './session.js';
-import { revealDir } from './panels.js';
+import { revealDir } from './tree.js';
 
 const HINTS = [
   ['Mod+K', 'Go to file'],
@@ -97,9 +97,10 @@ export function createHome({ onOpen }) {
     const m = store.get('meta');
     const met = store.get('metrics');
     const bits = [];
-    if (m?.version) bits.push(`ferro ${m.version}`);
+    if (m?.version) bits.push(`v${m.version}`);
     if (met?.rssBytes) bits.push(`server ${formatBytes(met.rssBytes)}`);
-    foot.textContent = bits.join(' · ');
+    mount(foot, brandMark('sm'), h('span', { class: 'hf-name' }, 'ferro'), h('span', { class: 'hf-tag' }, TAGLINE),
+      bits.map((b) => [h('span', { class: 'hm-dot', 'aria-hidden': 'true' }, '·'), h('span', null, b)]));
   }
 
   function refresh() {

@@ -1,11 +1,13 @@
 <!doctype html>
-<html lang="en" data-theme="forge">
+<html lang="en" data-theme="graphite">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="dark light">
 <title>ferro</title>
+<meta name="description" content="ferro — iron-clad code review. Local-first and keyboard-driven.">
+<meta name="theme-color" content="#0f0f11">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles/tokens.css">
 <link rel="stylesheet" href="styles/themes.css">
@@ -20,18 +22,33 @@
 <link rel="stylesheet" href="styles/home.css">
 <link rel="stylesheet" href="styles/markdown.css">
 <script src="src/boot-theme.js"></script>
+<!-- The whole boot graph, fetched in parallel (on-demand modules are imported later by main.js). -->
 <link rel="modulepreload" href="src/main.js">
 <link rel="modulepreload" href="src/core/dom.js">
 <link rel="modulepreload" href="src/core/api.js">
 <link rel="modulepreload" href="src/core/store.js">
+<link rel="modulepreload" href="src/core/bus.js">
+<link rel="modulepreload" href="src/core/sse.js">
+<link rel="modulepreload" href="src/core/keys.js">
+<link rel="modulepreload" href="src/core/commands.js">
+<link rel="modulepreload" href="src/core/util.js">
 <link rel="modulepreload" href="src/core/virtual.js">
+<link rel="modulepreload" href="src/ui/overlay.js">
+<link rel="modulepreload" href="src/ui/icons.js">
 <link rel="modulepreload" href="src/features/shell.js">
+<link rel="modulepreload" href="src/features/session.js">
+<link rel="modulepreload" href="src/features/themes.js">
+<link rel="modulepreload" href="src/features/prefs.js">
+<link rel="modulepreload" href="src/features/home.js">
 <link rel="modulepreload" href="src/features/editor.js">
 <link rel="modulepreload" href="src/features/viewer.js">
+<link rel="modulepreload" href="src/features/tree.js">
+<link rel="modulepreload" href="src/features/status.js">
+<link rel="modulepreload" href="src/features/connection.js">
 <script type="module" src="src/main.js"></script>
 </head>
 <body>
-<div id="app" aria-busy="true"></div>
+<div id="app" aria-busy="true"><div class="boot" aria-label="Loading ferro"><span class="mark lg"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3.5" width="4" height="17" rx="1.1"/><rect x="6" y="3.5" width="13" height="4" rx="1.1"/><rect x="6" y="10.6" width="10" height="3.6" rx="1.1"/></svg></span></div></div>
 <noscript><p>ferro needs JavaScript enabled.</p></noscript>
 </body>
 </html>

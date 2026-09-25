@@ -1,11 +1,11 @@
-// Cross-cutting chrome: keyboard help sheet, auth screen, connection banner, inspector tabs.
+// On-demand chrome: keyboard help sheet, auth screen, inspector tabs (the connection banner is in connection.js).
 import { h, mount } from '../core/dom.js';
 import { keysEl } from '../core/keys.js';
 import { listCommands, execute } from '../core/commands.js';
 import { store } from '../core/store.js';
 import { formatCount, formatMs, formatBytes, isMac } from '../core/util.js';
 import { icon, brandMark } from '../ui/icons.js';
-import { openDialog, toast } from '../ui/overlay.js';
+import { openDialog } from '../ui/overlay.js';
 
 // ---------- keyboard help ----------
 // [category, title, key spec or null, literal text shown instead of key caps]
@@ -73,24 +73,6 @@ export function showAuthScreen(root) {
       h('p', { class: 'faint small' }, 'The token keeps other websites on this machine from reading your code or running git commands.'),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', on: { click: () => location.reload() } }, icon('refresh', 'sm'), 'Try again'))));
   root.appendChild(el);
-}
-
-// ---------- connection banner ----------
-export function watchConnection(bannerHost) {
-  let banner = null;
-  let wasDown = false;
-  store.subscribe('conn', (c) => {
-    const down = c === 'reconnecting' || c === 'offline';
-    if (down && !banner) {
-      banner = h('div', { class: 'banner', role: 'status' }, h('span', { class: 'spinner' }), h('span', null, 'Lost connection to the ferro server — reconnecting…'));
-      bannerHost.appendChild(banner);
-    } else if (!down && banner) {
-      banner.remove();
-      banner = null;
-      if (wasDown && c === 'connected') toast({ kind: 'ok', title: 'Reconnected', timeout: 2000 });
-    }
-    wasDown = down;
-  });
 }
 
 // ---------- inspector: info ----------

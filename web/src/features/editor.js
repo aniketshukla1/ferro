@@ -7,8 +7,9 @@ import { bus } from '../core/bus.js';
 import { basename, dirname, formatBytes, formatCount, LRU } from '../core/util.js';
 import { icon, fileIcon } from '../ui/icons.js';
 import { createCodeView, createImageView } from './viewer.js';
-import { createMarkdownView, isMarkdown } from './markdown.js';
 import { session } from './session.js';
+
+const isMarkdown = (meta) => !!meta?.markdown || meta?.language === 'Markdown';
 
 const MAX_TABS = 20;
 const MAX_LIVE_VIEWS = 8;
@@ -115,6 +116,7 @@ export function createEditor(shell, { home }) {
     if (meta.kind === 'image') view = createImageView(path, meta);
     else if (meta.kind === 'binary') view = binaryView(path, meta);
     else if (isMarkdown(meta) && has('markdown.v2') && !meta.tooLarge) {
+      const { createMarkdownView } = await import('./markdown.js');
       view = createMarkdownView(path, meta, { onOpen: (p, o) => open(p, o), preferSource: store.get('settings')?.['ui.markdownPreview'] === false });
     } else view = createCodeView(path, meta);
     const tab = tabs.find((t) => t.path === path);

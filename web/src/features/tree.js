@@ -5,14 +5,22 @@ import { api } from '../core/api.js';
 import { store } from '../core/store.js';
 import { bus } from '../core/bus.js';
 import { VirtualList } from '../core/virtual.js';
+import { execute } from '../core/commands.js';
 import { dirname } from '../core/util.js';
 import { icon, fileIcon, folderIcon } from '../ui/icons.js';
 import { session } from './session.js';
 
+/** Show a folder (or file) in the Files panel. */
+export function revealDir(path) {
+  execute('panel.files');
+  bus.emit('tree:reveal', { path });
+}
+
 // Row height is a design token (--h-row); read it once so CSS stays the single source.
-const ROW_H = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--h-row')) || 26;
+const rowHeight = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--h-row')) || 26;
 
 export function createTree(container, { onOpen }) {
+  const ROW_H = rowHeight();
   /** @type {Map<string, any>} */
   const nodes = new Map();
   nodes.set('', { path: '', name: '', dir: true, open: true, children: null, loading: false });

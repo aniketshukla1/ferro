@@ -76,6 +76,7 @@ export function buildShell(root) {
     root.style.setProperty('--inspector-w', `${L.inspectorW}px`);
     document.getElementById('insp-toggle')?.setAttribute('aria-pressed', String(!!L.inspector));
     sbToggle.setAttribute('aria-pressed', String(!!L.sidebar));
+    if (L.inspector) inspTabs.get(activeInsp)?.ensure();
     showPanel(L.panel, { focus: false, persist: false });
   }
 
@@ -138,17 +139,21 @@ export function buildShell(root) {
     b.textContent = n > 999 ? '999+' : String(n);
   }
 
+  /** Show a panel; its render() may be async (lazy module). Resolves once it is rendered. */
   function showPanel(id, { focus = true, persist = true } = {}) {
     const p = panels.get(id) || panels.values().next().value;
-    if (!p) return;
+    if (!p) return Promise.resolve();
     for (const [pid, x] of panels) {
       const on = pid === p.def.id;
       x.section.hidden = !on;
       x.button.setAttribute('aria-selected', String(on));
     }
     if (!p.rendered) {
-      p.rendered = true;
-      p.def.render(p.section);
+      p.rendered = Promise.resolve().then(() => p.def.render(p.section)).catch((e) => {
+        p.rendered = null;
+        mount(p.section, h('div', { class: 'empty' }, icon('alert', 'xl'), h('h3', null, `${p.def.title} failed to load`), h('p', null, e.message)));
+        throw e;
+      });
     }
     activePanel = p.def.id;
     if (persist) {
@@ -156,7 +161,7 @@ export function buildShell(root) {
       app.classList.remove('no-sidebar');
       sbToggle.setAttribute('aria-pressed', 'true');
     }
-    p.def.onShow?.({ focus });
+    return p.rendered.then(() => { if (activePanel === p.def.id) p.def.onShow?.({ focus }); }).catch(() => {});
   }
 
   function togglePanel(id) {
@@ -180,7 +185,7 @@ export function buildShell(root) {
     const on = typeof force === 'boolean' ? force : !session.data.layout.inspector;
     session.layout({ inspector: on });
     applyLayout();
-    if (on && !activeInsp) inspTabs.values().next().value?.show();
+    if (on) (inspTabs.get(activeInsp) || inspTabs.values().next().value)?.show();
   }
 
   // ---------- inspector tabs ----------
@@ -191,6 +196,15 @@ export function buildShell(root) {
     const content = h('div', { class: 'insp-pane', hidden: true });
     inspBody.appendChild(content);
     let rendered = false;
+    // Render (and load its module) only once the inspector is actually visible.
+    function ensure() {
+      if (rendered || !session.data.layout.inspector) return;
+      rendered = true;
+      Promise.resolve().then(() => def.render(content)).catch((e) => {
+        rendered = false;
+        mount(content, h('div', { class: 'empty' }, h('p', null, `${def.title} failed to load: ${e.message}`)));
+      });
+    }
     function show() {
       for (const t of inspTabs.values()) {
         t.btn.setAttribute('aria-selected', 'false');
@@ -198,11 +212,11 @@ export function buildShell(root) {
       }
       btn.setAttribute('aria-selected', 'true');
       content.hidden = false;
-      if (!rendered) { rendered = true; def.render(content); }
-      def.onShow?.();
       activeInsp = def.id;
+      ensure();
+      def.onShow?.();
     }
-    inspTabs.set(def.id, { btn, content, show });
+    inspTabs.set(def.id, { btn, content, show, ensure });
     if (!activeInsp) show();
     return { show };
   }
