@@ -212,10 +212,27 @@ pub async fn serve_with(
             }));
     }
 
+    // Trigram transitions announce themselves as `index` events.
+    {
+        let bus = state.bus.clone();
+        let ws = state.ws();
+        let ws2 = ws.clone();
+        ws.search.set_on_transition(Arc::new(move || {
+            let (files, ms) = ws2.index.stats();
+            bus.publish(crate::bus::ServerEvent::Index {
+                state: "ready".into(),
+                files,
+                ms,
+                generation: ws2.generation.load(std::sync::atomic::Ordering::Relaxed),
+                search_index: ws2.search.state().as_str().into(),
+            });
+        }));
+    }
+
     // Idle scavenger: after 15 s without requests, trim caches and collect.
     {
         let last = last_active.clone();
-        let ws = state.ws();
+        let state = state.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
             loop {
@@ -223,10 +240,11 @@ pub async fn serve_with(
                 let idle = last.lock().map(|t| t.elapsed()).unwrap_or_default();
                 if idle >= std::time::Duration::from_secs(15) {
                     ferro_core::highlight::clear_cache();
+                    // Idle trigram catch-up (delta or threshold rebuilds).
+                    state.ensure_search_built();
                     // SAFETY: mi_collect is documented thread-safe; forces a trim.
                     unsafe { libmimalloc_sys::mi_collect(true) };
                     tracing::debug!("ferro idle {}s: caches trimmed", idle.as_secs());
-                    let _ = &ws;
                 }
             }
         });
@@ -256,6 +274,7 @@ pub async fn serve_with(
     }
     // Background initial index like before.
     {
+        let state2 = state.clone();
         let ws = state.ws();
         let bus = state.bus.clone();
         tokio::spawn(async move {
@@ -263,12 +282,13 @@ pub async fn serve_with(
             ws.generation
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let (files, ms) = ws.index.stats();
+            state2.ensure_search_built();
             bus.publish(crate::bus::ServerEvent::Index {
                 state: "ready".into(),
                 files,
                 ms,
                 generation: ws.generation.load(std::sync::atomic::Ordering::Relaxed),
-                search_index: "off".into(),
+                search_index: ws.search.state().as_str().into(),
             });
         });
     }

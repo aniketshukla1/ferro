@@ -10,7 +10,7 @@
 //! approximation here only widens — never narrows — the answer.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::fileindex::FileSnapshot;
 
@@ -516,6 +516,267 @@ pub fn fetch_ordered(idx: &MmapIndex, keys: &[u32], high_df_cap: usize) -> Optio
     }
     out.sort_by_key(|v| v.len());
     Some(out)
+}
+
+// -- search engine: policy, freshness, background builds ------------------------
+
+/// Very common trigrams are skipped at query time (no filtering power).
+pub const HIGH_DF_SKIP: usize = 500_000;
+/// Auto-build thresholds (spec): 5,000 files or 50 MiB of text.
+pub const AUTO_MIN_FILES: usize = 5_000;
+pub const AUTO_MIN_BYTES: u64 = 50 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchIndexState {
+    Off,
+    Building,
+    Ready,
+}
+
+impl SearchIndexState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SearchIndexState::Off => "off",
+            SearchIndexState::Building => "building",
+            SearchIndexState::Ready => "ready",
+        }
+    }
+}
+
+pub struct SearchEngine {
+    dir: PathBuf,
+    state: std::sync::RwLock<SearchIndexState>,
+    built_generation: std::sync::atomic::AtomicU64,
+    built_docs: std::sync::atomic::AtomicUsize,
+    delta: std::sync::Mutex<std::collections::HashSet<String>>,
+    pool: rayon::ThreadPool,
+    mmap: std::sync::RwLock<Option<std::sync::Arc<MmapIndex>>>,
+    on_transition: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
+}
+
+impl SearchEngine {
+    pub fn new(dir: PathBuf) -> std::sync::Arc<Self> {
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads((cpus / 2).max(1))
+            .thread_name(|i| format!("ferro-index-{i}"))
+            .build()
+            .expect("index pool");
+        std::sync::Arc::new(Self {
+            dir,
+            state: std::sync::RwLock::new(SearchIndexState::Off),
+            built_generation: std::sync::atomic::AtomicU64::new(0),
+            built_docs: std::sync::atomic::AtomicUsize::new(0),
+            delta: std::sync::Mutex::new(std::collections::HashSet::new()),
+            pool,
+            mmap: std::sync::RwLock::new(None),
+            on_transition: std::sync::Mutex::new(None),
+        })
+    }
+
+    /// Try loading a previously built index (warm start).
+    pub fn preload(self: &std::sync::Arc<Self>, generation: u64) {
+        if let Some(m) = MmapIndex::open(&self.dir) {
+            let docs = m.docs.len();
+            *self.mmap.write().unwrap() = Some(std::sync::Arc::new(m));
+            self.built_docs
+                .store(docs, std::sync::atomic::Ordering::Relaxed);
+            self.built_generation
+                .store(generation, std::sync::atomic::Ordering::Relaxed);
+            self.set_state(SearchIndexState::Ready);
+        }
+    }
+
+    pub fn state(&self) -> SearchIndexState {
+        *self.state.read().unwrap()
+    }
+
+    fn set_state(&self, s: SearchIndexState) {
+        let changed = *self.state.read().unwrap() != s;
+        *self.state.write().unwrap() = s;
+        if changed {
+            if let Some(cb) = self.on_transition.lock().unwrap().clone() {
+                cb();
+            }
+        }
+    }
+
+    pub fn set_on_transition(&self, f: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        *self.on_transition.lock().unwrap() = Some(f);
+    }
+
+    /// Record watcher changes: upserts and deletes both join the delta set
+    /// (deleted paths act as tombstones via snapshot misses at query time).
+    pub fn note_changes(&self, upserts: &[String], deletes: &[String]) {
+        if self.state() == SearchIndexState::Off {
+            return;
+        }
+        let mut d = self.delta.lock().unwrap();
+        d.extend(upserts.iter().cloned());
+        d.extend(deletes.iter().cloned());
+    }
+
+    pub fn delta_len(&self) -> usize {
+        self.delta.lock().unwrap().len()
+    }
+
+    /// Policy check + background build. Cheap when fresh; called after every
+    /// index rebuild, on watcher batches, and on idle.
+    /// `mode`: `on` | `auto` | `off`. `default_exclude`: search.exclude globs.
+    pub fn ensure_built(
+        self: &std::sync::Arc<Self>,
+        snap: &std::sync::Arc<FileSnapshot>,
+        root: &Path,
+        mode: &str,
+        max_file_bytes: u64,
+        default_exclude: &[String],
+    ) {
+        if mode == "off" {
+            if self.state() != SearchIndexState::Off {
+                self.set_state(SearchIndexState::Off);
+            }
+            return;
+        }
+        let gen = snap.generation;
+        let fresh = self.state() == SearchIndexState::Ready
+            && self
+                .built_generation
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == gen;
+        if fresh {
+            let docs = self
+                .built_docs
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .max(1);
+            // Rebuild when the delta exceeds 5% of files (spec).
+            if self.delta_len() * 100 <= docs * 5 {
+                return;
+            }
+        }
+        if self.state() == SearchIndexState::Building {
+            return;
+        }
+        if mode == "auto" {
+            let bytes: u64 = snap.sizes.iter().sum();
+            if snap.len() < AUTO_MIN_FILES && bytes < AUTO_MIN_BYTES {
+                return;
+            }
+        }
+        if snap.is_empty() {
+            return;
+        }
+        self.set_state(SearchIndexState::Building);
+        let this = self.clone();
+        let snap = snap.clone();
+        let root = root.to_path_buf();
+        let exclude = build_exclude(default_exclude);
+        let dir = self.dir.clone();
+        self.pool.spawn(move || {
+            let t0 = std::time::Instant::now();
+            let built = build_index(&root, &snap, &exclude, max_file_bytes);
+            // A build that indexed nothing useful stays Off (saves queries
+            // from consulting an empty map).
+            if built.docs.is_empty() {
+                this.set_state(SearchIndexState::Off);
+                return;
+            }
+            if write_index(&dir, &built, t0.elapsed().as_millis(), gen).is_err() {
+                this.set_state(SearchIndexState::Off);
+                return;
+            }
+            // Clear the delta: the build just read current disk content, so
+            // notes older than this point are covered. (A note racing its
+            // own file's build read stays stale until the next rebuild;
+            // the idle/threshold triggers bound that window.)
+            this.delta.lock().unwrap().clear();
+            this.built_docs
+                .store(built.docs.len(), std::sync::atomic::Ordering::Relaxed);
+            this.built_generation
+                .store(gen, std::sync::atomic::Ordering::Relaxed);
+            if MmapIndex::open(&dir)
+                .map(|m| *this.mmap.write().unwrap() = Some(std::sync::Arc::new(m)))
+                .is_some()
+            {
+                this.set_state(SearchIndexState::Ready);
+            } else {
+                this.set_state(SearchIndexState::Off);
+            }
+        });
+    }
+
+    /// Resolve planned trigram keys to snapshot indices: index hits plus
+    /// delta members (always scanned directly), tombstones dropped via
+    /// snapshot misses. `None` = fall back to full scan.
+    pub fn candidates(&self, snap: &FileSnapshot, keys: &[u32]) -> Option<Vec<usize>> {
+        let mmap = self.mmap.read().unwrap().clone()?;
+        if self.state() != SearchIndexState::Ready {
+            return None;
+        }
+        let lists = fetch_ordered(&mmap, keys, HIGH_DF_SKIP)?;
+        let mut ids = intersect(lists);
+        // Delta members always join (freshness over filtering).
+        {
+            let delta = self.delta.lock().unwrap();
+            if !delta.is_empty() {
+                let mut extra: Vec<u32> = Vec::new();
+                for (i, d) in mmap.docs.iter().enumerate() {
+                    if delta.contains(&d.path) {
+                        extra.push(i as u32);
+                    }
+                }
+                ids.extend(extra);
+                ids.sort_unstable();
+                ids.dedup();
+            }
+        }
+        // Doc ids → snapshot indices via path binary search. The snapshot
+        // stays path-sorted across rebuilds and deltas (see fileindex).
+        // Delta paths missing from the index entirely (new files) resolve
+        // here too; tombstones miss and drop out.
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(doc) = mmap.docs.get(id as usize) else {
+                continue;
+            };
+            if let Ok(i) = snap.paths.binary_search(&doc.path) {
+                out.push(i);
+            }
+        }
+        {
+            let delta = self.delta.lock().unwrap();
+            for p in delta.iter() {
+                if docs_contain(&mmap.docs, p) {
+                    continue;
+                }
+                if let Ok(i) = snap.paths.binary_search(p) {
+                    out.push(i);
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        Some(out)
+    }
+}
+
+fn docs_contain(docs: &[DocEntry], path: &str) -> bool {
+    docs.binary_search_by(|d| d.path.as_str().cmp(path)).is_ok()
+}
+
+/// Default search excludes as a glob set (`!default` allowed through).
+pub fn build_exclude(patterns: &[String]) -> globset::GlobSet {
+    let mut b = globset::GlobSetBuilder::new();
+    for p in patterns {
+        if p == "!default" {
+            continue;
+        }
+        if let Ok(g) = globset::GlobBuilder::new(p).literal_separator(true).build() {
+            b.add(g);
+        }
+    }
+    b.build().unwrap_or_else(|_| globset::GlobSet::empty())
 }
 
 #[cfg(test)]

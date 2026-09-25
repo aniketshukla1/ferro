@@ -168,6 +168,58 @@ fn to_response(r: ferro_core::scan::SearchResponse) -> serde_json::Value {
     })
 }
 
+/// Plan the candidate file list: trigram shortlist intersected with the
+/// glob-filtered set when the index is ready and the query has usable
+/// trigrams, else the full glob-filtered set (scan).
+fn plan_candidates(
+    ws: &Arc<crate::state::Workspace>,
+    snap: &Arc<ferro_core::fileindex::FileSnapshot>,
+    query: &ferro_core::scan::Query,
+) -> (Vec<usize>, &'static str) {
+    let (all, _, _) = ferro_core::scan::candidates(snap, query);
+    if ws.search.state() == ferro_core::trigram::SearchIndexState::Ready {
+        if let Some(tri) = index_shortlist(ws, snap, query) {
+            return (intersect_sorted(&all, &tri), "index");
+        }
+    }
+    (all, "scan")
+}
+
+fn index_shortlist(
+    ws: &Arc<crate::state::Workspace>,
+    snap: &Arc<ferro_core::fileindex::FileSnapshot>,
+    query: &ferro_core::scan::Query,
+) -> Option<Vec<usize>> {
+    if query.pattern.len() < 3 {
+        return None;
+    }
+    let literal = query.mode == ferro_core::scan::Mode::Literal;
+    let ci = match query.case {
+        ferro_core::scan::Case::Insensitive => true,
+        ferro_core::scan::Case::Sensitive => false,
+        ferro_core::scan::Case::Smart => !query.pattern.chars().any(|c| c.is_uppercase()),
+    };
+    let keys = ferro_core::trigram::plan_query(&query.pattern, literal, ci)?;
+    ws.search.candidates(snap, &keys)
+}
+
+fn intersect_sorted(a: &[usize], b: &[usize]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(a.len().min(b.len()));
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Equal => {
+                out.push(a[i]);
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    out
+}
+
 async fn search(
     State(s): State<Arc<AppState>>,
     Query(q): Query<SearchQ>,
@@ -191,12 +243,35 @@ async fn search(
     let snap = ws.index.file_index.load();
     let root = ws.root.clone();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let out =
-        tokio::task::spawn_blocking(move || ferro_core::scan::search(&snap, &root, &query, &stop))
-            .await
-            .map_err(|_| ApiError::new(crate::error::ErrorCode::Internal, "search task failed"))?;
+    let t0 = std::time::Instant::now();
+    // Trigram shortlist when the index is ready, else the full set.
+    let (final_cands, engine) = plan_candidates(&ws, &snap, &query);
+    let (_, exclude_globs, excluded_files) = ferro_core::scan::candidates(&snap, &query);
+    let out = tokio::task::spawn_blocking(move || {
+        let re = ferro_core::scan::compile_query(&query).map_err(|(msg, _)| msg)?;
+        let (files, scanned, matched, truncated) =
+            ferro_core::scan::search_candidates(&snap, &root, &query, &re, &stop, &final_cands);
+        Ok::<_, String>(ferro_core::scan::SearchResponse {
+            q: query.pattern.clone(),
+            engine,
+            ms: 0,
+            files_scanned: scanned,
+            files_matched: matched,
+            truncated,
+            excluded: ferro_core::scan::Excluded {
+                globs: exclude_globs,
+                files: excluded_files,
+            },
+            files,
+        })
+    })
+    .await
+    .map_err(|_| ApiError::new(crate::error::ErrorCode::Internal, "search task failed"))?;
     match out {
-        Ok(r) => Ok(Json(to_response(r))),
+        Ok(mut r) => {
+            r.ms = t0.elapsed().as_millis();
+            Ok(Json(to_response(r)))
+        }
         Err(e) => Err(ApiError::detail(
             crate::error::ErrorCode::BadRequest,
             format!("bad regex: {e}"),
@@ -221,7 +296,8 @@ async fn search_stream(
     let ws = s.ws();
     let snap = ws.index.file_index.load();
     let root = ws.root.clone();
-    let (cands, exclude_globs, excluded_files) = ferro_core::scan::candidates(&snap, &query);
+    let (cands, engine) = plan_candidates(&ws, &snap, &query);
+    let (_, exclude_globs, excluded_files) = ferro_core::scan::candidates(&snap, &query);
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(64);
     // The semaphore is held by this worker only (released when it finishes);
     // the handler future itself must stay responsive to client disconnects.
@@ -283,7 +359,7 @@ async fn search_stream(
             }
         }
         let done = Event::default().event("done").json_data(serde_json::json!({
-            "engine": "scan",
+            "engine": engine,
             "ms": t0.elapsed().as_millis(),
             "filesScanned": scanned,
             "filesMatched": matched,

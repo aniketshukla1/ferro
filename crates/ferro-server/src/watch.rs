@@ -180,6 +180,13 @@ fn watch_loop(
                         changes,
                         overflow: false,
                     });
+                    // Freshness for the trigram index (delta + threshold).
+                    {
+                        let ws = state.ws();
+                        let ups: Vec<String> = upserts.iter().map(|(p, _, _)| p.clone()).collect();
+                        ws.search.note_changes(&ups, &deletes);
+                    }
+                    state.ensure_search_built();
                     note_change(state, &mut last_refresh, &mut pending_status);
                 }
             }

@@ -72,6 +72,8 @@ async fn rebuild(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
             _ = async { idx.rebuild().await } => {
                 let (files, ms) = idx.stats();
                 ws.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let s2 = s.clone();
+                s2.ensure_search_built();
                 jobs.update(&live, |j| {
                     j.state = JobState::Done;
                     j.ended_at = Some(crate::jobs::now_iso());
@@ -82,7 +84,7 @@ async fn rebuild(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
                     files,
                     ms,
                     generation: ws.generation.load(std::sync::atomic::Ordering::Relaxed),
-                    search_index: "off".into(),
+                    search_index: ws.search.state().as_str().into(),
                 });
             }
         }

@@ -113,7 +113,7 @@ async fn meta(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>,
             "files": files,
             "ms": ms,
             "generation": ws.generation.load(std::sync::atomic::Ordering::Relaxed),
-            "searchIndex": "off",
+            "searchIndex": ws.search.state().as_str(),
         },
         "features": FEATURES,
         "limits": {
