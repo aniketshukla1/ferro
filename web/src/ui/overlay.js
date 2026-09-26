@@ -86,11 +86,13 @@ export function toast(t) {
     document.body.appendChild(stack);
   }
   const kind = t.kind || 'info';
+  const titleEl = h('div', { class: 't-title' }, t.title);
+  const msgEl = h('div', { class: 't-msg', hidden: !t.message }, t.message || '');
   const el = h('div', { class: `toast ${kind}` },
     h('span', { class: 't-icon' }, icon(TOAST_ICON[kind] || 'info')),
     h('div', { class: 't-body' },
-      h('div', { class: 't-title' }, t.title),
-      t.message ? h('div', { class: 't-msg' }, t.message) : null,
+      titleEl,
+      msgEl,
       t.action ? h('div', { class: 't-actions' }, h('button', {
         class: 'btn sm',
         on: { click: () => { t.action.run(); close(); } },
@@ -108,7 +110,15 @@ export function toast(t) {
     el.classList.add('leaving');
     setTimeout(() => el.remove(), 160);
   }
-  return { close };
+  /** Replace the title and/or message of a live toast (progress steps). */
+  function update({ title, message } = {}) {
+    if (title != null) titleEl.textContent = title;
+    if (message != null) {
+      msgEl.textContent = message;
+      msgEl.hidden = !message;
+    }
+  }
+  return { close, update };
 }
 
 // ---------- dialogs ----------

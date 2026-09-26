@@ -154,6 +154,21 @@ fn pr_state(
     mock: &str,
     token: Option<&str>,
 ) -> (axum::Router, tempfile::TempDir, tempfile::TempDir) {
+    let (app, dir, home, _, _) = pr_state_full(mock, token);
+    (app, dir, home)
+}
+
+type PrFixture = (
+    axum::Router,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    Arc<ferro_server::state::AppState>,
+    Arc<ferro_server::state::PrSession>,
+);
+
+/// [`pr_state`] plus the app state and session, for tests that move the
+/// PR head or listen on the bus.
+fn pr_state_full(mock: &str, token: Option<&str>) -> PrFixture {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-b", "main", "."]);
     git(dir.path(), &["config", "user.email", "t@t"]);
@@ -211,6 +226,7 @@ fn pr_state(
         head_sha: head.clone(),
         merge_base: head.clone(),
         reused: false,
+        remote: "origin".into(),
     };
     let session = Arc::new(ferro_server::state::PrSession {
         pr_ref: pref,
@@ -228,7 +244,7 @@ fn pr_state(
         can_push: parking_lot::RwLock::new(None),
         can_push_known: std::sync::atomic::AtomicBool::new(false),
     });
-    let ws = ferro_server::state::Workspace::pr(dir.path().to_path_buf(), session, &dirs);
+    let ws = ferro_server::state::Workspace::pr(dir.path().to_path_buf(), session.clone(), &dirs);
     st.ws.store(ws);
     let guard = Arc::new(ferro_server::guard::GuardConfig::new(
         Some(TOKEN.into()),
@@ -237,7 +253,13 @@ fn pr_state(
         false,
     ));
     let last = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    (server::build_router(st, guard, last, true, None), dir, home)
+    (
+        server::build_router(st.clone(), guard, last, true, None),
+        dir,
+        home,
+        st,
+        session,
+    )
 }
 
 #[tokio::test]
@@ -355,7 +377,10 @@ async fn submit_needs_token_and_validates() {
         Some(r#"{"event":"COMMENT","body":"x"}"#),
     )
     .await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    // Not 401: that status means "your ferro session ended" to clients.
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(v["error"]["code"], "unsupported");
+    assert!(v["error"]["detail"]["hint"].is_string());
 }
 
 #[tokio::test]
@@ -374,4 +399,174 @@ async fn viewed_roundtrip() {
     let (s, v) = req(app, "GET", "/api/v1/review/viewed", None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["files"]["a.txt"]["viewed"].as_bool().unwrap());
+}
+
+/// A forge that answers every request with `status` and an empty body.
+async fn mock_status(status: u16) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 64 * 1024];
+                let _ = sock.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 {status} x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn forge_auth_failure_is_upstream_not_401() {
+    let mock = mock_status(401).await;
+    let (app, _d, _h) = pr_state(&mock, Some("expired"));
+    let (s, v) = req(app, "GET", "/api/v1/pr/threads", None).await;
+    // 401 would read as "your ferro session ended" and sign the user out.
+    assert_eq!(s, StatusCode::BAD_GATEWAY, "{v}");
+    assert_eq!(v["error"]["code"], "upstream");
+    assert_eq!(v["error"]["detail"]["status"], 401);
+    assert_eq!(v["error"]["detail"]["provider"], "github");
+}
+
+#[tokio::test]
+async fn submit_pins_the_checked_out_head() {
+    let (mock, seen) = mock_forge().await;
+    let (app, _d, _h, _st, session) = pr_state_full(&mock, Some("tok"));
+    let reviewed = session.worktree.read().head_sha.clone();
+    // The poll saw a newer push; the drafts were written against `reviewed`.
+    session.meta.write().head_sha = "f".repeat(40);
+    let (s, _) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/review/drafts",
+        Some(r#"{"path":"a.txt","line":1,"body":"x"}"#),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = req(
+        app,
+        "POST",
+        "/api/v1/review/submit",
+        Some(r#"{"event":"COMMENT","body":""}"#),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let raw = seen.lock().unwrap().join("\n");
+    assert!(
+        raw.contains(&format!("\"commit_id\":\"{reviewed}\"")),
+        "{raw}"
+    );
+}
+
+/// Drain the bus for the latest `drafts` event.
+async fn last_drafts(
+    rx: &mut tokio::sync::broadcast::Receiver<(u64, ferro_server::bus::ServerEvent)>,
+) -> Option<serde_json::Value> {
+    let mut last = None;
+    while let Ok(Ok((_, ev))) =
+        tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await
+    {
+        if let ferro_server::bus::ServerEvent::Drafts { drafts } = ev {
+            last = Some(drafts);
+        }
+    }
+    last
+}
+
+#[tokio::test]
+async fn drafts_events_carry_the_whole_list() {
+    let (mock, _) = mock_forge().await;
+    let (app, _d, _h, st, _session) = pr_state_full(&mock, Some("tok"));
+    let mut rx = st.bus.subscribe();
+    for body in ["one", "two"] {
+        let json = format!(r#"{{"path":"a.txt","line":1,"body":"{body}"}}"#);
+        let (s, _) = req(app.clone(), "POST", "/api/v1/review/drafts", Some(&json)).await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let drafts = last_drafts(&mut rx).await.expect("drafts event");
+    assert_eq!(drafts.as_array().unwrap().len(), 2, "{drafts}");
+    // Edits and deletes publish too.
+    let id = drafts[0]["id"].as_str().unwrap().to_string();
+    let (s, _) = req(
+        app.clone(),
+        "PATCH",
+        &format!("/api/v1/review/drafts/{id}"),
+        Some(r#"{"body":"edited"}"#),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let edited = last_drafts(&mut rx).await.expect("patch event");
+    assert!(edited.to_string().contains("edited"));
+    let (s, _) = req(app, "DELETE", &format!("/api/v1/review/drafts/{id}"), None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let after = last_drafts(&mut rx).await.expect("delete event");
+    assert_eq!(after.as_array().unwrap().len(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn pr_mode_git_never_runs_the_prs_hooks() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mock, _) = mock_forge().await;
+    let (app, dir, _h) = pr_state(&mock, Some("tok"));
+    // An in-tree hooks dir (common setup) resolves inside the PR checkout,
+    // so these hooks are the PR author's code.
+    let marker = dir.path().join("..").join(format!(
+        "pwned-{}",
+        dir.path().file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::create_dir_all(dir.path().join(".githooks")).unwrap();
+    let hook = dir.path().join(".githooks/pre-commit");
+    std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(dir.path(), &["config", "core.hooksPath", ".githooks"]);
+    std::fs::write(dir.path().join("a.txt"), "one\nchanged\n").unwrap();
+    let (s, v) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/git/stage",
+        Some(r#"{"paths":["a.txt"]}"#),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = req(
+        app,
+        "POST",
+        "/api/v1/git/commit",
+        Some(r#"{"message":"fix from review"}"#),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        !marker.exists(),
+        "PR-mode commit ran the PR's pre-commit hook"
+    );
+}
+
+#[tokio::test]
+async fn viewed_paths_are_validated_and_deleted_files_stick() {
+    let (mock, _) = mock_forge().await;
+    let (app, _d, _h) = pr_state(&mock, Some("tok"));
+    for bad in ["../outside.txt", "/etc/hosts"] {
+        let json = format!(r#"{{"path":"{bad}","viewed":true}}"#);
+        let (s, _) = req(app.clone(), "PUT", "/api/v1/review/viewed", Some(&json)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{bad}");
+    }
+    // A deleted file has no blob, and stays viewed while it stays deleted.
+    let (s, v) = req(
+        app.clone(),
+        "PUT",
+        "/api/v1/review/viewed",
+        Some(r#"{"path":"gone.txt","viewed":true}"#),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, v) = req(app, "GET", "/api/v1/review/viewed", None).await;
+    assert_eq!(v["files"]["gone.txt"]["viewed"], true, "{v}");
+    assert_eq!(v["files"]["gone.txt"]["changedSince"], false, "{v}");
 }

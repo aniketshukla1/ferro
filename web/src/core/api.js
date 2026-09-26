@@ -114,6 +114,8 @@ export const api = {
   gitStatus: (o) => request('git/status', o),
   metrics: () => request('metrics'),
   jobs: () => request('jobs'),
+  job: (id) => request(`jobs/${encodeURIComponent(id)}`),
+  openPr: (url) => request('pr/open', { method: 'POST', body: { url } }),
   rebuildIndex: () => request('index/rebuild', { method: 'POST', body: {} }),
   openExternal: (url) => request('desktop/open-external', { method: 'POST', body: { url } }),
   /** Sign this browser out; `all` also signs out every other browser (the printed link still works). */

@@ -137,6 +137,15 @@ async fn conversation(
 
 // -- drafts --------------------------------------------------------------------
 
+/// `drafts` event: the whole list (API.md § 12 keeps every tab in sync from
+/// it), after any change — add, edit, delete, remap, submit.
+pub(crate) fn publish_drafts(s: &Arc<AppState>, pr: &PrSession) {
+    let all: Vec<serde_json::Value> = pr.store.drafts().iter().map(draft_json).collect();
+    s.bus.publish(crate::bus::ServerEvent::Drafts {
+        drafts: serde_json::Value::Array(all),
+    });
+}
+
 fn draft_json(d: &ferro_forge::store::Draft) -> serde_json::Value {
     serde_json::json!({
         "id": d.id, "path": d.path, "line": d.line, "startLine": d.start_line,
@@ -169,13 +178,12 @@ async fn drafts_add(
         .map_err(|e| ApiError::bad_request(format!("invalid JSON: {e}")))?;
     let nd: ferro_forge::store::NewDraft = serde_json::from_value(v)
         .map_err(|e| ApiError::bad_request(format!("invalid draft: {e}")))?;
-    let d = tokio::task::spawn_blocking(move || pr.store.add(nd))
+    let pr2 = pr.clone();
+    let d = tokio::task::spawn_blocking(move || pr2.store.add(nd))
         .await
         .map_err(|_| ApiError::new(ErrorCode::Internal, "store task failed"))?
         .map_err(ApiError::bad_request)?;
-    s.bus.publish(crate::bus::ServerEvent::Drafts {
-        drafts: serde_json::json!([draft_json(&d)]),
-    });
+    publish_drafts(&s, &pr);
     Ok(Json(draft_json(&d)))
 }
 
@@ -189,10 +197,18 @@ async fn drafts_patch(
         .map_err(|e| ApiError::bad_request(format!("invalid JSON: {e}")))?;
     let p: ferro_forge::store::DraftPatch = serde_json::from_value(v)
         .map_err(|e| ApiError::bad_request(format!("invalid patch: {e}")))?;
-    let d = tokio::task::spawn_blocking(move || pr.store.patch(&id, &p))
+    let pr2 = pr.clone();
+    let d = tokio::task::spawn_blocking(move || pr2.store.patch(&id, &p))
         .await
         .map_err(|_| ApiError::new(ErrorCode::Internal, "store task failed"))?
-        .map_err(|_| ApiError::not_found("no such draft".to_string()))?;
+        .map_err(|e| {
+            if e == ferro_forge::store::NO_DRAFT {
+                ApiError::not_found(e)
+            } else {
+                ApiError::bad_request(e)
+            }
+        })?;
+    publish_drafts(&s, &pr);
     Ok(Json(draft_json(&d)))
 }
 
@@ -201,10 +217,12 @@ async fn drafts_delete(
     Path(id): Path<String>,
 ) -> Result<axum::http::StatusCode, ApiError> {
     let (_, pr) = session(&s)?;
-    let gone = tokio::task::spawn_blocking(move || pr.store.remove(&id))
+    let pr2 = pr.clone();
+    let gone = tokio::task::spawn_blocking(move || pr2.store.remove(&id))
         .await
         .map_err(|_| ApiError::new(ErrorCode::Internal, "store task failed"))?;
     if gone {
+        publish_drafts(&s, &pr);
         Ok(axum::http::StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::not_found("no such draft".to_string()))
@@ -219,11 +237,7 @@ async fn submit(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let (ws, pr) = session(&s)?;
     if !pr.github.has_token() {
-        return Err(ApiError::detail(
-            ErrorCode::Unauthorized,
-            "no forge token",
-            serde_json::json!({ "hint": "set GITHUB_TOKEN / GH_TOKEN, `gh auth login`, or the OS keychain (B8)" }),
-        ));
+        return Err(crate::v1::pr::no_token());
     }
     let v: serde_json::Value = serde_json::from_slice(&body)
         .map_err(|e| ApiError::bad_request(format!("invalid JSON: {e}")))?;
@@ -237,7 +251,10 @@ async fn submit(
         .and_then(|b| b.as_str())
         .unwrap_or("")
         .to_string();
-    let head_sha = pr.meta.read().head_sha.clone();
+    // The head the drafts were written against (the checked-out one), not
+    // session.meta: the poll moves meta to a newer push, and pinning that
+    // would place every old-head line number on different code.
+    let head_sha = pr.worktree.read().head_sha.clone();
     let drafts = pr.store.drafts();
     // Stale drafts are skipped and reported; reply drafts defer to replies.
     let mut failed = Vec::new();
@@ -295,6 +312,7 @@ async fn submit(
         }
     }
     pr.store.record_round(&head_sha, "submitted");
+    publish_drafts(&s, &pr);
     let _ = ws;
     Ok(Json(serde_json::json!({
         "url": resp.html_url,
@@ -306,6 +324,51 @@ async fn submit(
 
 // -- viewed + rounds ---------------------------------------------------------------
 
+/// Worktree blob ids for `paths` (what `git hash-object` computes), in one
+/// git call. Paths are validated workspace-relative paths; a path with no
+/// regular file (deleted) has no blob.
+fn worktree_blobs(
+    repo: &ferro_core::git::GitRepo,
+    paths: &[String],
+) -> std::collections::HashMap<String, Option<String>> {
+    let is_id =
+        |h: &str| (h.len() == 40 || h.len() == 64) && h.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut out = std::collections::HashMap::new();
+    let mut present: Vec<(String, String)> = Vec::new();
+    for p in paths {
+        let rel = ferro_core::paths::git_rel(&repo.root, p, ferro_core::paths::Access::Read);
+        match rel {
+            // `--stdin-paths` is line-based: a name with a newline has no
+            // stable blob id here and simply counts as changed.
+            Ok(rel)
+                if !rel.contains('\n')
+                    && std::fs::symlink_metadata(repo.root.join(&rel))
+                        .is_ok_and(|m| m.is_file()) =>
+            {
+                present.push((p.clone(), rel))
+            }
+            _ => {
+                out.insert(p.clone(), None);
+            }
+        }
+    }
+    if !present.is_empty() {
+        let input: String = present.iter().map(|(_, rel)| format!("{rel}\n")).collect();
+        let hashes = repo
+            .run_stdin(&["hash-object", "--stdin-paths"], input.as_bytes())
+            .unwrap_or_default();
+        let mut lines = hashes.lines();
+        for (p, _) in present {
+            let h = lines
+                .next()
+                .map(|s| s.trim().to_string())
+                .filter(|h| is_id(h));
+            out.insert(p, h);
+        }
+    }
+    out
+}
+
 async fn viewed_get(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
     let (ws, pr) = session(&s)?;
     let head = pr.meta.read().head_sha.clone();
@@ -314,15 +377,13 @@ async fn viewed_get(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::V
         let v: serde_json::Value = pr.store.viewed(&head);
         let mut files = serde_json::Map::new();
         if let (Some(repo), Some(map)) = (repo, v.get("files").and_then(|m| m.as_object())) {
-            for (path, _) in map {
-                let blob = repo
-                    .run(&["hash-object", path])
-                    .ok()
-                    .map(|o| o.trim().to_string())
-                    .filter(|o| o.len() == 40);
+            let paths: Vec<String> = map.keys().cloned().collect();
+            let blobs = worktree_blobs(&repo, &paths);
+            for path in paths {
+                let blob = blobs.get(&path).cloned().flatten();
                 files.insert(
                     path.clone(),
-                    serde_json::to_value(pr.store.viewed_state(path, blob.as_deref())).unwrap(),
+                    serde_json::to_value(pr.store.viewed_state(&path, blob.as_deref())).unwrap(),
                 );
             }
         }
@@ -345,14 +406,16 @@ async fn viewed_put(
     if path.is_empty() || path.len() > 512 {
         return Err(ApiError::bad_request("path required"));
     }
+    // Workspace-relative, like every other path (§ 5.1): the stored key is
+    // later hashed, so nothing outside the checkout or option-shaped passes.
+    let path_s = ferro_core::paths::git_rel(&ws.root, path, ferro_core::paths::Access::Read)
+        .map_err(|_| ApiError::new(ErrorCode::Forbidden, "path outside workspace"))?;
     let repo = ws.git.as_ref().map(|g| g.repo.clone());
-    let path_s = path.to_string();
     let out = tokio::task::spawn_blocking(move || {
         let blob = repo
             .as_ref()
-            .and_then(|r| r.run(&["hash-object", &path_s]).ok())
-            .map(|o| o.trim().to_string())
-            .filter(|o| o.len() == 40);
+            .and_then(|r| worktree_blobs(r, std::slice::from_ref(&path_s)).remove(&path_s))
+            .flatten();
         pr.store.set_viewed(&path_s, viewed, blob)
     })
     .await

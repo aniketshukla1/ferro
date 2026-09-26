@@ -77,13 +77,27 @@ pub struct Round {
     pub kind: String,
 }
 
+/// Error text of an unknown draft id (the HTTP layer maps it to 404; other
+/// patch errors are validation, 400).
+pub const NO_DRAFT: &str = "no such draft";
+
 pub struct ReviewStore {
     dir: PathBuf,
+    /// Serializes read-modify-write of the JSON files: handlers run
+    /// concurrently, and two unlocked adds would each drop the other's draft.
+    lock: std::sync::Mutex<()>,
 }
 
 impl ReviewStore {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn locked(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.lock.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn read<T: Default + for<'de> Deserialize<'de>>(&self, name: &str) -> T {
@@ -124,6 +138,7 @@ impl ReviewStore {
             return Err("side must be LEFT or RIGHT".into());
         }
         let now = now_iso();
+        let _guard = self.locked();
         let mut all = self.drafts();
         let draft = Draft {
             id: new_id("d"),
@@ -145,11 +160,12 @@ impl ReviewStore {
     }
 
     pub fn patch(&self, id: &str, p: &DraftPatch) -> Result<Draft, String> {
+        let _guard = self.locked();
         let mut all = self.drafts();
         let d = all
             .iter_mut()
             .find(|x| x.id == id)
-            .ok_or_else(|| "no such draft".to_string())?;
+            .ok_or_else(|| NO_DRAFT.to_string())?;
         if let Some(b) = &p.body {
             if b.trim().is_empty() {
                 return Err("body required".into());
@@ -163,10 +179,12 @@ impl ReviewStore {
             d.line = l;
         }
         if let Some(sl) = p.start_line {
-            if sl == 0 || sl > d.line {
-                return Err("startLine must satisfy 0 < startLine <= line".into());
-            }
             d.start_line = Some(sl);
+        }
+        // Checked after both ends may have moved (a patch of `line` alone
+        // must not leave startLine past it).
+        if d.start_line.is_some_and(|sl| sl == 0 || sl > d.line) {
+            return Err("startLine must satisfy 0 < startLine <= line".into());
         }
         if let Some(s) = &p.side {
             if s != "LEFT" && s != "RIGHT" {
@@ -182,6 +200,7 @@ impl ReviewStore {
     }
 
     pub fn remove(&self, id: &str) -> bool {
+        let _guard = self.locked();
         let mut all = self.drafts();
         let n = all.len();
         all.retain(|x| x.id != id);
@@ -192,6 +211,7 @@ impl ReviewStore {
     }
 
     pub fn clear(&self) {
+        let _guard = self.locked();
         let _ = self.write("drafts.json", &Vec::<Draft>::new());
     }
 
@@ -203,6 +223,7 @@ impl ReviewStore {
         old_head: &str,
         new_head: &str,
     ) -> Result<usize, String> {
+        let _guard = self.locked();
         let mut all = self.drafts();
         // Group by (path, side-is-base?) — LEFT drafts map through the old
         // side, RIGHT through the new side. Base rarely moves; a LEFT draft
@@ -212,20 +233,22 @@ impl ReviewStore {
         let mut diffs: std::collections::HashMap<String, Option<Vec<Hunk>>> =
             std::collections::HashMap::new();
         for d in all.iter_mut() {
+            // A failed diff (old head gone after a force-push + gc, bad
+            // path) means the mapping is unknown: `None` marks the draft
+            // stale rather than keeping lines that may have moved.
             let hunks = diffs.entry(d.path.clone()).or_insert_with(|| {
-                let out = repo
-                    .run_bytes(&[
-                        "diff",
-                        "-U0",
-                        "--no-color",
-                        "--no-ext-diff",
-                        old_head,
-                        new_head,
-                        "--",
-                        &d.path,
-                    ])
-                    .unwrap_or_default();
-                Some(parse_zero_hunks(&out))
+                repo.run_bytes(&[
+                    "diff",
+                    "-U0",
+                    "--no-color",
+                    "--no-ext-diff",
+                    old_head,
+                    new_head,
+                    "--",
+                    &d.path,
+                ])
+                .ok()
+                .map(|out| parse_zero_hunks(&out))
             });
             let mapped = hunks
                 .as_ref()
@@ -273,6 +296,7 @@ impl ReviewStore {
     /// (B4): a file viewed at blob X whose blob changed reads back as
     /// `{viewed: false, changedSince: true}` — computed by `viewed_state`.
     pub fn set_viewed(&self, path: &str, viewed: bool, at_blob: Option<String>) -> ViewedState {
+        let _guard = self.locked();
         let mut v: serde_json::Value = self.read("viewed.json");
         if !v.is_object() {
             v = serde_json::json!({});
@@ -294,7 +318,8 @@ impl ReviewStore {
     }
 
     /// Resolve viewed state against the current blob: changed blob →
-    /// `{viewed: false, changedSince: true}`.
+    /// `{viewed: false, changedSince: true}`. No blob on either side (a
+    /// deleted file, still deleted) is unchanged.
     pub fn viewed_state(&self, path: &str, current_blob: Option<&str>) -> ViewedState {
         let v: serde_json::Value = self.read("viewed.json");
         let f = v.get("files").and_then(|m| m.get(path));
@@ -313,8 +338,8 @@ impl ReviewStore {
                 changed_since: false,
             };
         }
-        match (at.clone(), current_blob) {
-            (Some(a), Some(c)) if a == c => ViewedState {
+        match (at.as_deref(), current_blob) {
+            (a, c) if a == c => ViewedState {
                 viewed: true,
                 at_sha: at,
                 changed_since: false,
@@ -334,6 +359,7 @@ impl ReviewStore {
     }
 
     pub fn record_round(&self, head_sha: &str, kind: &str) {
+        let _guard = self.locked();
         let mut all = self.rounds();
         // One round per head (latest wins for repeats).
         all.retain(|r| r.head_sha != head_sha);

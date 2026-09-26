@@ -37,11 +37,11 @@ fn cfg(dir: &Path) {
 }
 
 /// Minimal mock GitHub: canned PR repo answers keyed by request path.
-async fn mock_github(base: &str, head: &str) -> String {
+/// Mock GitHub whose PR head can move while the test runs.
+async fn mock_github(base: &str, head: Arc<std::sync::Mutex<String>>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let base = base.to_string();
-    let head = head.to_string();
     tokio::spawn(async move {
         use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
         loop {
@@ -86,6 +86,7 @@ async fn mock_github(base: &str, head: &str) -> String {
                         && !first.contains("/reviews")
                         && !first.contains("/comments");
                     let is_repo = first.contains("GET /repos/o/r ");
+                    let head = head.lock().unwrap().clone();
                     let body = if is_pull {
                         serde_json::json!({
                             "title": "Feat", "body": "hello", "state": "open", "merged": false, "draft": false,
@@ -190,7 +191,8 @@ async fn pr_open_job_swaps_workspace() {
         .unwrap()
         .success());
 
-    let mock = mock_github(&base, &head).await;
+    let mock_head = Arc::new(std::sync::Mutex::new(head.clone()));
+    let mock = mock_github(&base, mock_head.clone()).await;
     std::env::set_var("FERRO_FORGE_API_BASE", &mock);
 
     let home = tempfile::tempdir().unwrap();
@@ -212,7 +214,7 @@ async fn pr_open_job_swaps_workspace() {
         false,
     ));
     let last = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    let app = server::build_router(st, guard, last, true, None);
+    let app = server::build_router(st.clone(), guard, last, true, None);
 
     // Open through /workspace/open (also covers the prUrl routing).
     let res = app
@@ -272,6 +274,64 @@ async fn pr_open_job_swaps_workspace() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+
+    // Opening a PR hardened nothing in the user's own repository.
+    let cfg = std::process::Command::new("git")
+        .arg("-C")
+        .arg(work.path())
+        .args(["config", "--local", "--get", "core.hooksPath"])
+        .output()
+        .unwrap();
+    assert!(!cfg.status.success(), "user repo config was modified");
+
+    // Live updates follow the PR worktree.
+    let root = st.ws().root.clone();
+    let mut rx = st.bus.subscribe();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    std::fs::write(root.join("live.txt"), "hi\n").unwrap();
+    let mut saw = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+    while tokio::time::Instant::now() < deadline && !saw {
+        if let Ok(Ok((_, ferro_server::bus::ServerEvent::Fs { changes, .. }))) =
+            tokio::time::timeout(std::time::Duration::from_secs(8), rx.recv()).await
+        {
+            saw = changes.iter().any(|c| c.path == "live.txt");
+        }
+    }
+    assert!(saw, "the PR workspace must be watched");
+    std::fs::remove_file(root.join("live.txt")).unwrap();
+
+    // The author pushes; the 60 s poll notices first (meta moves), then
+    // the user refreshes. The worktree must follow, in place.
+    git(&nested, &["checkout", "-q", "feature"]);
+    std::fs::write(nested.join("more.txt"), "more\n").unwrap();
+    git(&nested, &["add", "."]);
+    git(&nested, &["commit", "-m", "more"]);
+    let head2 = git_out(&nested, &["rev-parse", "HEAD"]);
+    git(&nested, &["update-ref", "refs/pull/7/head", &head2]);
+    *mock_head.lock().unwrap() = head2.clone();
+    let session = st.ws().pr.clone().expect("pr session");
+    session.meta.write().head_sha = head2.clone();
+    let res = app
+        .clone()
+        .oneshot(authed("/api/v1/pr/refresh", "POST", Some("")))
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), 65536).await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert!(
+        root.join("more.txt").is_file(),
+        "worktree must move to the new head"
+    );
+    assert_eq!(session.worktree.read().head_sha, head2);
+    let (_, p) = j(app.clone(), "/api/v1/pr").await;
+    assert_eq!(p["pr"]["headMoved"], false, "{p}");
 
     std::env::remove_var("FERRO_FORGE_API_BASE");
 }

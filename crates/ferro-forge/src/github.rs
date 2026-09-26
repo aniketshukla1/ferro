@@ -185,15 +185,33 @@ impl GitHub {
     }
 
     pub async fn checks(&self, r: &ForgeRef, sha: &str) -> Result<Checks, ForgeError> {
-        let runs = self
-            .get(&format!(
-                "{}/repos/{}/{}/commits/{sha}/check-runs",
-                self.api_base, r.owner, r.repo
-            ))
-            .await?;
+        // Every page: a failing run on page 2 must not read as success.
+        // Capped at 10 pages (1000 runs).
+        let mut all_runs = Vec::new();
+        let mut total = 0u64;
+        for page in 1..=10u32 {
+            let v = self
+                .get(&format!(
+                    "{}/repos/{}/{}/commits/{sha}/check-runs?per_page=100&page={page}",
+                    self.api_base, r.owner, r.repo
+                ))
+                .await?;
+            total = v.get("total_count").and_then(|n| n.as_u64()).unwrap_or(0);
+            let runs = v
+                .get("check_runs")
+                .and_then(|a| a.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let n = runs.len();
+            all_runs.extend(runs);
+            if n < 100 || all_runs.len() as u64 >= total {
+                break;
+            }
+        }
+        let runs = serde_json::json!({ "total_count": total, "check_runs": all_runs });
         let statuses = self
             .get(&format!(
-                "{}/repos/{}/{}/commits/{sha}/status",
+                "{}/repos/{}/{}/commits/{sha}/status?per_page=100",
                 self.api_base, r.owner, r.repo
             ))
             .await?;
@@ -491,9 +509,14 @@ impl Checks {
                 conclusion,
                 "failure" | "timed_out" | "action_required" | "cancelled"
             ) {
+                // Link the failing run, not whichever came first.
+                let own = r
+                    .get("details_url")
+                    .and_then(|u| u.as_str())
+                    .map(|s| s.to_string());
                 return Self {
                     state: "failure".into(),
-                    url,
+                    url: own.or(url),
                 };
             }
             if conclusion.is_empty()
@@ -519,9 +542,13 @@ impl Checks {
                     .map(|s| s.to_string());
             }
             if matches!(state, "failure" | "error") {
+                let own = s
+                    .get("target_url")
+                    .and_then(|u| u.as_str())
+                    .map(|s| s.to_string());
                 return Self {
                     state: "failure".into(),
-                    url,
+                    url: own.or(url),
                 };
             }
             if state == "pending" {

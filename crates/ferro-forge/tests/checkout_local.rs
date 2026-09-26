@@ -137,21 +137,36 @@ fn bare_mirror_open_reuse_and_dirty() {
     assert!(!o1.merge_base.is_empty());
     // merge-base must be the base commit (feature branched from main tip).
     assert_eq!(o1.merge_base, base);
-    // Hardened config present.
-    let hooks = git(&o1.dir, &["config", "core.hooksPath"]);
-    assert_eq!(hooks, "");
-    assert_eq!(git(&o1.dir, &["config", "protocol.file.allow"]), "always");
+    // Hardening travels per process: no config file is ever written (in a
+    // linked worktree that file is the whole repository's config).
+    let cfg = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&o1.dir)
+        .args(["config", "--get", "core.hooksPath"])
+        .output()
+        .unwrap();
+    assert!(!cfg.status.success(), "hooksPath must not be written");
 
     // Second open: reused, no new work.
     let o2 = open(&r, &m, &url, None, &dirs);
     assert!(o2.reused);
     assert_eq!(o2.dir, o1.dir);
 
-    // Dirty worktree: refusing is safer than clobbering.
+    // Local edits at the same head: reused, edits kept.
     std::fs::write(o1.dir.join("feat.txt"), "dirty\n").unwrap();
+    let o3 = open(&r, &m, &url, None, &dirs);
+    assert!(o3.reused);
+    assert_eq!(
+        std::fs::read_to_string(o1.dir.join("feat.txt")).unwrap(),
+        "dirty\n"
+    );
+
+    // Local edits and a moved head: refusing is safer than clobbering.
+    let mut moved = meta(&base, &base);
+    moved.head_sha = base.clone();
     let err = ferro_forge::open_pr(
         &r,
-        &m,
+        &moved,
         &url,
         None,
         &dirs,
@@ -163,6 +178,10 @@ fn bare_mirror_open_reuse_and_dirty() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("local changes"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(o1.dir.join("feat.txt")).unwrap(),
+        "dirty\n"
+    );
 }
 
 #[test]

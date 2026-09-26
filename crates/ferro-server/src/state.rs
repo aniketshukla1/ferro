@@ -116,14 +116,19 @@ impl Workspace {
         })
     }
 
-    /// PR-mode workspace rooted at an opened worktree.
+    /// PR-mode workspace rooted at an opened worktree. Its git handle runs
+    /// every command hardened (no hooks, fsmonitor, submodule recursion or
+    /// file transport): the checkout is untrusted code, and a repo with an
+    /// in-tree `core.hooksPath` would otherwise run the PR's own hooks on
+    /// commit or push.
     pub fn pr(root: PathBuf, session: Arc<PrSession>, dirs: &FerroDirs) -> Arc<Self> {
         let index = Arc::new(ferro_core::Index::new(root.clone()));
         let key = dirs.workspace_key(index.root());
         let session_path = dirs.workspace_state_dir(&key).join("session.json");
         let git = is_repo(index.root()).then(|| GitRepo {
             root: index.root().to_path_buf(),
-            repo: ferro_core::git::GitRepo::new(index.root().to_path_buf()),
+            repo: ferro_core::git::GitRepo::new(index.root().to_path_buf())
+                .with_env(ferro_forge::checkout::untrusted_env(&[], false)),
         });
         Arc::new(Self {
             key,

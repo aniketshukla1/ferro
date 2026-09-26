@@ -20,15 +20,37 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/v1/pr/refresh", post(refresh))
 }
 
+/// Forge failures on the HTTP boundary (API.md § 1.4). A rejected GitHub
+/// token is `upstream` with `{status: 401, provider}`, never ferro's own
+/// `unauthorized`: clients treat a 401 as their ferro session ending.
 pub(crate) fn forge_err(e: ferro_forge::ForgeError) -> ApiError {
-    let code = match e.code() {
-        "bad_request" => ErrorCode::BadRequest,
-        "unauthorized" => ErrorCode::Unauthorized,
-        "not_found" => ErrorCode::NotFound,
-        "rate_limited" => ErrorCode::RateLimited,
-        _ => ErrorCode::Upstream,
-    };
-    ApiError::detail(code, e.to_string(), e.detail())
+    let (code, detail) = forge_code(&e);
+    ApiError::detail(code, e.to_string(), detail)
+}
+
+fn forge_code(e: &ferro_forge::ForgeError) -> (ErrorCode, serde_json::Value) {
+    match e.code() {
+        "bad_request" => (ErrorCode::BadRequest, e.detail()),
+        "not_found" => (ErrorCode::NotFound, e.detail()),
+        "rate_limited" => (ErrorCode::RateLimited, e.detail()),
+        "unauthorized" => {
+            let mut d = e.detail();
+            d["status"] = 401.into();
+            d["provider"] = "github".into();
+            (ErrorCode::Upstream, d)
+        }
+        _ => (ErrorCode::Upstream, e.detail()),
+    }
+}
+
+/// Writes that need a forge token and have none: a disabled feature
+/// (`unsupported`), again never a 401.
+pub(crate) fn no_token() -> ApiError {
+    ApiError::detail(
+        ErrorCode::Unsupported,
+        "no forge token",
+        serde_json::json!({ "hint": "set GITHUB_TOKEN / GH_TOKEN, `gh auth login`, or the OS keychain (B8)" }),
+    )
 }
 
 /// Assemble API.md § 8.1 from the cached session state.
@@ -182,13 +204,7 @@ fn job_failed(
 }
 
 fn fail_forge(s: &Arc<AppState>, id: &str, e: ferro_forge::ForgeError) {
-    let (code, detail) = match e.code() {
-        "bad_request" => (ErrorCode::BadRequest, serde_json::Value::Null),
-        "unauthorized" => (ErrorCode::Unauthorized, e.detail()),
-        "not_found" => (ErrorCode::NotFound, serde_json::Value::Null),
-        "rate_limited" => (ErrorCode::RateLimited, e.detail()),
-        _ => (ErrorCode::Upstream, e.detail()),
-    };
+    let (code, detail) = forge_code(&e);
     job_failed(s, id, code, e.to_string(), detail);
 }
 
@@ -255,7 +271,10 @@ async fn run_open_job(
         )
     })
     .await;
-    drop(fwd);
+    // The sender went with the closure: drain the forwarder before any
+    // terminal job state, or a late "running" update could land after
+    // "done" and leave the job spinning.
+    let _ = fwd.await;
     let opened = match opened {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => {
@@ -327,7 +346,10 @@ async fn run_open_job(
             search_index: "off".into(),
         });
     });
-    crate::watch::start(s);
+    // Live updates follow the new root (start() is a no-op while the old
+    // workspace's watcher is registered).
+    let s_watch = s.clone();
+    let _ = tokio::task::spawn_blocking(move || crate::watch::restart(&s_watch)).await;
     start_poll(s, session.clone());
     s.bus.publish(crate::bus::ServerEvent::Workspace {
         key,
@@ -409,7 +431,10 @@ async fn refresh(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Valu
         .as_ref()
         .ok_or_else(|| ApiError::new(ErrorCode::Unsupported, "not in PR mode"))?
         .clone();
-    let old_head = session.meta.read().head_sha.clone();
+    // The checked-out head, not session.meta: the poll updates meta when
+    // the PR moves, and comparing against that would read as "no change"
+    // and leave the worktree (and drafts) on the old head forever.
+    let old_head = session.worktree.read().head_sha.clone();
     let meta = session
         .github
         .pull(&session.pr_ref)
@@ -450,7 +475,12 @@ async fn refresh(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Valu
         .map_err(forge_err)?;
         *session.worktree.write() = opened;
         let repo = ferro_core::git::GitRepo::new(ws.root.clone());
-        let _ = session.store.remap(&repo, &old_head, &meta.head_sha);
+        let (store_session, new_head) = (session.clone(), meta.head_sha.clone());
+        let _ = tokio::task::spawn_blocking(move || {
+            store_session.store.remap(&repo, &old_head, &new_head)
+        })
+        .await;
+        crate::v1::review::publish_drafts(&s, &session);
     }
     let v = pr_meta_json(&ws, &session);
     s.bus.publish(crate::bus::ServerEvent::Pr { pr: v.clone() });

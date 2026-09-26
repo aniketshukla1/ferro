@@ -173,6 +173,7 @@ fn fixture() -> Fixture {
         head_sha: head.clone(),
         merge_base: head.clone(),
         reused: false,
+        remote: "origin".into(),
     };
     let session = Arc::new(ferro_server::state::PrSession {
         pr_ref: pref,

@@ -53,6 +53,41 @@ impl ForgeRef {
     }
 }
 
+/// A DNS hostname with an optional port: letters, digits, `-` and `.`,
+/// at least one dot, no empty labels. Rejects userinfo (`github.com@evil`),
+/// which would send requests (and the token) to another host.
+fn valid_host(host: &str) -> bool {
+    let (name, port) = match host.rsplit_once(':') {
+        Some((n, p)) => (n, Some(p)),
+        None => (host, None),
+    };
+    if port.is_some_and(|p| p.is_empty() || p.len() > 5 || !p.bytes().all(|b| b.is_ascii_digit())) {
+        return false;
+    }
+    name.contains('.')
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
+/// Owner and repo names: GitHub allows letters, digits, `-`, `_` and `.`;
+/// `.` and `..` alone are path segments, not names. They end up in API
+/// URLs and cache paths, so nothing else passes.
+fn valid_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 100
+        && s != "."
+        && s != ".."
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
 /// Parse `https://<host>/<owner>/<repo>/pull/<n>` (scheme optional).
 pub fn parse_pr_url(s: &str) -> Option<ForgeRef> {
     let s = s.trim().trim_end_matches('/');
@@ -61,15 +96,12 @@ pub fn parse_pr_url(s: &str) -> Option<ForgeRef> {
         .or_else(|| s.strip_prefix("http://"))
         .unwrap_or(s);
     let (host, rest) = without_scheme.split_once('/')?;
-    if host.is_empty() || !host.contains('.') {
+    if !valid_host(host) {
         return None;
     }
     let mut parts = rest.split('/');
-    let owner = parts.next()?.trim();
-    let mut repo = parts.next()?.trim();
-    if owner.is_empty() || repo.is_empty() {
-        return None;
-    }
+    let owner = parts.next()?;
+    let mut repo = parts.next()?;
     if parts.next()? != "pull" {
         return None;
     }
@@ -78,6 +110,9 @@ pub fn parse_pr_url(s: &str) -> Option<ForgeRef> {
         return None;
     }
     repo = repo.strip_suffix(".git").unwrap_or(repo);
+    if !valid_name(owner) || !valid_name(repo) {
+        return None;
+    }
     // Reject trailing junk (`/pull/1/files` is not a PR URL).
     if parts.next().is_some() {
         return None;
@@ -118,8 +153,23 @@ mod tests {
             "not a url",
             "https://github.com//repo/pull/1",
             "https://github.com/o/r/pull/abc",
+            // Userinfo would route requests (and the token) elsewhere.
+            "https://github.com@evil.example/o/r/pull/1",
+            "https://evil.example:1@github.com/o/r/pull/1",
+            // Dot segments and odd characters never reach URLs or paths.
+            "https://github.com/../r/pull/1",
+            "https://github.com/o/../pull/1",
+            "https://github.com/o/r%2F..%2Fx/pull/1",
+            "https://github.com/o?x=1/r/pull/1",
+            "https://-bad.example/o/r/pull/1",
+            "https://github.com:/o/r/pull/1",
         ] {
             assert!(parse_pr_url(bad).is_none(), "{bad}");
         }
+        let p = parse_pr_url("https://ghe.corp.example:8443/my-org/my_repo.rs/pull/2").unwrap();
+        assert_eq!(
+            (p.host.as_str(), p.owner.as_str(), p.repo.as_str()),
+            ("ghe.corp.example:8443", "my-org", "my_repo.rs")
+        );
     }
 }

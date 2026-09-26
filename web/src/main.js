@@ -165,6 +165,12 @@ async function boot() {
     if (!has('git.status.v2')) bus.on('ev:fs', debounce(refreshGit, 600));
   }
   bus.on('git:refresh', refreshGit);
+  // A switched workspace (a PR opened, another folder): fresh meta and status for the new root
+  // (the tree and editor reset themselves on the same event).
+  bus.on('ev:workspace', () => {
+    api.meta().then((m) => store.set('meta', m)).catch(() => {});
+    refreshGit();
+  });
   if (has('metrics')) api.metrics().then((m) => store.set('metrics', m)).catch(() => {});
   if (mockMode) document.documentElement.classList.add('mock');
 
@@ -272,7 +278,43 @@ function registerCommands({ shell, editor, palette, find, getTree, getSearch, ai
       }
     },
   });
-  command({ id: 'pr.open', title: 'Open Pull Request…', category: 'Review', icon: 'git-pull-request', run: () => toast({ kind: 'info', title: 'In-app PR review is coming soon', message: 'For now, start ferro with the PR URL: ferro <pr-url>' }) });
+  command({ id: 'pr.open', title: 'Open Pull Request…', category: 'Review', icon: 'git-pull-request', run: (url) => openPullRequest(url) });
+}
+
+// PR review opens through the server's pr.open job (fetch + worktree can take a while on a big
+// repo). One toast follows its steps; the `workspace` event then moves the whole UI onto the PR.
+const PR_STEPS = { metadata: 'Reading the pull request…', fetch: 'Fetching commits…', worktree: 'Checking out…', 'merge-base': 'Finding the merge base…' };
+const PR_OPEN_LIMIT_MS = 40 * 60 * 1000; // server-side clone timeout is 30 min
+
+async function openPullRequest(url) {
+  if (!has('pr.open') || !url) {
+    toast(has('pr.open')
+      ? { title: 'Paste a pull request URL into the command palette', message: 'ferro opens it for review in place.' }
+      : { title: 'In-app PR review is coming soon', message: 'For now, start ferro with the PR URL: ferro <pr-url>' });
+    return;
+  }
+  const t = toast({ title: 'Opening pull request…', message: url, timeout: 0 });
+  try {
+    const { job } = await api.openPr(url);
+    const deadline = Date.now() + PR_OPEN_LIMIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 400));
+      const j = await api.job(job.id);
+      if (j.state === 'done') {
+        const pr = j.result || {};
+        t.close();
+        toast({ kind: 'ok', title: `Reviewing ${pr.owner}/${pr.repo}#${pr.number}`, message: pr.title });
+        return;
+      }
+      if (j.state === 'failed' || j.state === 'cancelled') throw new Error(j.error?.message || `The job was ${j.state}.`);
+      const step = j.progress?.message;
+      if (step) t.update({ message: PR_STEPS[step] || step });
+    }
+    throw new Error('Timed out waiting for the checkout.');
+  } catch (e) {
+    t.close();
+    toast({ kind: 'error', title: 'Could not open the pull request', message: e.message });
+  }
 }
 
 boot().catch((e) => {

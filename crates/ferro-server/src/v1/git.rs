@@ -283,21 +283,21 @@ async fn push_pr(
     ws: &Arc<crate::state::Workspace>,
     session: &Arc<crate::state::PrSession>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let token = session.token.clone().ok_or_else(|| {
-        ApiError::detail(
-            ErrorCode::Unauthorized,
-            "no forge token",
-            serde_json::json!({ "hint": "set GITHUB_TOKEN / GH_TOKEN, `gh auth login`, or the OS keychain (B8)" }),
-        )
-    })?;
+    let token = session.token.clone().ok_or_else(crate::v1::pr::no_token)?;
     let meta = session.meta.read().clone();
     let url = meta
         .head_clone_url
         .clone()
         .unwrap_or_else(|| session.pr_ref.clone_url());
     let refspec = format!("HEAD:refs/heads/{}", meta.head_ref);
-    let auth = ferro_forge::token::git_auth_env(&url, &token);
-    let repo = ferro_core::git::GitRepo::new(ws.root.clone()).with_env(auth);
+    // Hardened too: `git push` runs pre-push, which an in-tree hooksPath
+    // would take from the untrusted checkout. The target itself is ferro's
+    // choice (the API's clone URL), so local-path transport stays allowed.
+    let env = ferro_forge::checkout::untrusted_env(
+        &[ferro_forge::token::auth_config(&url, &token)],
+        true,
+    );
+    let repo = ferro_core::git::GitRepo::new(ws.root.clone()).with_env(env);
     let out = tokio::task::spawn_blocking(move || repo.run_net(&["push", &url, &refspec]))
         .await
         .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))?;
@@ -321,23 +321,41 @@ async fn push_pr(
 }
 
 async fn pull_pr(
-    _s: &Arc<AppState>,
+    s: &Arc<AppState>,
     ws: &Arc<crate::state::Workspace>,
     session: &Arc<crate::state::PrSession>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let n = session.pr_ref.number;
-    let auth = session
+    let auth: Vec<(String, String)> = session
         .token
         .clone()
-        .map(|t| ferro_forge::token::git_auth_env(&session.pr_ref.clone_url(), &t))
+        .map(|t| {
+            vec![ferro_forge::token::auth_config(
+                &session.pr_ref.clone_url(),
+                &t,
+            )]
+        })
         .unwrap_or_default();
+    // No hooks; the configured remote may be a local mirror path, so its
+    // transport stays allowed (only untrusted content must not pick one).
+    let env = ferro_forge::checkout::untrusted_env(&auth, true);
+    // The remote that serves pull/<n>/head for this checkout (a local
+    // repo's may be `upstream`, with `origin` a fork).
+    let remote = session.worktree.read().remote.clone();
     let ws2 = ws.clone();
     let session2 = session.clone();
     let out = tokio::task::spawn_blocking(move || {
-        let repo = ferro_core::git::GitRepo::new(ws2.root.clone()).with_env(auth);
+        let repo = ferro_core::git::GitRepo::new(ws2.root.clone()).with_env(env);
         let pref = format!("refs/ferro/pr/{n}");
-        repo.run_net(&["fetch", "origin", &format!("pull/{n}/head:{pref}")])
-            .map_err(map_err)?;
+        // Forced: after a force-push the checks below report divergence
+        // instead of the fetch itself failing.
+        repo.run_net(&[
+            "fetch",
+            "--",
+            &remote,
+            &ferro_forge::checkout::pr_refspec(n),
+        ])
+        .map_err(map_err)?;
         let head = repo.run(&["rev-parse", "HEAD"]).map_err(map_err)?;
         let fetched = repo.run(&["rev-parse", &pref]).map_err(map_err)?;
         let head = head.trim().to_string();
@@ -365,13 +383,18 @@ async fn pull_pr(
             ));
         }
         let output = repo.run(&["reset", "--hard", &fetched]).map_err(map_err)?;
-        session2.worktree.write().head_sha = fetched;
+        session2.worktree.write().head_sha = fetched.clone();
+        // Drafts follow their lines to the new head, as on refresh.
+        let _ = session2.store.remap(&repo, &head, &fetched);
         let st = fresh_status(&repo, &ws2)?;
         Ok((output, true, st))
     })
     .await
     .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))??;
     let (output, updated, st) = out;
+    if updated {
+        crate::v1::review::publish_drafts(s, session);
+    }
     Ok(Json(
         serde_json::json!({ "output": output, "updated": updated, "status": st }),
     ))

@@ -296,3 +296,23 @@ async fn checks_rollup() {
         assert_eq!(c.state, want);
     }
 }
+
+#[tokio::test]
+async fn checks_read_every_page() {
+    // 101 runs: 100 green on page 1, the failure on page 2.
+    let ok: Vec<serde_json::Value> = (0..100)
+        .map(|i| serde_json::json!({"status": "completed", "conclusion": "success", "details_url": format!("https://ci/{i}")}))
+        .collect();
+    let page1 = serde_json::json!({"total_count": 101, "check_runs": ok});
+    let page2 = serde_json::json!({"total_count": 101, "check_runs": [
+        {"status": "completed", "conclusion": "failure", "details_url": "https://ci/broken"}
+    ]});
+    let m = Mock::start(vec![json(page1), json(page2), json(serde_json::json!({}))]).await;
+    let c = m.client().checks(&pr_ref(), &"a".repeat(40)).await.unwrap();
+    assert_eq!(c.state, "failure");
+    // The link points at the failing run, not the first green one.
+    assert_eq!(c.url.as_deref(), Some("https://ci/broken"));
+    let reqs = m.recorded();
+    assert!(reqs[0].contains("per_page=100&page=1"), "{}", reqs[0]);
+    assert!(reqs[1].contains("page=2"), "{}", reqs[1]);
+}
