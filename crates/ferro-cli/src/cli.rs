@@ -84,4 +84,6 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         allow_write: bool,
     },
+    /// Remove PR worktrees of merged or closed PRs older than 7 days.
+    Gc,
 }

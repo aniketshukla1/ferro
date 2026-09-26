@@ -46,8 +46,46 @@ async fn main() -> AnyhowResult {
             )
             .await
         }
+        Some(Commands::Gc) => gc().await,
         None => serve(cli).await,
     }
+}
+
+/// Remove worktrees of merged/closed PRs older than 7 days.
+async fn gc() -> AnyhowResult {
+    let dirs = ferro_core::dirs::FerroDirs::resolve();
+    let removed = ferro_forge::checkout::gc_worktrees(&dirs.state_dir, 7, &|r| {
+        let (token, _) = ferro_forge::resolve_token(&r.host)
+            .map(|(t, s)| (Some(t), Some(s)))
+            .unwrap_or((None, None));
+        let gh = ferro_forge::GitHub::for_ref(r, token);
+        // Sync callback from a multithreaded runtime: isolate the fetch on
+        // a throwaway current-thread runtime.
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()
+                .and_then(|rt| {
+                    rt.block_on(async {
+                        match gh.pull(r).await {
+                            Ok(m) if m.merged => Some("merged".to_string()),
+                            Ok(m) if m.state == "closed" => Some("closed".to_string()),
+                            Ok(_) => Some("open".to_string()),
+                            Err(_) => None,
+                        }
+                    })
+                })
+        })
+    });
+    if removed.is_empty() {
+        println!("ferro gc: nothing to remove");
+    } else {
+        for d in &removed {
+            println!("ferro gc: removed {}", d.display());
+        }
+    }
+    Ok(())
 }
 
 async fn serve(cli: Cli) -> AnyhowResult {
@@ -60,8 +98,8 @@ async fn serve(cli: Cli) -> AnyhowResult {
         Some(p) => {
             // PR mode: `ferro https://github.com/owner/repo/pull/N`
             if let Some(raw) = p.to_str() {
-                if let Some(info) = ferro_core::pr::parse_pr_url(raw) {
-                    return serve_pr(cli, info).await;
+                if ferro_forge::parse_pr_url(raw).is_some() {
+                    return serve_pr(cli, raw).await;
                 }
             }
             let s = p.to_string_lossy().to_string();
@@ -199,60 +237,30 @@ fn launch_target(s: &str) -> (PathBuf, Option<(String, usize)>) {
     )
 }
 
-async fn serve_pr(cli: Cli, info: ferro_core::pr::PrInfo) -> AnyhowResult {
+/// `ferro <pr-url>`: serve the cwd, then open the PR through the same
+/// pr.open job the UI uses (persistent worktrees, no temp clones).
+async fn serve_pr(cli: Cli, url: &str) -> AnyhowResult {
+    let pr_ref = ferro_forge::parse_pr_url(url).ok_or("not a GitHub PR url")?;
     if !cli.yes {
-        // Refuse already-merged PRs unless -y (px0 parity).
-        let state_out = std::process::Command::new("gh")
-            .args([
-                "pr",
-                "view",
-                &info.number.to_string(),
-                "--repo",
-                &format!("{}/{}", info.owner, info.repo),
-                "--json",
-                "state",
-                "--jq",
-                ".state",
-            ])
-            .output();
-        if let Ok(o) = state_out {
-            if o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "MERGED" {
-                return Err("PR already merged (use -y to open anyway)".into());
+        // Refuse already-merged PRs unless -y (px0 parity), via the API
+        // rather than the gh CLI. Offline or unauthenticated: allow, the
+        // server surfaces the real state.
+        if let (Some(token), _) = ferro_forge::resolve_token(&pr_ref.host)
+            .map(|(t, s)| (Some(t), Some(s)))
+            .unwrap_or((None, None))
+        {
+            let gh = ferro_forge::GitHub::for_ref(&pr_ref, Some(token));
+            if let Ok(meta) = gh.pull(&pr_ref).await {
+                if meta.merged {
+                    return Err("PR already merged (use -y to open anyway)".into());
+                }
             }
         }
     }
-    eprintln!(
-        "ferro: fetching PR #{} {}/{} …",
-        info.number, info.owner, info.repo
-    );
-    let work = tokio::task::spawn_blocking(move || ferro_core::pr::worktree_for_pr(&info))
-        .await
-        .map_err(|e| format!("pr fetch task: {e}"))?
-        .map_err(|e| format!("pr fetch: {e}"))?;
-    eprintln!(
-        "ferro: PR #{} head {} base {} ({})",
-        work.info.number,
-        &work.head_sha[..8.min(work.head_sha.len())],
-        work.base_ref,
-        &work.base_sha[..8.min(work.base_sha.len())]
-    );
+    let root = PathBuf::from(".")
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from("."));
     let dirs = ferro_core::dirs::FerroDirs::resolve();
-    let state = ferro_server::server::build_state(
-        work.dir.clone(),
-        dirs,
-        ferro_server::Host::Cli,
-        env!("CARGO_PKG_VERSION").to_string(),
-    );
-    state.ws().index.set_pr(ferro_core::pr::PrCtx {
-        owner: work.info.owner.clone(),
-        repo: work.info.repo.clone(),
-        number: work.info.number,
-        base_ref: work.base_ref.clone(),
-        base_sha: work.base_sha.clone(),
-        head_sha: work.head_sha.clone(),
-    });
-    // Keep the ephemeral worktree alive for the serve lifetime.
-    let _keep = work;
     if cli.no_auth && cli.host != "127.0.0.1" && cli.host != "localhost" && cli.host != "::1" {
         return Err("--no-auth is only allowed on loopback binds".into());
     }
@@ -261,20 +269,57 @@ async fn serve_pr(cli: Cli, info: ferro_core::pr::PrInfo) -> AnyhowResult {
         port: cli.port,
         no_git: cli.no_git,
         narrate: !cli.quiet,
-        no_open: cli.no_open,
+        no_open: true, // opened below, after the PR job starts
         initial: None,
         token: cli.token.or_else(|| std::env::var("FERRO_TOKEN").ok()),
         allow_hosts: allow_hosts(cli.allow_host),
         no_auth: cli.no_auth,
         dev_web: cli.dev_web.clone(),
     };
-    let (listener, bound) = ferro_server::server::bind_walk(&o.host, o.port).await;
-    let h = ferro_server::server::serve_with(state, listener, bound, o).await;
+    let h = ferro_server::server::serve(
+        root,
+        dirs,
+        ferro_server::Host::Cli,
+        env!("CARGO_PKG_VERSION").to_string(),
+        o,
+    )
+    .await;
+    // Drive the same pr.open job the frontend uses, over loopback.
+    let client = reqwest::Client::new();
+    let mut req = client
+        .post(format!("{}/api/v1/workspace/open", url_root(&h.url)))
+        .json(&serde_json::json!({ "prUrl": url }));
+    if let Some(t) = token_of(&h.url) {
+        req = req.bearer_auth(t);
+    }
+    match req.send().await {
+        Ok(r) if r.status().is_success() => eprintln!("ferro: opening PR {url} …"),
+        Ok(r) => eprintln!("ferro: pr.open rejected: {}", r.status()),
+        Err(e) => eprintln!("ferro: pr.open failed: {e}"),
+    }
     if !cli.no_open {
         let _ = open::that(&h.url);
     }
     wait_shutdown(h).await;
     Ok(())
+}
+
+/// Base origin of a `http://host:port/?token=…` server URL.
+fn url_root(url: &str) -> String {
+    match url.split_once('?') {
+        Some((base, _)) => base.trim_end_matches('/').to_string(),
+        None => url.trim_end_matches('/').to_string(),
+    }
+}
+
+/// Token embedded in the server URL query string, if any.
+fn token_of(url: &str) -> Option<String> {
+    url.split_once("token=").and_then(|(_, rest)| {
+        rest.split('&')
+            .next()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+    })
 }
 
 async fn ask(

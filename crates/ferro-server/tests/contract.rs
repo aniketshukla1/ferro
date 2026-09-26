@@ -335,18 +335,18 @@ async fn settings_session_jobs_workspace() {
         .any(|x| x["kind"] == "index.rebuild"));
 
     // Workspace open rejects PR urls in B1; bad paths 404.
-    for (uri, body, want) in [
-        (
-            "/api/v1/workspace/open",
-            r#"{"prUrl":"https://github.com/o/r/pull/1"}"#,
-            StatusCode::UNPROCESSABLE_ENTITY,
-        ),
-        (
-            "/api/v1/workspace/open",
-            r#"{"path":"/nonexistent-xyz"}"#,
-            StatusCode::NOT_FOUND,
-        ),
-    ] {
+    // B4: prUrl starts a pr.open job (bad URLs are 400).
+    let res = app
+        .clone()
+        .oneshot(post("/api/v1/workspace/open", r#"{"prUrl":"nope"}"#))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    for (uri, body, want) in [(
+        "/api/v1/workspace/open",
+        r#"{"path":"/nonexistent-xyz"}"#,
+        StatusCode::NOT_FOUND,
+    )] {
         let res = app.clone().oneshot(post(uri, body)).await.unwrap();
         assert_eq!(res.status(), want, "{uri}");
     }

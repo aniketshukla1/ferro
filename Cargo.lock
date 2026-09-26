@@ -1418,8 +1418,10 @@ dependencies = [
  "clap",
  "ferro-agent",
  "ferro-core",
+ "ferro-forge",
  "ferro-server",
  "open",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -1473,6 +1475,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-forge"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ferro-core",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "ferro-server"
 version = "0.1.0"
 dependencies = [
@@ -1484,6 +1503,7 @@ dependencies = [
  "base64 0.22.1",
  "ferro-agent",
  "ferro-core",
+ "ferro-forge",
  "libmimalloc-sys",
  "lru",
  "mimalloc",

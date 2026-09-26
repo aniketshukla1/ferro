@@ -4,6 +4,7 @@ members = [
   "crates/ferro-core",
   "crates/ferro-cli",
   "crates/ferro-agent",
+  "crates/ferro-forge",
   "crates/ferro-server",
   "apps/desktop/src-tauri",
 ]
