@@ -17,6 +17,8 @@ use crate::provider_v2::{ToolCallV2, ToolSchema};
 pub const TOOL_OUTPUT_CHARS: usize = 2000;
 
 /// Execution context: live index snapshot plus read-only git access.
+/// `redact_secrets` + `never_send` enforce B5 §redaction on every byte the
+/// tools hand to the provider.
 #[derive(Debug, Clone)]
 pub struct ToolCtx {
     pub index: Arc<Index>,
@@ -26,6 +28,8 @@ pub struct ToolCtx {
     pub max_file_bytes: u64,
     pub max_files: usize,
     pub max_per_file: usize,
+    pub redact_secrets: bool,
+    pub never_send: globset::GlobSet,
 }
 
 impl ToolCtx {
@@ -41,13 +45,48 @@ impl ToolCtx {
             max_file_bytes: 8 * 1024 * 1024,
             max_files: 50,
             max_per_file: 5,
+            redact_secrets: true,
+            never_send: crate::redact::never_send_matcher(&default_never_send()),
         }
+    }
+
+    /// Apply `ai.redactSecrets` + `ai.neverSend` from effective settings.
+    pub fn set_policy(&mut self, redact_secrets: bool, never_send_globs: &[String]) {
+        self.redact_secrets = redact_secrets;
+        self.never_send = crate::redact::never_send_matcher(never_send_globs);
     }
 
     /// Refresh the snapshot handle (cheap `Arc` load).
     pub fn refresh(&mut self) {
         self.snapshot = self.index.file_index.load();
     }
+
+    fn scrub(&self, text: String) -> String {
+        if self.redact_secrets {
+            crate::redact::redact_text(&text).0
+        } else {
+            text
+        }
+    }
+
+    fn refused(&self, rel: &str) -> bool {
+        crate::redact::is_never_send(&self.never_send, rel)
+    }
+}
+
+/// Built-in `ai.neverSend` defaults (mirrors the settings schema).
+pub fn default_never_send() -> Vec<String> {
+    [
+        ".env*",
+        "**/*.pem",
+        "**/*.key",
+        "**/id_rsa*",
+        "**/*.p12",
+        "**/secrets/**",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +303,9 @@ fn read_file(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
         Ok(p) => p,
         Err(e) => return e,
     };
+    if ctx.refused(&path) {
+        return ToolOutput::err("refused: never-send path");
+    }
     let start = arg_usize(args, "start", 1).max(1);
     let count = arg_usize(args, "count", 200).clamp(1, 1000);
     match ctx.index.read_window(&path, start - 1, count) {
@@ -273,7 +315,7 @@ fn read_file(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
                 .iter()
                 .map(|l| format!("{:>6}  {}", l.n, l.text))
                 .collect();
-            ToolOutput::ok(format!("{} ({} lines)\n{}", path, w.total, body.join("\n")))
+            ToolOutput::ok(ctx.scrub(format!("{} ({} lines)\n{}", path, w.total, body.join("\n"))))
         }
         None => ToolOutput::err(format!("cannot read: {path}")),
     }
@@ -327,6 +369,10 @@ fn search(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
                 r.engine, r.files_scanned, r.files_matched
             );
             for f in &r.files {
+                // Never-send files stay out of provider context entirely.
+                if ctx.refused(&f.path) {
+                    continue;
+                }
                 for h in &f.hits {
                     out.push_str(&format!("{}:{} {}\n", f.path, h.line, h.text));
                 }
@@ -337,7 +383,7 @@ fn search(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
             if r.files.is_empty() {
                 out.push_str("(no matches)");
             }
-            ToolOutput::ok(out)
+            ToolOutput::ok(ctx.scrub(out))
         }
         Err(e) => ToolOutput::err(format!("bad regex: {e}")),
     }
@@ -359,14 +405,20 @@ fn fuzzy(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
         .filter(|s| !s.is_empty())
         .collect();
     let hits = fuzzy::rank_snap(&ctx.snapshot, &q, limit, &boost);
+    let hits: Vec<_> = hits
+        .into_iter()
+        .filter(|h| !ctx.refused(&ctx.snapshot.paths[h.index]))
+        .collect();
     if hits.is_empty() {
         return ToolOutput::ok("(no matches)".into());
     }
     ToolOutput::ok(
-        hits.iter()
-            .map(|h| format!("{} ({})", ctx.snapshot.paths[h.index], h.score))
-            .collect::<Vec<_>>()
-            .join("\n"),
+        ctx.scrub(
+            hits.iter()
+                .map(|h| format!("{} ({})", ctx.snapshot.paths[h.index], h.score))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
     )
 }
 
@@ -375,6 +427,9 @@ fn outline(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
         Ok(p) => p,
         Err(e) => return e,
     };
+    if ctx.refused(&path) {
+        return ToolOutput::err("refused: never-send path");
+    }
     let abs = match ctx.index.safe_join(&path) {
         Some(p) => p,
         None => return ToolOutput::err(format!("cannot read: {path}")),
@@ -393,13 +448,15 @@ fn outline(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
         return ToolOutput::ok("(no symbols)".into());
     }
     ToolOutput::ok(
-        syms.iter()
-            .map(|(name, kind, line, depth)| {
-                let pad = " ".repeat(depth * 2);
-                format!("{line} {kind} {pad}{name}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        ctx.scrub(
+            syms.iter()
+                .map(|(name, kind, line, depth)| {
+                    let pad = " ".repeat(depth * 2);
+                    format!("{line} {kind} {pad}{name}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
     )
 }
 
@@ -421,15 +478,24 @@ fn git_diff(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
     // Whole-tree diff when path is omitted.
     let path = arg_str(args, "path").unwrap_or_default();
     if path.is_empty() {
-        return whole_diff(&repo, &base, &target, context);
+        return whole_diff(ctx, &repo, &base, &target, context);
+    }
+    if ctx.refused(&path) {
+        return ToolOutput::err("refused: never-send path");
     }
     match repo.diff_raw(&path, &base, &target, context, false) {
-        Ok(d) => ToolOutput::ok(render_raw_diff(&d)),
+        Ok(d) => ToolOutput::ok(ctx.scrub(render_raw_diff(&d))),
         Err(e) => ToolOutput::err(e.stderr()),
     }
 }
 
-fn whole_diff(repo: &GitRepo, base: &str, target: &str, context: usize) -> ToolOutput {
+fn whole_diff(
+    ctx: &ToolCtx,
+    repo: &GitRepo,
+    base: &str,
+    target: &str,
+    context: usize,
+) -> ToolOutput {
     // Cheap path list first; per-file raw diffs stay small via output cap.
     let cs = match repo.changes(base, target) {
         Ok(c) => c,
@@ -452,7 +518,7 @@ fn whole_diff(repo: &GitRepo, base: &str, target: &str, context: usize) -> ToolO
         }
     }
     let _ = context;
-    ToolOutput::ok(out)
+    ToolOutput::ok(ctx.scrub(out))
 }
 
 fn render_raw_diff(d: &ferro_core::diff::FileDiffRaw) -> String {
@@ -518,7 +584,7 @@ fn list_changes(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
                     f.deletions
                 ));
             }
-            ToolOutput::ok(out)
+            ToolOutput::ok(ctx.scrub(out))
         }
         Err(e) => ToolOutput::err(e.stderr()),
     }
@@ -533,6 +599,9 @@ fn read_blob(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
         Ok(p) => p,
         Err(e) => return e,
     };
+    if ctx.refused(&path) {
+        return ToolOutput::err("refused: never-send path");
+    }
     let rev = arg_str(args, "rev").unwrap_or_else(|| "HEAD".into());
     let start = arg_usize(args, "start", 1).max(1);
     let count = arg_usize(args, "count", 200).clamp(1, 1000);
@@ -561,13 +630,13 @@ fn read_blob(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
         .take(count)
         .map(|(i, l)| format!("{:>6}  {}", i + 1, l))
         .collect();
-    ToolOutput::ok(format!(
+    ToolOutput::ok(ctx.scrub(format!(
         "{}@{} ({} lines)\n{}",
         path,
         rev,
         lines.len(),
         body.join("\n")
-    ))
+    )))
 }
 
 #[cfg(test)]
@@ -675,5 +744,40 @@ mod tests {
         assert!(r.ok && r.truncated && r.output.chars().count() <= TOOL_OUTPUT_CHARS);
         let r = dispatch_v2(&ctx, &call("nope", serde_json::json!({})));
         assert!(!r.ok);
+    }
+
+    #[test]
+    fn never_send_paths_are_refused_and_secrets_redacted() {
+        let (_dir, ctx) = ctx_with(&[
+            (".env", "AWS=AKIAIOSFODNN7EXAMPLE\n"),
+            ("src/main.rs", "key = \"AKIAIOSFODNN7EXAMPLE\"\n"),
+        ]);
+        let r = dispatch_v2(
+            &ctx,
+            &call("read_file", serde_json::json!({"path": ".env"})),
+        );
+        assert!(!r.ok && r.output.contains("never-send"), "{}", r.output);
+        let r = dispatch_v2(
+            &ctx,
+            &call("read_file", serde_json::json!({"path": "src/main.rs"})),
+        );
+        assert!(r.ok, "{}", r.output);
+        assert!(r.output.contains("[REDACTED]"), "{}", r.output);
+        assert!(!r.output.contains("AKIAIOSFODNN7EXAMPLE"), "{}", r.output);
+        // Search skips never-send files even when they match.
+        let r = dispatch_v2(&ctx, &call("search", serde_json::json!({"q": "AKIA"})));
+        assert!(!r.output.contains(".env"), "{}", r.output);
+        // Policy off restores raw bytes (settings-driven).
+        let (_dir, mut ctx) = ctx_with(&[("src/k.rs", "AKIAIOSFODNN7EXAMPLE\n")]);
+        ctx.set_policy(false, &[]);
+        let r = dispatch_v2(
+            &ctx,
+            &call("read_file", serde_json::json!({"path": "src/k.rs"})),
+        );
+        assert!(
+            r.ok && r.output.contains("AKIAIOSFODNN7EXAMPLE"),
+            "{}",
+            r.output
+        );
     }
 }
