@@ -117,6 +117,7 @@ fn dirs() -> (tempfile::TempDir, ferro_core::dirs::FerroDirs) {
 
 fn pref() -> ForgeRef {
     ForgeRef {
+        provider: ferro_forge::Provider::GitHub,
         host: "github.com".into(),
         owner: "o".into(),
         repo: "r".into(),

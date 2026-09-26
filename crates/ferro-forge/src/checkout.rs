@@ -352,7 +352,7 @@ fn fetch_refs(
             "fetch",
             "--",
             remote,
-            &r.pull_ref(),
+            &format!("+{}:refs/ferro/pr/{}", r.pull_ref(), r.number),
             &format!("+{base_ref}:refs/ferro/base"),
         ],
         NET_TIMEOUT,

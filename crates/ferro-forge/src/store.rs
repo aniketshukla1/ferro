@@ -92,6 +92,7 @@ impl Clone for ReviewStore {
     fn clone(&self) -> Self {
         Self {
             dir: self.dir.clone(),
+            lock: std::sync::Mutex::new(()),
         }
     }
 }
