@@ -456,7 +456,11 @@ impl OpenAiCompat {
                 }
             }
         }
-        let content = if fold.content.is_empty() { None } else { Some(std::mem::take(&mut fold.content)) };
+        let content = if fold.content.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut fold.content))
+        };
         let prompt_tokens = fold.prompt_tokens;
         let completion_tokens = fold.completion_tokens;
         let finish_reason = std::mem::take(&mut fold.finish_reason);
@@ -525,8 +529,10 @@ impl SseFold {
             }
             if let Some(u) = v.get("usage") {
                 self.prompt_tokens += u.get("prompt_tokens").and_then(|n| n.as_u64()).unwrap_or(0);
-                self.completion_tokens +=
-                    u.get("completion_tokens").and_then(|n| n.as_u64()).unwrap_or(0);
+                self.completion_tokens += u
+                    .get("completion_tokens")
+                    .and_then(|n| n.as_u64())
+                    .unwrap_or(0);
             }
             return;
         };
