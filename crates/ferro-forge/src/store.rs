@@ -378,6 +378,70 @@ impl ReviewStore {
             .find(|r| r.kind == "submitted")
             .map(|r| r.head_sha)
     }
+
+    // -- AI findings (B5) ----------------------------------------------------
+    // Persisted per head SHA in findings.json; dismiss flags stay on the
+    // record so re-reviews of the same head keep them.
+
+    pub fn findings(&self, head_sha: Option<&str>) -> Vec<Finding> {
+        let all = self.read::<Vec<Finding>>("findings.json");
+        match head_sha {
+            Some(h) => all.into_iter().filter(|f| f.head_sha == h).collect(),
+            None => all,
+        }
+    }
+
+    pub fn finding(&self, id: &str) -> Option<Finding> {
+        self.read::<Vec<Finding>>("findings.json")
+            .into_iter()
+            .find(|f| f.id == id)
+    }
+
+    /// Replace this head's findings (re-reviews overwrite, other heads stay).
+    pub fn save_findings(&self, head_sha: &str, findings: &[Finding]) -> Result<(), String> {
+        let mut all = self.read::<Vec<Finding>>("findings.json");
+        all.retain(|f| f.head_sha != head_sha);
+        all.extend(findings.iter().cloned());
+        self.write("findings.json", &all)
+    }
+
+    pub fn dismiss_finding(&self, id: &str, reason: Option<String>) -> bool {
+        let mut all = self.read::<Vec<Finding>>("findings.json");
+        let Some(f) = all.iter_mut().find(|f| f.id == id) else {
+            return false;
+        };
+        f.dismissed = true;
+        f.dismiss_reason = reason.filter(|r| !r.trim().is_empty());
+        self.write("findings.json", &all).is_ok()
+    }
+}
+
+/// AI review finding (API.md § 10.3). `body` is markdown; `bodyHtml` is
+/// rendered server-side. `dismissed` findings stay for audit, filtered
+/// from fresh results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Finding {
+    pub id: String,
+    #[serde(rename = "headSha")]
+    pub head_sha: String,
+    pub path: String,
+    pub line: usize,
+    #[serde(rename = "startLine", skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<usize>,
+    pub side: String,
+    pub severity: String,
+    pub category: String,
+    pub title: String,
+    pub body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+    pub confidence: f64,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(default)]
+    pub dismissed: bool,
+    #[serde(rename = "dismissReason", skip_serializing_if = "Option::is_none")]
+    pub dismiss_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -532,6 +596,41 @@ mod tests {
         assert!(st.remove(&d.id));
         assert!(!st.remove(&d.id));
         assert!(st.drafts().is_empty());
+    }
+
+    #[test]
+    fn findings_persist_per_head_and_dismiss() {
+        let (_d, st) = store();
+        let mk = |id: &str, head: &str| Finding {
+            id: id.into(),
+            head_sha: head.into(),
+            path: "a.rs".into(),
+            line: 1,
+            start_line: None,
+            side: "RIGHT".into(),
+            severity: "high".into(),
+            category: "bug".into(),
+            title: "t".into(),
+            body: "b".into(),
+            suggestion: None,
+            confidence: 0.9,
+            created_at: now_iso(),
+            dismissed: false,
+            dismiss_reason: None,
+        };
+        st.save_findings("h1", &[mk("f_1", "h1"), mk("f_2", "h1")])
+            .unwrap();
+        st.save_findings("h2", &[mk("f_3", "h2")]).unwrap();
+        assert_eq!(st.findings(Some("h1")).len(), 2);
+        assert_eq!(st.findings(None).len(), 3);
+        // Re-review of h1 replaces only h1.
+        st.save_findings("h1", &[mk("f_4", "h1")]).unwrap();
+        assert_eq!(st.findings(Some("h1")).len(), 1);
+        assert_eq!(st.findings(None).len(), 2);
+        assert!(st.dismiss_finding("f_4", Some("wontfix".into())));
+        let f = st.finding("f_4").unwrap();
+        assert!(f.dismissed && f.dismiss_reason.as_deref() == Some("wontfix"));
+        assert!(!st.dismiss_finding("f_nope", None));
     }
 
     #[test]
