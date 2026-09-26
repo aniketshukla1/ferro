@@ -27,6 +27,40 @@ globset = "0.4"
 memmap2 = "0.9"
 arc-swap = "1.7"
 notify = "8"
+streaming-iterator = "0.1"
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-c = { version = "0.24", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-c-sharp = { version = "0.23", optional = true }
+tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-php = { version = "0.24", optional = true }
+
+[features]
+# Default set: every grammar except C# and C++ (binary budget, BACKEND.md
+# B6: those two rlibs alone add ~9 MB linked; they stay opt-in and fall
+# back to the regex extractor).
+default = [
+    "ts-rust", "ts-go", "ts-typescript", "ts-javascript", "ts-python",
+    "ts-java", "ts-c", "ts-ruby", "ts-php",
+]
+tree-sitter = ["dep:tree-sitter"]
+ts-rust = ["tree-sitter", "dep:tree-sitter-rust"]
+ts-go = ["tree-sitter", "dep:tree-sitter-go"]
+ts-typescript = ["tree-sitter", "dep:tree-sitter-typescript"]
+ts-javascript = ["tree-sitter", "dep:tree-sitter-javascript"]
+ts-python = ["tree-sitter", "dep:tree-sitter-python"]
+ts-java = ["tree-sitter", "dep:tree-sitter-java"]
+ts-c = ["tree-sitter", "dep:tree-sitter-c"]
+ts-cpp = ["tree-sitter", "dep:tree-sitter-cpp"]
+ts-csharp = ["tree-sitter", "dep:tree-sitter-c-sharp"]
+ts-ruby = ["tree-sitter", "dep:tree-sitter-ruby"]
+ts-php = ["tree-sitter", "dep:tree-sitter-php"]
 
 [dev-dependencies]
 criterion = "0.5"

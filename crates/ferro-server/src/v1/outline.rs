@@ -1,5 +1,5 @@
-//! GET /api/v1/file/outline — regex symbol extractor (B1; B6 swaps tree-sitter).
-//! Ported from the legacy frontend patterns, extended per API.md § 4.7.
+//! GET /api/v1/file/outline — tree-sitter symbols (B6) with regex fallback.
+//! Response shape per API.md § 4.7 (unchanged from B1).
 
 use axum::{
     extract::{Query, State},
@@ -42,11 +42,34 @@ async fn outline(
     .await
     .map_err(|_| ApiError::new(crate::error::ErrorCode::Internal, "outline task failed"))??;
     let _ = ws;
-    let symbols = ferro_core::outline::extract(&ext, &text)
-        .into_iter()
-        .map(|(name, kind, line, depth)| serde_json::json!({ "name": name, "kind": kind, "line": line, "depth": depth }))
-        .collect::<Vec<_>>();
+    let (source, symbols) = match ferro_core::symbols::outline_ts(&ext, &text) {
+        Some(syms) => (
+            "treesitter",
+            syms.into_iter()
+                .map(|s| {
+                    let mut o = serde_json::json!({
+                        "name": s.name, "kind": s.kind,
+                        "line": s.line, "depth": s.depth,
+                    });
+                    o["endLine"] = s.end_line.into();
+                    if !s.detail.is_empty() {
+                        o["detail"] = s.detail.into();
+                    }
+                    o
+                })
+                .collect::<Vec<_>>(),
+        ),
+        None => (
+            "regex",
+            ferro_core::outline::extract(&ext, &text)
+                .into_iter()
+                .map(|(name, kind, line, depth)| {
+                    serde_json::json!({ "name": name, "kind": kind, "line": line, "depth": depth })
+                })
+                .collect::<Vec<_>>(),
+        ),
+    };
     Ok(Json(
-        serde_json::json!({ "path": q.path, "source": "regex", "symbols": symbols }),
+        serde_json::json!({ "path": q.path, "source": source, "symbols": symbols }),
     ))
 }

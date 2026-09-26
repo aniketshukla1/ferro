@@ -461,6 +461,22 @@ fn outline(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
     }
     let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
     let text = String::from_utf8_lossy(&bytes);
+    if let Some(syms) = ferro_core::symbols::outline_ts(&ext, &text) {
+        if syms.is_empty() {
+            return ToolOutput::ok("(no symbols)".into());
+        }
+        return ToolOutput::ok(
+            ctx.scrub(
+                syms.iter()
+                    .map(|s| {
+                        let pad = " ".repeat(s.depth * 2);
+                        format!("{} {} {pad}{}", s.line, s.kind, s.name)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        );
+    }
     let syms = ferro_core::outline::extract(&ext, &text);
     if syms.is_empty() {
         return ToolOutput::ok("(no symbols)".into());

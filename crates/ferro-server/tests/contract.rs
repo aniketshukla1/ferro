@@ -277,10 +277,21 @@ async fn highlight_and_outline() {
     assert_eq!(v["language"], "Rust");
     assert!(v["lines"][0].as_str().unwrap().contains("t-k"));
 
-    let (s, v) = j(app, "/api/v1/file/outline?path=main.rs").await;
+    let (s, v) = j(app.clone(), "/api/v1/file/outline?path=main.rs").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["source"], "treesitter");
+    assert_eq!(v["symbols"][0]["name"], "main");
+    assert_eq!(v["symbols"][0]["kind"], "function");
+    assert!(v["symbols"][0]["endLine"].as_u64().unwrap() >= 1);
+    assert!(v["symbols"][0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("fn main"));
+    // Unsupported extensions stay on the regex extractor.
+    let (s, v) = j(app.clone(), "/api/v1/file/outline?path=README.md").await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["source"], "regex");
-    assert_eq!(v["symbols"][0]["name"], "main");
+    assert_eq!(v["symbols"][0]["name"], "Title");
 }
 
 #[tokio::test]
