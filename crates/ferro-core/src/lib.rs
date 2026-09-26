@@ -7,6 +7,7 @@ pub mod git;
 pub mod highlight;
 pub mod index;
 pub mod media;
+pub mod outline;
 pub mod paths;
 pub mod pr;
 pub mod scan;
