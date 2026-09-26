@@ -56,8 +56,17 @@ pub struct TurnOutcome {
     pub text: String,
     pub thinking: Vec<ThinkingBlock>,
     pub calls: Vec<ToolCallV2>,
+    /// Assistant blocks in stream order, for exact echo on continuation.
+    pub blocks: Vec<TurnBlock>,
     pub stop: StopReason,
     pub usage: Usage,
+}
+
+#[derive(Debug, Clone)]
+pub enum TurnBlock {
+    Text(String),
+    Thinking(ThinkingBlock),
+    ToolUse(ToolCallV2),
 }
 
 #[derive(Debug, Clone)]
@@ -462,6 +471,7 @@ struct BlockInFlight {
     id: String,
     name: String,
     json: String,
+    text: String,
     thinking: String,
     signature: String,
 }
@@ -482,6 +492,7 @@ impl AnthropicFold {
                 id: String::new(),
                 name: String::new(),
                 json: String::new(),
+                text: String::new(),
                 thinking: String::new(),
                 signature: String::new(),
             });
@@ -539,7 +550,9 @@ impl AnthropicFold {
                     "text_delta" => {
                         let s = d.get("text").and_then(|x| x.as_str()).unwrap_or("");
                         self.text.push_str(s);
-                        self.block(index);
+                        let blk = self.block(index);
+                        blk.kind = BlockKind::Text;
+                        blk.text.push_str(s);
                         let _ = tx.send(LlmEvent::Text(s.to_string()));
                     }
                     "thinking_delta" => {
@@ -610,16 +623,25 @@ impl AnthropicFold {
     fn finish(mut self) -> TurnOutcome {
         let mut calls = Vec::new();
         let mut thinking = Vec::new();
+        let mut blocks = Vec::new();
         self.blocks.sort_by_key(|b| b.index);
         for b in self.blocks {
             if b.kind == BlockKind::Thinking {
-                thinking.push(ThinkingBlock {
+                let block = ThinkingBlock {
                     text: b.thinking,
                     signature: b.signature,
-                });
+                };
+                thinking.push(block.clone());
+                blocks.push(TurnBlock::Thinking(block));
                 continue;
             }
-            if b.kind != BlockKind::Tool || b.name.is_empty() {
+            if b.kind == BlockKind::Text {
+                if !b.text.is_empty() {
+                    blocks.push(TurnBlock::Text(b.text));
+                }
+                continue;
+            }
+            if b.name.is_empty() {
                 continue;
             }
             if self.refusal
@@ -634,18 +656,21 @@ impl AnthropicFold {
             };
             // Strict parse: reject trailing garbage the lenient parser
             // would accept... — serde_json already rejects trailing data.
-            calls.push(ToolCallV2 {
+            let call = ToolCallV2 {
                 id: b.id,
                 name: b.name,
                 input,
                 input_raw: b.json,
                 input_ok,
-            });
+            };
+            blocks.push(TurnBlock::ToolUse(call.clone()));
+            calls.push(call);
         }
         TurnOutcome {
             text: self.text,
             thinking,
             calls,
+            blocks,
             stop: self.stop,
             usage: self.usage,
         }
@@ -793,6 +818,97 @@ async fn backoff_for(e: &ProviderError, attempt: u32) {
 // Covers OpenAI, Gemini (generativelanguage OpenAI endpoint), Ollama and any
 // base-URL override. No thinking blocks; usage comes from stream_options.
 
+/// Translate v2 messages into OpenAI wire messages. A user message with
+/// several tool results becomes one `tool` message per result, because
+/// OpenAI pairs exactly one `tool_call_id` with each message.
+pub(crate) fn openai_messages(messages: &[Msg]) -> Vec<super::provider::ChatMessage> {
+    let mut out = Vec::with_capacity(messages.len() + 1);
+    for m in messages {
+        match m.role {
+            MsgRole::User => {
+                let mut text = String::new();
+                let mut results = Vec::new();
+                for b in &m.blocks {
+                    match b {
+                        MsgBlock::Text(t) => {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(t);
+                        }
+                        MsgBlock::Thinking { text: t, .. } => {
+                            text.push_str(t);
+                        }
+                        MsgBlock::ToolUse { .. } => {}
+                        MsgBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => {
+                            results.push((tool_use_id.clone(), content.clone()));
+                        }
+                    }
+                }
+                if !text.is_empty() || results.is_empty() {
+                    out.push(super::provider::ChatMessage {
+                        role: "user".into(),
+                        content: if text.is_empty() { None } else { Some(text) },
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                for (tool_use_id, content) in results {
+                    out.push(super::provider::ChatMessage {
+                        role: "tool".into(),
+                        content: Some(content),
+                        tool_calls: None,
+                        tool_call_id: Some(tool_use_id),
+                    });
+                }
+            }
+            MsgRole::Assistant => {
+                let mut text = String::new();
+                let mut tool_calls = Vec::new();
+                for b in &m.blocks {
+                    match b {
+                        MsgBlock::Text(t) => {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(t);
+                        }
+                        MsgBlock::Thinking { text: t, .. } => {
+                            text.push_str(t);
+                        }
+                        MsgBlock::ToolUse { id, name, input } => {
+                            tool_calls.push(super::provider::WireToolCall {
+                                id: id.clone(),
+                                r#type: "function".into(),
+                                function: super::provider::WireFunction {
+                                    name: name.clone(),
+                                    arguments: input.to_string(),
+                                },
+                            })
+                        }
+                        MsgBlock::ToolResult { .. } => {}
+                    }
+                }
+                out.push(super::provider::ChatMessage {
+                    role: "assistant".into(),
+                    content: if text.is_empty() { None } else { Some(text) },
+                    tool_calls: if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    },
+                    tool_call_id: None,
+                });
+            }
+        }
+    }
+    out
+}
+
 pub struct CompatV2 {
     kind: ProviderKind,
     inner: super::provider::OpenAiCompat,
@@ -836,56 +952,7 @@ impl LlmClientV2 for CompatV2 {
             tool_calls: None,
             tool_call_id: None,
         });
-        for m in req.messages {
-            let role = match m.role {
-                MsgRole::User => "user",
-                MsgRole::Assistant => "assistant",
-            };
-            let mut text = String::new();
-            let mut tool_calls = Vec::new();
-            let mut tool_id = None;
-            for b in &m.blocks {
-                match b {
-                    MsgBlock::Text(t) => {
-                        if !text.is_empty() {
-                            text.push('\n');
-                        }
-                        text.push_str(t);
-                    }
-                    MsgBlock::Thinking { text: t, .. } => {
-                        text.push_str(t);
-                    }
-                    MsgBlock::ToolUse { id, name, input } => {
-                        tool_calls.push(super::provider::WireToolCall {
-                            id: id.clone(),
-                            r#type: "function".into(),
-                            function: super::provider::WireFunction {
-                                name: name.clone(),
-                                arguments: input.to_string(),
-                            },
-                        })
-                    }
-                    MsgBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } => {
-                        tool_id = Some(tool_use_id.clone());
-                        text.push_str(content);
-                    }
-                }
-            }
-            messages.push(super::provider::ChatMessage {
-                role: role.into(),
-                content: if text.is_empty() { None } else { Some(text) },
-                tool_calls: if tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(tool_calls)
-                },
-                tool_call_id: tool_id,
-            });
-        }
+        messages.extend(openai_messages(req.messages));
         let tools_json: Vec<serde_json::Value> = req
             .tools
             .iter()
@@ -949,9 +1016,15 @@ impl LlmClientV2 for CompatV2 {
             stop
         };
         Ok(TurnOutcome {
-            text: raw.content.unwrap_or_default(),
+            text: raw.content.clone().unwrap_or_default(),
             thinking: Vec::new(),
-            calls,
+            calls: calls.clone(),
+            blocks: std::iter::once(raw.content)
+                .flatten()
+                .filter(|text| !text.is_empty())
+                .map(TurnBlock::Text)
+                .chain(calls.into_iter().map(TurnBlock::ToolUse))
+                .collect(),
             stop,
             usage: Usage {
                 input: raw.prompt_tokens,
@@ -994,3 +1067,38 @@ pub fn make_client(spec: &ProviderSpec) -> Result<ArcV2, ProviderError> {
 }
 
 pub type ArcV2 = std::sync::Arc<dyn LlmClientV2>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_tool_results_become_separate_messages() {
+        let messages = vec![Msg {
+            role: MsgRole::User,
+            blocks: vec![
+                MsgBlock::Text("results".into()),
+                MsgBlock::ToolResult {
+                    tool_use_id: "a".into(),
+                    content: "one".into(),
+                    is_error: false,
+                },
+                MsgBlock::ToolResult {
+                    tool_use_id: "b".into(),
+                    content: "two".into(),
+                    is_error: true,
+                },
+            ],
+            cache: false,
+        }];
+        let wire = openai_messages(&messages);
+        assert_eq!(wire.len(), 3);
+        assert_eq!(wire[0].role, "user");
+        assert_eq!(wire[0].content.as_deref(), Some("results"));
+        assert_eq!(wire[1].role, "tool");
+        assert_eq!(wire[1].tool_call_id.as_deref(), Some("a"));
+        assert_eq!(wire[1].content.as_deref(), Some("one"));
+        assert_eq!(wire[2].tool_call_id.as_deref(), Some("b"));
+        assert_eq!(wire[2].content.as_deref(), Some("two"));
+    }
+}

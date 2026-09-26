@@ -266,6 +266,28 @@ async fn bad_request_does_not_retry() {
 }
 
 #[tokio::test]
+async fn assistant_blocks_preserve_turn_order() {
+    let body = sse(&[
+        r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#,
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}"#,
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}"#,
+        r#"{"type":"content_block_start","index":1,"content_block":{"type":"text"}}"#,
+        r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"checking"}}"#,
+        r#"{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"t1","name":"read_file"}}"#,
+        r#"{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a.txt\"}"}}"#,
+        r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}"#,
+    ]);
+    let m = Mock::start(vec![(200, body, 1)]).await;
+    let (out, _) = run(&m.client(), req("q")).await;
+    assert_eq!(out.blocks.len(), 3);
+    assert!(matches!(out.blocks[0], TurnBlock::Thinking(_)));
+    assert!(matches!(out.blocks[1], TurnBlock::Text(_)));
+    assert!(matches!(out.blocks[2], TurnBlock::ToolUse(_)));
+    assert_eq!(out.calls.len(), 1);
+    std::env::remove_var("ANTHROPIC_API_KEY");
+}
+
+#[tokio::test]
 async fn max_tokens_runs_no_tools() {
     let body = sse(&[
         r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"read_file"}}"#,
