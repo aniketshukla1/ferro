@@ -299,3 +299,97 @@ async fn max_tokens_runs_no_tools() {
     assert!(out.calls.is_empty());
     std::env::remove_var("ANTHROPIC_API_KEY");
 }
+
+/// Recorded review run (B5 acceptance): the mock speaks a full review turn
+/// with three `report_finding` tool calls (one split across SSE events),
+/// then a final turn. The agent loop + validation pipeline must surface ≥ 2
+/// findings. No network in CI.
+#[tokio::test]
+async fn recorded_review_run_finds_seeded_bugs() {
+    use std::collections::{HashMap, HashSet};
+
+    fn finding_delta(index: u64, id: &str, line: u64, title: &str) -> Vec<String> {
+        let arg = format!(
+            "{{\"path\":\"a.txt\",\"line\":{line},\"side\":\"RIGHT\",\"severity\":\"high\",\"category\":\"bug\",\"title\":\"{title}\",\"body\":\"detail\",\"confidence\":0.8}}"
+        );
+        // Split the JSON mid-argument to prove delta accumulation.
+        let mid = arg.len() / 2;
+        vec![
+            format!(
+                "{{\"type\":\"content_block_start\",\"index\":{index},\"content_block\":{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"report_finding\"}}}}"
+            ),
+            format!(
+                "{{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{}}}}}",
+                serde_json::to_string(&arg[..mid]).unwrap()
+            ),
+            format!(
+                "{{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{}}}}}",
+                serde_json::to_string(&arg[mid..]).unwrap()
+            ),
+        ]
+    }
+
+    let mut turn1: Vec<&str> = Vec::new();
+    let s0 = finding_delta(0, "r1", 1, "bug one");
+    let s1 = finding_delta(1, "r2", 1, "bug two");
+    let s2 = finding_delta(2, "r3", 50, "bug three");
+    let owned: Vec<String> = s0.into_iter().chain(s1).chain(s2).collect();
+    let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    turn1.extend(refs);
+    turn1.push(r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":40}}"#);
+    let turn2 = sse(&[
+        r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"reviewed"}}"#,
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}"#,
+    ]);
+    let m = Mock::start(vec![(200, sse(&turn1), 7), (200, turn2, 1)]).await;
+
+    // Workspace with a one-line file under review.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+    let index = std::sync::Arc::new(ferro_core::Index::with_dirs(
+        dir.path().to_path_buf(),
+        ferro_core::dirs::FerroDirs::new(
+            dir.path().join("home/c"),
+            dir.path().join("home/s"),
+            dir.path().join("home/h"),
+        ),
+    ));
+    index
+        .file_index
+        .store(vec!["a.txt".into()], vec![6], vec![0]);
+    let ctx = std::sync::Arc::new(ferro_agent::ToolCtx::new(index));
+
+    let client: ferro_agent::ArcV2 = std::sync::Arc::new(m.client());
+    let mut agent = ferro_agent::AgentV2::new(client, ctx);
+    agent.max_steps = 4;
+    agent.tools_override = Some(ferro_agent::review_tool_schemas());
+    let mut conv = ferro_agent::Conversation::new("c_recorded");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let outcome = agent
+        .run(&mut conv, "review a.txt", None, &tx, &stop)
+        .await
+        .unwrap();
+
+    let mut raws = Vec::new();
+    for step in &outcome.steps {
+        for call in &step.calls {
+            if call.name == ferro_agent::REPORT_FINDING_TOOL && call.result.ok {
+                raws.push(ferro_agent::parse_report(&call.args).unwrap());
+            }
+        }
+    }
+    assert_eq!(raws.len(), 3, "{raws:?}");
+    let mut changed = HashMap::new();
+    changed.insert("a.txt".into(), (HashSet::from([1]), HashSet::new()));
+    let snapped: Vec<_> = raws
+        .iter()
+        .filter_map(|f| ferro_agent::snap_to_diff(f, &changed))
+        .collect();
+    let finals = ferro_agent::dedupe(snapped);
+    assert!(finals.len() >= 2, "{finals:?}");
+    // The second request carried the redacted tool results back to the model.
+    let bodies = m.recorded().join("\n");
+    assert!(bodies.contains("report_finding"), "{bodies}");
+    std::env::remove_var("ANTHROPIC_API_KEY");
+}

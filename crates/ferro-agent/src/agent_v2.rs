@@ -747,8 +747,7 @@ mod tests {
         assert_eq!(mock.stream_calls.load(Ordering::SeqCst), 0);
     }
 
-    /// Seeded-bug fixture: a scripted review run reports 3 findings through
-    /// the strict tool; the pipeline validates, snaps, and dedupes to ≥ 2.
+    /// Seeded-bug fixture: a scripted review run reports 3 findings through    /// the strict tool; the pipeline validates, snaps, and dedupes to ≥ 2.
     #[tokio::test]
     async fn seeded_bug_run_collects_findings() {
         let (_dir, ctx) = fixture_ctx();
@@ -815,5 +814,150 @@ mod tests {
             .collect();
         let finals = crate::review_job::dedupe(snapped);
         assert!(finals.len() >= 2, "{finals:?}");
+    }
+
+    /// Disconnect mid-run: the second turn parks on the stop token, so
+    /// cancelling (client gone) means no third provider call ever happens.
+    #[tokio::test]
+    async fn disconnect_stops_further_provider_calls() {
+        struct CancelMock {
+            first: Mutex<Option<TurnOutcome>>,
+            calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl crate::provider_v2::LlmClientV2 for CancelMock {
+            fn provider_id(&self) -> &'static str {
+                "park"
+            }
+
+            fn model_id(&self) -> &str {
+                "park-1"
+            }
+
+            async fn stream_turn(
+                &self,
+                req: ChatReq<'_>,
+                _tx: tokio::sync::mpsc::UnboundedSender<LlmEvent>,
+            ) -> Result<TurnOutcome, ProviderError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                if let Some(t) = self.first.lock().unwrap().take() {
+                    return Ok(t);
+                }
+                req.stop.cancelled().await;
+                Err(ProviderError::Cancelled)
+            }
+        }
+
+        let (_dir, ctx) = fixture_ctx();
+        let mock = Arc::new(CancelMock {
+            first: Mutex::new(Some(outcome(
+                "working",
+                vec![v2call(
+                    "c1",
+                    "read_file",
+                    serde_json::json!({"path": "a.txt"}),
+                )],
+            ))),
+            calls: AtomicUsize::new(0),
+        });
+        let agent = AgentV2 {
+            client: mock.clone() as ArcV2,
+            ctx,
+            system: "sys".into(),
+            max_steps: 8,
+            context_tokens: 48_000,
+            max_tokens: 64_000,
+            effort: None,
+            tools_override: None,
+        };
+        let mut conv = Conversation::new("c_disc");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let stop = tokio_util::sync::CancellationToken::new();
+        let stop2 = stop.clone();
+        let handle =
+            tokio::spawn(async move { agent.run(&mut conv, "go", None, &tx, &stop2).await });
+        // Wait until the second turn is parked inside the provider.
+        for _ in 0..200 {
+            if mock.calls.load(Ordering::SeqCst) >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 2);
+        stop.cancel();
+        let err = handle.await.unwrap().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AgentError::Provider(ProviderError::Cancelled) | AgentError::Cancelled
+            ),
+            "{err:?}"
+        );
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A fixture AWS key inside a file never reaches provider request bodies:
+    /// the second-turn history carries `[REDACTED]`, not the secret.
+    #[tokio::test]
+    async fn secrets_never_reach_provider_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("k.rs"), "key = \"AKIAIOSFODNN7EXAMPLE\"\n").unwrap();
+        let index = Arc::new(ferro_core::Index::with_dirs(
+            dir.path().to_path_buf(),
+            ferro_core::dirs::FerroDirs::new(
+                dir.path().join("home/c"),
+                dir.path().join("home/s"),
+                dir.path().join("home/h"),
+            ),
+        ));
+        index
+            .file_index
+            .store(vec!["k.rs".into()], vec![28], vec![0]);
+        let ctx = Arc::new(ToolCtx::new(index));
+        let mock = Arc::new(Mock {
+            turns: Mutex::new(VecDeque::from(vec![
+                outcome(
+                    "working",
+                    vec![v2call(
+                        "c1",
+                        "read_file",
+                        serde_json::json!({"path": "k.rs"}),
+                    )],
+                ),
+                TurnOutcome {
+                    text: "done".into(),
+                    thinking: vec![],
+                    calls: vec![],
+                    blocks: vec![TurnBlock::Text("done".into())],
+                    stop: StopReason::EndTurn,
+                    usage: Usage::default(),
+                },
+            ])),
+            stream_calls: AtomicUsize::new(0),
+            seen: Mutex::new(vec![]),
+        });
+        let agent = agent_from_mock(mock.clone(), ctx);
+        let mut conv = Conversation::new("c_sec");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let stop = tokio_util::sync::CancellationToken::new();
+        agent.run(&mut conv, "go", None, &tx, &stop).await.unwrap();
+        let seen = mock.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let mut results = Vec::new();
+        for m in &seen[1] {
+            for b in &m.blocks {
+                if let MsgBlock::ToolResult { content, .. } = b {
+                    results.push(content.clone());
+                }
+            }
+        }
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("[REDACTED]"), "{}", results[0]);
+        assert!(
+            !results[0].contains("AKIAIOSFODNN7EXAMPLE"),
+            "{}",
+            results[0]
+        );
     }
 }
