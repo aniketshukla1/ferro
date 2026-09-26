@@ -2,11 +2,17 @@ pub mod agent;
 pub mod patch;
 pub mod policy;
 pub mod provider;
+pub mod provider_v2;
 pub mod review;
 pub mod session;
 pub mod tools;
 
 pub use agent::{Agent, AgentEvent, Step, Transcript};
+pub use provider_v2::{
+    Anthropic, ChatReq, CompatV2, LlmClientV2, LlmEvent, Msg, MsgBlock, MsgRole, ProviderKind,
+    ProviderSpec, StopReason, ToolCallV2, ToolSchema, TurnOutcome, Usage, make_client, provider_status,
+    resolve_provider, ArcV2,
+};
 pub use patch::{
     changes, needs_destructive, normalize, revert, touched_files, ApplyReport, ChangeKind,
     FileChange,
