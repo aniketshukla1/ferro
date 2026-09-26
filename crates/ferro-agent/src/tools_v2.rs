@@ -30,6 +30,9 @@ pub struct ToolCtx {
     pub max_per_file: usize,
     pub redact_secrets: bool,
     pub never_send: globset::GlobSet,
+    /// Workspace symbol index for definition/references (B6); None in
+    /// unit tests and bare agent runs.
+    pub symbols: Option<Arc<ferro_core::symindex::SymbolIndex>>,
 }
 
 impl ToolCtx {
@@ -47,6 +50,7 @@ impl ToolCtx {
             max_per_file: 5,
             redact_secrets: true,
             never_send: crate::redact::never_send_matcher(&default_never_send()),
+            symbols: None,
         }
     }
 
@@ -259,6 +263,34 @@ pub fn tool_schemas() -> Vec<ToolSchema> {
             ),
             strict: false,
         },
+        ToolSchema {
+            name: "definition".into(),
+            description: "Go to the definition of the identifier at a position. Ranked best-first."
+                .into(),
+            input_schema: schema(
+                &[
+                    ("path", "string", "Workspace-relative file path."),
+                    ("line", "integer", "1-based line of the identifier use."),
+                    ("col", "integer", "1-based column of the identifier use."),
+                ],
+                &["path", "line", "col"],
+            ),
+            strict: false,
+        },
+        ToolSchema {
+            name: "references".into(),
+            description: "Find references to the identifier at a position.".into(),
+            input_schema: schema(
+                &[
+                    ("path", "string", "Workspace-relative file path."),
+                    ("line", "integer", "1-based line of the identifier."),
+                    ("col", "integer", "1-based column of the identifier."),
+                    ("limit", "integer", "Max results."),
+                ],
+                &["path", "line", "col"],
+            ),
+            strict: false,
+        },
     ]
 }
 
@@ -302,8 +334,102 @@ pub fn dispatch_v2(ctx: &ToolCtx, call: &ToolCallV2) -> ToolOutput {
         "git_diff" => git_diff(ctx, &call.input),
         "list_changes" => list_changes(ctx, &call.input),
         "read_blob" => read_blob(ctx, &call.input),
+        "definition" => definition(ctx, &call.input),
+        "references" => references(ctx, &call.input),
         crate::review_job::REPORT_FINDING_TOOL => report_finding(&call.input),
         other => ToolOutput::err(format!("unknown tool: {other}")),
+    }
+}
+
+fn nav_ctx(ctx: &ToolCtx) -> Result<ferro_core::nav::Nav<'_>, ToolOutput> {
+    let syms = ctx
+        .symbols
+        .as_deref()
+        .ok_or_else(|| ToolOutput::err("symbol index not ready"))?;
+    Ok(ferro_core::nav::Nav {
+        root: ctx.index.root(),
+        snap: &ctx.snapshot,
+        syms,
+    })
+}
+
+fn nav_pos(args: &serde_json::Value) -> Result<(String, usize, usize), ToolOutput> {
+    let path = require_str(args, "path")?;
+    if path.len() > 512 {
+        return Err(ToolOutput::err("path too long"));
+    }
+    let line = arg_usize(args, "line", 0);
+    let col = arg_usize(args, "col", 0);
+    if line == 0 || col == 0 {
+        return Err(ToolOutput::err("line and col start at 1"));
+    }
+    Ok((path, line, col))
+}
+
+fn nav_err(e: ferro_core::nav::NavError) -> ToolOutput {
+    ToolOutput::err(match e {
+        ferro_core::nav::NavError::BadPath(m) => m,
+        ferro_core::nav::NavError::BadPosition(m) => m,
+        ferro_core::nav::NavError::NoIdentifier => "no definition here".into(),
+        ferro_core::nav::NavError::TooLarge => "file too large".into(),
+    })
+}
+
+fn definition(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
+    let (path, line, col) = match nav_pos(args) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    if ctx.refused(&path) {
+        return ToolOutput::err("refused: never-send path");
+    }
+    let nav = match nav_ctx(ctx) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    match ferro_core::nav::definitions(&nav, &path, line, col, 10) {
+        Ok(defs) if defs.is_empty() => ToolOutput::ok("(no definitions)".into()),
+        Ok(defs) => ToolOutput::ok(
+            ctx.scrub(
+                defs.iter()
+                    .map(|d| format!("{}:{} {} {}", d.path, d.line, d.kind, d.name))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        ),
+        Err(e) => nav_err(e),
+    }
+}
+
+fn references(ctx: &ToolCtx, args: &serde_json::Value) -> ToolOutput {
+    let (path, line, col) = match nav_pos(args) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    if ctx.refused(&path) {
+        return ToolOutput::err("refused: never-send path");
+    }
+    let limit = arg_usize(args, "limit", 50).clamp(1, 200);
+    let nav = match nav_ctx(ctx) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    match ferro_core::nav::references(&nav, &path, line, col, limit) {
+        Ok((refs, _truncated)) if refs.is_empty() => ToolOutput::ok("(no references)".into()),
+        Ok((refs, truncated)) => {
+            let mut out: Vec<String> = refs
+                .iter()
+                .map(|r| match r.col {
+                    Some(c) => format!("{}:{}:{}", r.path, r.line, c),
+                    None => format!("{}:{}", r.path, r.line),
+                })
+                .collect();
+            if truncated {
+                out.push("(more results capped)".into());
+            }
+            ToolOutput::ok(ctx.scrub(out.join("\n")))
+        }
+        Err(e) => nav_err(e),
     }
 }
 
@@ -725,7 +851,9 @@ mod tests {
                 "outline",
                 "git_diff",
                 "list_changes",
-                "read_blob"
+                "read_blob",
+                "definition",
+                "references"
             ]
         );
         for t in tool_schemas() {
@@ -759,6 +887,53 @@ mod tests {
             &call("outline", serde_json::json!({"path": "src/lib.rs"})),
         );
         assert!(r.ok && r.output.contains("serve"), "{}", r.output);
+    }
+
+    #[test]
+    fn definition_and_references_roundtrip() {
+        let (_dir, mut ctx) = ctx_with(&[
+            ("src/main.rs", "fn main() {\n    serve();\n}\n"),
+            ("src/lib.rs", "pub fn serve() {}\n"),
+        ]);
+        // Build the symbol index synchronously for the nav tools.
+        let syms = ferro_core::symindex::SymbolIndex::new(
+            _dir.path().join("symcache"),
+            ctx.index.root().to_path_buf(),
+        );
+        syms.ensure_built(&ctx.index.file_index.load());
+        let t0 = std::time::Instant::now();
+        while syms.state() != ferro_core::symindex::SymbolState::Ready
+            && t0.elapsed() < std::time::Duration::from_secs(15)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        ctx.symbols = Some(syms);
+        let r = dispatch_v2(
+            &ctx,
+            &call(
+                "definition",
+                serde_json::json!({"path": "src/main.rs", "line": 2, "col": 5}),
+            ),
+        );
+        assert!(r.ok && r.output.contains("src/lib.rs:1"), "{}", r.output);
+        let r = dispatch_v2(
+            &ctx,
+            &call(
+                "references",
+                serde_json::json!({"path": "src/lib.rs", "line": 1, "col": 8}),
+            ),
+        );
+        assert!(r.ok && r.output.contains("src/main.rs:2"), "{}", r.output);
+        // Without an index the tools report not-ready instead of failing.
+        let (_dir, ctx) = ctx_with(&[("a.txt", "x\n")]);
+        let r = dispatch_v2(
+            &ctx,
+            &call(
+                "definition",
+                serde_json::json!({"path": "a.txt", "line": 1, "col": 1}),
+            ),
+        );
+        assert!(!r.ok && r.output.contains("not ready"), "{}", r.output);
     }
 
     #[test]

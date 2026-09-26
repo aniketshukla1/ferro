@@ -165,7 +165,7 @@ async fn status_shape_when_unconfigured() {
 #[tokio::test]
 async fn meta_lists_ai_features() {
     let (_s, v) = body_json(plain_state().oneshot(get("/api/v1/meta")).await.unwrap()).await;
-    for f in ["ai", "ai.ask", "ai.review", "ai.commit"] {
+    for f in ["ai", "ai.ask", "ai.review", "ai.commit", "symbols", "nav"] {
         assert!(
             v["features"]
                 .as_array()

@@ -313,6 +313,7 @@ fn tool_ctx_for(
 ) -> Arc<ferro_agent::ToolCtx> {
     let mut ctx = ferro_agent::ToolCtx::new(ws.index.clone());
     ctx.set_policy(redact_enabled(eff), &never_send_globs(eff));
+    ctx.symbols = Some(ws.symbols.clone());
     if let Some(ex) = eff.get("search.exclude").and_then(|v| v.as_array()) {
         ctx.default_exclude = ex
             .iter()

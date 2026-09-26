@@ -111,6 +111,7 @@ pub enum SymbolState {
     Ready,
 }
 
+#[derive(Debug)]
 pub struct SymbolIndex {
     dir: PathBuf,
     root: PathBuf,

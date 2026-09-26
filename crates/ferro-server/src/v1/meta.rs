@@ -44,6 +44,7 @@ pub const FEATURES: &[&str] = &[
     "review.viewed",
     "review.rounds",
     "symbols",
+    "nav",
     "ai",
     "ai.ask",
     "ai.review",

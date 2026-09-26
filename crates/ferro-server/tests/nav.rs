@@ -74,13 +74,10 @@ async fn j(router: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
 
 fn app() -> axum::Router {
     state_with_files(&[
-        (
-            "src/main.rs",
-            "fn main() {\n    serve();\n}\nfn serve() {}\n",
-        ),
+        ("src/main.rs", "fn main() {\n    serve();\n}\n"),
         (
             "src/lib.rs",
-            "pub struct Scheduler;\nimpl Scheduler {\n pub fn run(&self) {}\n}\n",
+            "pub fn serve() {}\npub struct Scheduler;\nimpl Scheduler {\n pub fn run(&self) {}\n}\n",
         ),
     ])
 }
@@ -133,4 +130,56 @@ async fn symbols_empty_q_and_limits() {
     let (s, v) = j(app(), &format!("/api/v1/symbols?q={long}")).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     assert_eq!(v["error"]["code"], "bad_request");
+}
+
+#[tokio::test]
+async fn definition_resolves_use_to_def() {
+    let (s, v) = j(
+        app(),
+        "/api/v1/nav/definition?path=src/main.rs&line=2&col=5",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let defs = v["definitions"].as_array().unwrap();
+    assert!(!defs.is_empty(), "{v}");
+    assert_eq!(defs[0]["path"], "src/lib.rs");
+    assert_eq!(defs[0]["line"], 1);
+    assert_eq!(defs[0]["source"], "treesitter");
+}
+
+#[tokio::test]
+async fn references_find_uses_and_hover_shows_signature() {
+    let (s, v) = j(app(), "/api/v1/nav/references?path=src/lib.rs&line=1&col=8").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let refs: Vec<String> = v["references"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| format!("{}:{}", r["path"].as_str().unwrap(), r["line"]))
+        .collect();
+    assert!(refs.contains(&"src/main.rs:2".to_string()), "{v}");
+    // The definition itself is a reference too.
+    assert!(refs.contains(&"src/lib.rs:1".to_string()), "{v}");
+
+    let (s, v) = j(app(), "/api/v1/nav/hover?path=src/main.rs&line=2&col=5").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["name"], "serve");
+    assert!(
+        v["signature"].as_str().unwrap().contains("pub fn serve"),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn nav_rejects_bad_positions() {
+    let (s, v) = j(
+        app(),
+        "/api/v1/nav/definition?path=src/main.rs&line=99&col=1",
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // Column on whitespace: no identifier.
+    let (s, v) = j(app(), "/api/v1/nav/hover?path=src/main.rs&line=2&col=1").await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    assert_eq!(v["error"]["code"], "not_found");
 }
