@@ -8,7 +8,8 @@
 //! ancestor directories), regular files only (symlinks are never listed),
 //! ≤ 8 MiB. Git control files (`index`, `HEAD`, `packed-refs`, `refs/**`)
 //! raise [`WatchEvent::GitControl`]; the rest of `.git/**` is dropped on
-//! arrival. A directory that appears (created or moved in) is walked, since
+//! arrival. Linked worktrees and submodules keep that metadata outside the
+//! root (`.git` is a file), so their git dirs are watched too. A directory that appears (created or moved in) is walked, since
 //! its files arrive as a single event; one that disappears is reported as a
 //! delete, which the server applies to everything below it. An edited ignore
 //! file can change any path's fate, so it triggers a full rebuild.
@@ -66,6 +67,36 @@ fn is_git_control(rel: &Path) -> bool {
             s == "index" || s == "HEAD" || s == "packed-refs" || s == "refs"
         }
     }
+}
+
+/// Git metadata living outside the root. A linked worktree's (or a
+/// submodule's) `.git` is a file naming the real git dir, and a worktree's
+/// refs sit in the shared common dir. Those are watched as well, and any
+/// change inside them is a control change: HEAD, index and refs move there
+/// on commit, stage and checkout, with nothing changing under the root.
+fn external_git_dirs(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
+    use notify::RecursiveMode::{NonRecursive, Recursive};
+    // A directory fails to read as text: an ordinary `.git`, watched with
+    // the root already.
+    let Ok(text) = std::fs::read_to_string(root.join(".git")) else {
+        return Vec::new();
+    };
+    let Some(rest) = text.lines().next().and_then(|l| l.strip_prefix("gitdir:")) else {
+        return Vec::new();
+    };
+    let Ok(gitdir) = root.join(rest.trim()).canonicalize() else {
+        return Vec::new();
+    };
+    let common = std::fs::read_to_string(gitdir.join("commondir"))
+        .ok()
+        .and_then(|c| gitdir.join(c.trim()).canonicalize().ok());
+    let refs_home = common.clone().unwrap_or_else(|| gitdir.clone());
+    let mut out = vec![(gitdir, NonRecursive), (refs_home.join("refs"), Recursive)];
+    if let Some(c) = common {
+        // packed-refs lives in the common dir.
+        out.push((c, NonRecursive));
+    }
+    out
 }
 
 fn is_ignore_file(rel: &Path) -> bool {
@@ -188,6 +219,9 @@ impl IgnoreRules {
 /// Pending changes between flushes.
 struct Batcher {
     root: PathBuf,
+    /// External git dirs ([`external_git_dirs`]): any event there is a
+    /// control change.
+    git_dirs: Vec<PathBuf>,
     tx: mpsc::Sender<WatchEvent>,
     rules: IgnoreRules,
     /// Relative path → saw a structural event (create/remove/rename), which
@@ -201,10 +235,11 @@ struct Batcher {
 }
 
 impl Batcher {
-    fn new(root: PathBuf, tx: mpsc::Sender<WatchEvent>) -> Self {
+    fn new(root: PathBuf, git_dirs: Vec<PathBuf>, tx: mpsc::Sender<WatchEvent>) -> Self {
         Self {
             rules: IgnoreRules::new(&root),
             root,
+            git_dirs,
             tx,
             pending: HashMap::new(),
             git_control: false,
@@ -248,6 +283,10 @@ impl Batcher {
         );
         for p in ev.paths {
             let Ok(rel) = p.strip_prefix(&self.root) else {
+                if self.git_dirs.iter().any(|d| p.starts_with(d)) {
+                    self.git_control = true;
+                    self.touch();
+                }
                 continue;
             };
             if rel.as_os_str().is_empty() {
@@ -395,8 +434,16 @@ pub fn watch_root(root: &Path, tx: mpsc::Sender<WatchEvent>) -> Result<WatchHand
     watcher
         .watch(&root, notify::RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
+    // Best effort: without these, git changes still surface with the next
+    // worktree edit.
+    let mut git_dirs = Vec::new();
+    for (dir, mode) in external_git_dirs(&root) {
+        if watcher.watch(&dir, mode).is_ok() {
+            git_dirs.push(dir);
+        }
+    }
     let thread = std::thread::spawn(move || {
-        let mut b = Batcher::new(root, tx);
+        let mut b = Batcher::new(root, git_dirs, tx);
         loop {
             match raw_rx.recv_timeout(b.wait()) {
                 Ok(Ok(ev)) => b.note(ev),

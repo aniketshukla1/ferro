@@ -339,6 +339,35 @@ fn watcher_skips_git_internals_and_ignored_trees() {
 }
 
 #[test]
+fn watcher_sees_git_changes_of_a_linked_worktree() {
+    // In a linked worktree `.git` is a file; HEAD, index and refs live in
+    // the main repository, outside the watched root.
+    let main = repo();
+    let parent = tempfile::tempdir().unwrap();
+    let wt = parent.path().join("wt");
+    let st = std::process::Command::new("git")
+        .arg("-C")
+        .arg(main.path())
+        .args(["worktree", "add", "-q", "-b", "side"])
+        .arg(&wt)
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let (_h, rx) = watched(&wt);
+    // A commit changes nothing under the worktree root.
+    sh(&wt, &["commit", "-q", "--allow-empty", "-m", "outside"]);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut saw = false;
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        if let Ok(ferro_core::watch::WatchEvent::GitControl) = rx.recv_timeout(left) {
+            saw = true;
+            break;
+        }
+    }
+    assert!(saw, "a commit in a linked worktree must raise GitControl");
+}
+
+#[test]
 fn watcher_reindexes_moved_directories() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("src/deep")).unwrap();
