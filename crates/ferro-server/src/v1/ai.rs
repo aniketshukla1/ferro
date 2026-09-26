@@ -23,6 +23,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/v1/ai/status", get(status))
         .route("/api/v1/ai/ask", post(ask))
+        .route("/api/v1/ai/review", post(review))
         .route("/api/v1/git/commit-message", post(commit_message))
 }
 
@@ -288,6 +289,39 @@ async fn build_context(
     Ok(Some(out))
 }
 
+fn redact_enabled(eff: &BTreeMap<String, serde_json::Value>) -> bool {
+    eff.get("ai.redactSecrets")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+fn never_send_globs(eff: &BTreeMap<String, serde_json::Value>) -> Vec<String> {
+    eff.get("ai.neverSend")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|x| x.to_string()))
+                .collect()
+        })
+        .unwrap_or_else(ferro_agent::default_never_send)
+}
+
+/// ToolCtx with B5 policy applied (redaction, never-send, search excludes).
+fn tool_ctx_for(
+    ws: &Arc<crate::state::Workspace>,
+    eff: &BTreeMap<String, serde_json::Value>,
+) -> Arc<ferro_agent::ToolCtx> {
+    let mut ctx = ferro_agent::ToolCtx::new(ws.index.clone());
+    ctx.set_policy(redact_enabled(eff), &never_send_globs(eff));
+    if let Some(ex) = eff.get("search.exclude").and_then(|v| v.as_array()) {
+        ctx.default_exclude = ex
+            .iter()
+            .filter_map(|x| x.as_str().map(|x| x.to_string()))
+            .collect();
+    }
+    Arc::new(ctx)
+}
+
 async fn ask(
     State(s): State<Arc<AppState>>,
     body: Bytes,
@@ -317,28 +351,8 @@ async fn ask(
     let provider_id = client.provider_id().to_string();
     let model_id = client.model_id().to_string();
 
-    let redact = eff
-        .get("ai.redactSecrets")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    let never_send: Vec<String> = eff
-        .get("ai.neverSend")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(|x| x.to_string()))
-                .collect()
-        })
-        .unwrap_or_else(ferro_agent::default_never_send);
-    let mut tool_ctx = ferro_agent::ToolCtx::new(ws.index.clone());
-    tool_ctx.set_policy(redact, &never_send);
-    if let Some(ex) = eff.get("search.exclude").and_then(|v| v.as_array()) {
-        tool_ctx.default_exclude = ex
-            .iter()
-            .filter_map(|x| x.as_str().map(|x| x.to_string()))
-            .collect();
-    }
-    let tool_ctx = Arc::new(tool_ctx);
+    let redact = redact_enabled(&eff);
+    let tool_ctx = tool_ctx_for(&ws, &eff);
 
     let context = build_context(
         &ws,
@@ -663,10 +677,7 @@ async fn commit_message(
     let eff = s.settings.effective(&ws.key);
     let spec = resolve_spec(&eff)?;
     let client = ferro_agent::make_client(&spec).map_err(provider_api_err)?;
-    let redact = eff
-        .get("ai.redactSecrets")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+    let redact = redact_enabled(&eff);
     let mut basis: String = staged.chars().take(6000).collect();
     if redact {
         basis = ferro_agent::redact_text(&basis).0;
@@ -704,20 +715,612 @@ async fn commit_message(
     Ok(Json(serde_json::json!({ "message": message })))
 }
 
-// -- findings (B5 review job lands next; routes stubbed here) -----------------
+// -- AI review job (API.md § 10.3) --------------------------------------------
+
+const REVIEW_CONCURRENCY: usize = 4;
+const REVIEW_MAX_FILES: usize = 100;
+const GUIDANCE_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"];
+
+fn finding_json(f: &ferro_forge::Finding) -> serde_json::Value {
+    let html = crate::v1::markdown::render_v2(&f.body, "", "", None).html;
+    let mut o = serde_json::json!({
+        "id": f.id, "path": f.path, "line": f.line,
+        "side": f.side, "severity": f.severity, "category": f.category,
+        "title": f.title, "body": f.body, "bodyHtml": html,
+        "confidence": f.confidence,
+    });
+    if let Some(sl) = f.start_line {
+        o["startLine"] = sl.into();
+    }
+    if let Some(s) = f.suggestion.as_deref() {
+        o["suggestion"] = s.into();
+    }
+    o
+}
+
+fn draft_json(f: &ferro_forge::store::Draft) -> serde_json::Value {
+    serde_json::json!({
+        "id": f.id, "path": f.path, "line": f.line, "startLine": f.start_line,
+        "side": f.side, "body": f.body, "threadId": f.thread_id,
+        "source": match f.source { ferro_forge::store::DraftSource::Human => "human", ferro_forge::store::DraftSource::Ai => "ai" },
+        "findingId": f.finding_id, "createdAt": f.created_at, "updatedAt": f.updated_at,
+        "stale": f.stale,
+    })
+}
+
+/// Findings live in the PR store in PR mode, else in the workspace-local
+/// review dir (`state_dir/workspaces/<key>/review/`).
+fn findings_store(
+    s: &Arc<AppState>,
+    ws: &Arc<crate::state::Workspace>,
+) -> ferro_forge::ReviewStore {
+    if let Some(pr) = ws.pr.as_ref() {
+        return pr.store.clone();
+    }
+    ferro_forge::ReviewStore::new(s.dirs.workspace_state_dir(&ws.key).join("review"))
+}
+
+async fn review(
+    State(s): State<Arc<AppState>>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if body.len() > 1024 * 1024 {
+        return Err(ApiError::new(ErrorCode::TooLarge, "body over 1 MiB"));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::bad_request(format!("invalid JSON: {e}")))?;
+    let scope = v.get("scope").and_then(|x| x.as_str()).unwrap_or("");
+    if scope != "pr" && scope != "changes" {
+        return Err(ApiError::bad_request("scope must be 'pr' or 'changes'"));
+    }
+    let focus: Vec<String> = v
+        .get("focus")
+        .and_then(|f| f.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|x| x.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for f in &focus {
+        if ![
+            "bugs",
+            "security",
+            "performance",
+            "tests",
+            "maintainability",
+        ]
+        .contains(&f.as_str())
+        {
+            return Err(ApiError::bad_request(format!("bad focus: {f}")));
+        }
+    }
+    let paths: Vec<String> = v
+        .get("paths")
+        .and_then(|p| p.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|x| x.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if paths.iter().any(|p| p.len() > 512) {
+        return Err(ApiError::bad_request("path too long"));
+    }
+
+    let ws = s.ws();
+    let eff = s.settings.effective(&ws.key);
+    // Provider first: unconfigured → 422 without creating a job.
+    let spec = resolve_spec(&eff)?;
+    let client = ferro_agent::make_client(&spec).map_err(provider_api_err)?;
+    let redact = redact_enabled(&eff);
+
+    let (base, target, head_key, pr_meta) = if scope == "pr" {
+        let pr = ws
+            .pr
+            .as_ref()
+            .ok_or_else(|| unsupported("not in PR mode"))?
+            .clone();
+        let meta = pr.meta.read().clone();
+        (
+            v.get("base")
+                .and_then(|x| x.as_str())
+                .unwrap_or(&meta.base_sha)
+                .to_string(),
+            v.get("target")
+                .and_then(|x| x.as_str())
+                .unwrap_or(&meta.head_sha)
+                .to_string(),
+            meta.head_sha.clone(),
+            Some(meta),
+        )
+    } else {
+        if ws.git.is_none() {
+            return Err(unsupported("not a git repository"));
+        }
+        let g = ws.git.as_ref().unwrap().repo.clone();
+        let head = tokio::task::spawn_blocking(move || g.head_sha())
+            .await
+            .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))?
+            .unwrap_or_else(|| "worktree".to_string());
+        (
+            v.get("base")
+                .and_then(|x| x.as_str())
+                .unwrap_or("HEAD")
+                .to_string(),
+            v.get("target")
+                .and_then(|x| x.as_str())
+                .unwrap_or("worktree")
+                .to_string(),
+            head,
+            None,
+        )
+    };
+    if base.len() > 256 || target.len() > 256 {
+        return Err(ApiError::bad_request("base/target too long"));
+    }
+
+    // Changed files + per-file diffs (blocking git, off the runtime).
+    let g = ws
+        .git
+        .as_ref()
+        .ok_or_else(|| unsupported("not a git repository"))?
+        .repo
+        .clone();
+    let (cs, diffs) = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+        let cs = g
+            .changes(&base, &target)
+            .map_err(|e| ApiError::new(ErrorCode::GitFailed, e.stderr()))?;
+        let mut diffs = std::collections::HashMap::new();
+        for f in cs.files.iter().take(REVIEW_MAX_FILES) {
+            match g.diff_raw(&f.path, &base, &target, 3, false) {
+                Ok(d) => {
+                    diffs.insert(f.path.clone(), d);
+                }
+                Err(e) => return Err(ApiError::new(ErrorCode::GitFailed, e.stderr())),
+            }
+        }
+        Ok((cs, diffs))
+    })
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::Internal, "git task failed"))??;
+
+    let mut files: Vec<ferro_agent::ChangedFile> = cs
+        .files
+        .iter()
+        .filter(|f| paths.is_empty() || paths.iter().any(|p| p == &f.path))
+        .map(|f| {
+            let chars = diffs
+                .get(&f.path)
+                .map(|d| {
+                    d.hunks
+                        .iter()
+                        .map(|h| h.rows.iter().map(|r| r.text.len() + 1).sum::<usize>())
+                        .sum()
+                })
+                .unwrap_or(0);
+            ferro_agent::ChangedFile {
+                path: f.path.clone(),
+                status: f.status.0.as_str().to_string(),
+                additions: f.additions,
+                deletions: f.deletions,
+                diff_chars: chars,
+            }
+        })
+        .collect();
+    if !paths.is_empty() && files.is_empty() {
+        return Err(ApiError::bad_request("no changed files match paths"));
+    }
+    files.truncate(REVIEW_MAX_FILES);
+    if files.is_empty() {
+        return Err(ApiError::new(ErrorCode::Conflict, "nothing to review"));
+    }
+    // Never-send files are listed for transparency but their contents never
+    // reach the provider.
+    let tool_ctx = tool_ctx_for(&ws, &eff);
+    let files: Vec<ferro_agent::ChangedFile> = files
+        .into_iter()
+        .filter(|f| !ferro_agent::is_never_send(&tool_ctx.never_send, &f.path))
+        .collect();
+    if files.is_empty() {
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "nothing reviewable (never-send)",
+        ));
+    }
+
+    let guidance = guidance_text(&ws, redact_enabled(&eff));
+    let groups = ferro_agent::group_files(&files);
+    let review_effort = eff
+        .get("ai.effort.review")
+        .and_then(|e| e.as_str())
+        .unwrap_or("high")
+        .to_string();
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let job = s
+        .jobs
+        .register(crate::jobs::Job::new("ai.review"), token.clone());
+    let job_id = job.id.clone();
+    s.bus.publish(crate::bus::ServerEvent::Job {
+        job: serde_json::json!(s.jobs.get(&job_id)),
+    });
+
+    let jobs = s.jobs.clone();
+    let bus = s.bus.clone();
+    let store = findings_store(&s, &ws);
+    let publish = move |j: &crate::jobs::Job| {
+        bus.publish(crate::bus::ServerEvent::Job {
+            job: serde_json::json!(j),
+        });
+    };
+    let diffs = Arc::new(diffs);
+    let job_id_resp = job_id.clone();
+    tokio::spawn(async move {
+        jobs.update(&job_id, |j| j.state = crate::jobs::JobState::Running);
+        if let Some(j) = jobs.get(&job_id) {
+            publish(&j);
+        }
+        let changed = ferro_agent::changed_lines(&diffs);
+        let sem = Arc::new(tokio::sync::Semaphore::new(REVIEW_CONCURRENCY));
+        let mut set = tokio::task::JoinSet::new();
+        for (gi, group) in groups.into_iter().enumerate() {
+            let client = client.clone();
+            let tool_ctx = tool_ctx.clone();
+            let diffs = diffs.clone();
+            let job_id_g = job_id.clone();
+            let sem = sem.clone();
+            let token = token.clone();
+            let guidance = guidance.clone();
+            let pr_meta = pr_meta.clone();
+            let cs_stats = (cs.stats.files, cs.stats.additions, cs.stats.deletions);
+            let focus = focus.clone();
+            let review_effort = review_effort.clone();
+            set.spawn(async move {
+                let _permit = sem.acquire_owned().await;
+                if token.is_cancelled() {
+                    return (gi, None, ferro_agent::Usage::default());
+                }
+                let mut agent = ferro_agent::AgentV2::new(client, tool_ctx);
+                agent.max_steps = 6;
+                agent.max_tokens = 64_000;
+                agent.effort = Some(review_effort);
+                agent.tools_override = Some(ferro_agent::review_tool_schemas());
+                let mut prompt = String::new();
+                if let Some(m) = pr_meta.as_ref() {
+                    prompt.push_str(&format!(
+                        "PR: {} ({} {} → {} {})\nStats: {} files +{}/-{}\n",
+                        m.title,
+                        m.base_ref,
+                        m.base_sha,
+                        m.head_ref,
+                        m.head_sha,
+                        cs_stats.0,
+                        cs_stats.1,
+                        cs_stats.2,
+                    ));
+                    if let Some(b) = m.body.as_deref().filter(|b| !b.trim().is_empty()) {
+                        let b: String = b.chars().take(2000).collect();
+                        prompt.push_str(&format!("Description:\n{b}\n"));
+                    }
+                } else {
+                    prompt.push_str(&format!(
+                        "Changed: {} files +{}/-{}\n",
+                        cs_stats.0, cs_stats.1, cs_stats.2
+                    ));
+                }
+                if !guidance.is_empty() {
+                    prompt.push_str(&format!("Repo guidance:\n{guidance}\n"));
+                }
+                prompt.push_str("Review these diffs; report every finding via report_finding:\n");
+                for f in &group {
+                    prompt.push_str(&format!("=== {} ({}) ===\n", f.path, f.status));
+                }
+                prompt.push_str(&group_diff_text(&group, &diffs));
+                let mut conv = ferro_agent::Conversation::new(format!("{job_id_g}-g{gi}"));
+                let (ev_tx, _ev_rx) = tokio::sync::mpsc::unbounded_channel();
+                let system = ferro_agent::review_system_prompt(&focus);
+                agent.system = system;
+                match agent.run(&mut conv, &prompt, None, &ev_tx, &token).await {
+                    Ok(o) => {
+                        let mut raws = Vec::new();
+                        for step in &o.steps {
+                            for call in &step.calls {
+                                if call.name == ferro_agent::REPORT_FINDING_TOOL && call.result.ok {
+                                    if let Ok(r) = ferro_agent::parse_report(&call.args) {
+                                        raws.push(r);
+                                    }
+                                }
+                            }
+                        }
+                        (gi, Some(raws), o.usage)
+                    }
+                    Err(_) => (gi, None, ferro_agent::Usage::default()),
+                }
+            });
+        }
+        let mut raws: Vec<ferro_agent::RawFinding> = Vec::new();
+        let mut usage = ferro_agent::Usage::default();
+        let mut groups_done = 0usize;
+        let groups_total = set.len();
+        while let Some(r) = set.join_next().await {
+            if token.is_cancelled() {
+                set.abort_all();
+                jobs.update(&job_id, |j| {
+                    j.state = crate::jobs::JobState::Cancelled;
+                    j.ended_at = Some(crate::jobs::now_iso());
+                });
+                if let Some(j) = jobs.get(&job_id) {
+                    publish(&j);
+                }
+                return;
+            }
+            if let Ok((_, batch, u)) = r {
+                usage.input += u.input;
+                usage.output += u.output;
+                usage.cache_read += u.cache_read;
+                usage.cache_write += u.cache_write;
+                if let Some(batch) = batch {
+                    for f in &batch {
+                        jobs.update(&job_id, |j| {
+                            j.progress = Some(serde_json::json!({ "finding": {
+                                "path": f.path, "line": f.line, "title": f.title,
+                            }}));
+                        });
+                        if let Some(j) = jobs.get(&job_id) {
+                            publish(&j);
+                        }
+                    }
+                    raws.extend(batch);
+                }
+            }
+            groups_done += 1;
+            jobs.update(&job_id, |j| {
+                j.progress = Some(
+                    serde_json::json!({ "groupsDone": groups_done, "groupsTotal": groups_total }),
+                );
+            });
+            if let Some(j) = jobs.get(&job_id) {
+                publish(&j);
+            }
+        }
+        // Validate, dedupe, persist per head SHA.
+        let snapped: Vec<_> = raws
+            .iter()
+            .filter_map(|f| ferro_agent::snap_to_diff(f, &changed))
+            .collect();
+        let deduped = ferro_agent::dedupe(snapped);
+        let now = crate::jobs::now_iso();
+        let findings: Vec<ferro_forge::Finding> = deduped
+            .into_iter()
+            .map(|r| ferro_forge::Finding {
+                id: format!("f_{}", ulid::Ulid::new()),
+                head_sha: head_key.clone(),
+                path: r.path,
+                line: r.line,
+                start_line: r.start_line,
+                side: r.side,
+                severity: r.severity,
+                category: r.category,
+                title: r.title,
+                body: if redact {
+                    ferro_agent::redact_text(&r.body).0
+                } else {
+                    r.body
+                },
+                suggestion: r.suggestion,
+                confidence: r.confidence,
+                created_at: now.clone(),
+                dismissed: false,
+                dismiss_reason: None,
+            })
+            .collect();
+        // Summary: one cheap model call, local fallback on failure.
+        let summary = summarize(&client, &findings).await.unwrap_or_else(|_| {
+            format!(
+                "{} findings across {} files",
+                findings.len(),
+                files_len(&findings)
+            )
+        });
+        let _ = store.save_findings(&head_key, &findings);
+        let out: Vec<serde_json::Value> = findings.iter().map(finding_json).collect();
+        jobs.update(&job_id, |j| {
+            j.state = crate::jobs::JobState::Done;
+            j.ended_at = Some(crate::jobs::now_iso());
+            j.result = Some(serde_json::json!({
+                "summary": summary,
+                "findings": out,
+                "usage": {
+                    "inputTokens": usage.input,
+                    "outputTokens": usage.output,
+                    "cacheReadTokens": usage.cache_read,
+                },
+            }));
+        });
+        if let Some(j) = jobs.get(&job_id) {
+            publish(&j);
+        }
+    });
+
+    Ok(Json(
+        serde_json::json!({ "job": { "id": job_id_resp, "kind": "ai.review" } }),
+    ))
+}
+
+fn files_len(findings: &[ferro_forge::Finding]) -> usize {
+    let mut paths: Vec<&str> = findings.iter().map(|f| f.path.as_str()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    paths.len()
+}
+
+fn group_diff_text(
+    group: &[ferro_agent::ChangedFile],
+    diffs: &std::collections::HashMap<String, ferro_core::diff::FileDiffRaw>,
+) -> String {
+    let mut out = String::new();
+    for f in group {
+        if let Some(d) = diffs.get(&f.path) {
+            out.push_str(&format!("--- {} ---\n", f.path));
+            for h in &d.hunks {
+                out.push_str(&h.header);
+                out.push('\n');
+                for r in &h.rows {
+                    let mark = match r.t {
+                        ferro_core::diff::RowKind::Ctx => ' ',
+                        ferro_core::diff::RowKind::Add => '+',
+                        ferro_core::diff::RowKind::Del => '-',
+                    };
+                    out.push(mark);
+                    out.push_str(&r.text);
+                    out.push('\n');
+                    if out.len() > 20_000 {
+                        out.push_str("… (group truncated)\n");
+                        return out;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn guidance_text(ws: &Arc<crate::state::Workspace>, redact: bool) -> String {
+    let mut out = String::new();
+    for name in GUIDANCE_FILES {
+        let Some(abs) = ws.index.safe_join(name) else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(&abs) else {
+            continue;
+        };
+        if bytes.len() > 32 * 1024 {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let text: String = text.chars().take(8000).collect();
+        out.push_str(&format!("--- {name} ---\n{text}\n"));
+    }
+    if out.len() > 20_000 {
+        out.truncate(20_000);
+    }
+    if redact {
+        out = ferro_agent::redact_text(&out).0;
+    }
+    out
+}
+
+async fn summarize(
+    client: &ferro_agent::ArcV2,
+    findings: &[ferro_forge::Finding],
+) -> Result<String, ferro_agent::ProviderError> {
+    if findings.is_empty() {
+        return Ok("No issues found.".into());
+    }
+    let mut prompt = String::from("Summarize these code review findings in 2-3 sentences:\n");
+    for f in findings.iter().take(50) {
+        prompt.push_str(&format!(
+            "- [{}] {} ({}:{})\n",
+            f.severity, f.title, f.path, f.line
+        ));
+    }
+    let messages = vec![ferro_agent::Msg {
+        role: ferro_agent::MsgRole::User,
+        blocks: vec![ferro_agent::MsgBlock::Text(prompt)],
+        cache: false,
+    }];
+    let req = ferro_agent::ChatReq {
+        system: "Summarize review findings concisely.",
+        messages: &messages,
+        tools: &[],
+        max_tokens: 512,
+        effort: None,
+        stop: tokio_util::sync::CancellationToken::new(),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let outcome = client.stream_turn(req, tx).await?;
+    Ok(outcome.text.trim().to_string())
+}
+
+// -- findings ---------------------------------------------------------------
 
 async fn finding_accept(
-    State(_s): State<Arc<AppState>>,
-    Path(_id): Path<String>,
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    Err(ApiError::new(ErrorCode::NotReady, "ai.review is not ready"))
+    let ws = s.ws();
+    let store = findings_store(&s, &ws);
+    let f = store
+        .finding(&id)
+        .ok_or_else(|| ApiError::not_found(format!("no such finding: {id}")))?;
+    if f.dismissed {
+        return Err(ApiError::new(ErrorCode::Conflict, "finding is dismissed"));
+    }
+    let v: serde_json::Value = if body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| ApiError::bad_request(format!("invalid JSON: {e}")))?
+    };
+    let text = v
+        .get("body")
+        .and_then(|b| b.as_str())
+        .unwrap_or(&f.body)
+        .to_string();
+    if text.trim().is_empty() || text.len() > 100_000 {
+        return Err(ApiError::bad_request("body required (≤100 KiB)"));
+    }
+    let d = tokio::task::spawn_blocking(move || {
+        store.add(ferro_forge::NewDraft {
+            path: f.path,
+            line: f.line,
+            start_line: f.start_line,
+            side: Some(f.side),
+            body: text,
+            thread_id: None,
+            source: Some(ferro_forge::DraftSource::Ai),
+            finding_id: Some(f.id),
+        })
+    })
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::Internal, "store task failed"))?
+    .map_err(ApiError::bad_request)?;
+    s.bus.publish(crate::bus::ServerEvent::Drafts {
+        drafts: serde_json::json!([draft_json(&d)]),
+    });
+    Ok(Json(draft_json(&d)))
 }
 
 async fn finding_dismiss(
-    State(_s): State<Arc<AppState>>,
-    Path(_id): Path<String>,
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Bytes,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    Err(ApiError::new(ErrorCode::NotReady, "ai.review is not ready"))
+    let ws = s.ws();
+    let store = findings_store(&s, &ws);
+    if store.finding(&id).is_none() {
+        return Err(ApiError::not_found(format!("no such finding: {id}")));
+    }
+    let reason = if body.is_empty() {
+        None
+    } else {
+        let v: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|e| ApiError::bad_request(format!("invalid JSON: {e}")))?;
+        v.get("reason")
+            .and_then(|r| r.as_str())
+            .map(|r| r.to_string())
+    };
+    let id2 = id.clone();
+    let ok = tokio::task::spawn_blocking(move || store.dismiss_finding(&id2, reason))
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::Internal, "store task failed"))?;
+    if ok {
+        Ok(axum::http::StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found(format!("no such finding: {id}")))
+    }
 }
 
 pub fn review_routes() -> Router<Arc<AppState>> {

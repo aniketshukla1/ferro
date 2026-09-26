@@ -88,6 +88,14 @@ pub struct ReviewStore {
     lock: std::sync::Mutex<()>,
 }
 
+impl Clone for ReviewStore {
+    fn clone(&self) -> Self {
+        Self {
+            dir: self.dir.clone(),
+        }
+    }
+}
+
 impl ReviewStore {
     pub fn new(dir: PathBuf) -> Self {
         Self {
