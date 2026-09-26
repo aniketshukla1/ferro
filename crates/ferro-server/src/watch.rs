@@ -230,8 +230,10 @@ fn watch_loop(
                         let ws = state.ws();
                         let ups: Vec<String> = upserts.iter().map(|(p, _, _)| p.clone()).collect();
                         ws.search.note_changes(&ups, &deletes);
+                        ws.symbols.note_changes(&ups, &deletes);
                     }
                     state.ensure_search_built();
+                    state.ensure_symbols_built();
                     note_change(&mut last_refresh, &mut pending_status);
                 }
             }

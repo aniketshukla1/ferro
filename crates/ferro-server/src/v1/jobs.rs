@@ -74,6 +74,7 @@ async fn rebuild(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
                 ws.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let s2 = s.clone();
                 s2.ensure_search_built();
+                s2.ensure_symbols_built();
                 jobs.update(&live, |j| {
                     j.state = JobState::Done;
                     j.ended_at = Some(crate::jobs::now_iso());

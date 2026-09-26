@@ -86,6 +86,8 @@ pub struct Workspace {
     pub pr: Option<Arc<PrSession>>,
     /// Trigram search engine (B2b): background-built, mmap-queried.
     pub search: Arc<ferro_core::trigram::SearchEngine>,
+    /// Workspace symbol index (B6): background-built, persisted.
+    pub symbols: Arc<ferro_core::symindex::SymbolIndex>,
     /// Latest status payload (B3 watcher + mutations); tree reads it for
     /// `git`/`dirty` without spawning git per request.
     pub git_status: parking_lot::RwLock<Option<ferro_core::git::GitStatus>>,
@@ -112,6 +114,11 @@ impl Workspace {
         let search =
             ferro_core::trigram::SearchEngine::new(dirs.workspace_cache_dir(&key).join("trigram"));
         search.preload(index.file_index.load().generation);
+        let symbols = ferro_core::symindex::SymbolIndex::new(
+            dirs.workspace_cache_dir(&key),
+            index.root().to_path_buf(),
+        );
+        symbols.preload(&index.file_index.load());
         Arc::new(Self {
             key,
             root: index.root().to_path_buf(),
@@ -123,6 +130,7 @@ impl Workspace {
             git,
             pr,
             search,
+            symbols,
             git_status: parking_lot::RwLock::new(None),
             review: ferro_agent::ReviewStore::default(),
             session_path,
@@ -200,6 +208,13 @@ impl AppState {
             max_bytes,
             &exclude,
         );
+    }
+
+    /// Rebuild the symbol index in the background when the snapshot moved
+    /// on. Cheap when fresh; call alongside `ensure_search_built`.
+    pub fn ensure_symbols_built(&self) {
+        let ws = self.ws();
+        ws.symbols.ensure_built(&ws.index.file_index.load());
     }
 }
 

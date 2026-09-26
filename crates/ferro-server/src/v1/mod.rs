@@ -11,6 +11,7 @@ pub mod jobs;
 pub mod markdown;
 pub mod meta;
 pub mod metrics;
+pub mod nav;
 pub mod outline;
 pub mod pr;
 pub mod review;
@@ -56,6 +57,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(git::routes())
         .merge(search::routes())
         .merge(jobs::routes())
+        .merge(nav::routes())
         .merge(workspace::routes())
         .merge(desktop::routes())
         .merge(metrics::routes())

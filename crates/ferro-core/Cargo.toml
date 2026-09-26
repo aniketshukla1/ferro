@@ -26,6 +26,7 @@ regex-syntax = "0.8"
 globset = "0.4"
 memmap2 = "0.9"
 arc-swap = "1.7"
+parking_lot = "0.12"
 notify = "8"
 streaming-iterator = "0.1"
 tree-sitter = { version = "0.25", optional = true }

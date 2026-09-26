@@ -246,6 +246,7 @@ pub async fn serve_with(
                     ferro_core::highlight::clear_cache();
                     // Idle trigram catch-up (delta or threshold rebuilds).
                     state.ensure_search_built();
+                    state.ensure_symbols_built();
                     // SAFETY: mi_collect is documented thread-safe; forces a trim.
                     unsafe { libmimalloc_sys::mi_collect(true) };
                     tracing::debug!("ferro idle {}s: caches trimmed", idle.as_secs());
@@ -287,6 +288,7 @@ pub async fn serve_with(
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let (files, ms) = ws.index.stats();
             state2.ensure_search_built();
+            state2.ensure_symbols_built();
             bus.publish(crate::bus::ServerEvent::Index {
                 state: "ready".into(),
                 files,

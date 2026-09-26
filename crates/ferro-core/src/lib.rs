@@ -14,6 +14,7 @@ pub mod scan;
 pub mod search;
 pub mod settings;
 pub mod symbols;
+pub mod symindex;
 pub mod text;
 pub mod trigram;
 pub mod watch;

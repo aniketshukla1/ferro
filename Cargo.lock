@@ -1463,6 +1463,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "notify",
+ "parking_lot",
  "pulldown-cmark",
  "rayon",
  "regex",
