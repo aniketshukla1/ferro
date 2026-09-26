@@ -133,6 +133,14 @@ fn schema(props: &[(&str, &str, &str)], required: &[&str]) -> serde_json::Value 
     })
 }
 
+/// Tool schemas for review runs: all read-only tools plus the strict
+/// `report_finding` tool (order stable for prompt caching).
+pub fn review_tool_schemas() -> Vec<ToolSchema> {
+    let mut tools = tool_schemas();
+    tools.push(crate::review_job::report_finding_schema());
+    tools
+}
+
 /// Tool schemas served to the model (deterministic order for caching).
 pub fn tool_schemas() -> Vec<ToolSchema> {
     vec![
@@ -294,7 +302,17 @@ pub fn dispatch_v2(ctx: &ToolCtx, call: &ToolCallV2) -> ToolOutput {
         "git_diff" => git_diff(ctx, &call.input),
         "list_changes" => list_changes(ctx, &call.input),
         "read_blob" => read_blob(ctx, &call.input),
+        crate::review_job::REPORT_FINDING_TOOL => report_finding(&call.input),
         other => ToolOutput::err(format!("unknown tool: {other}")),
+    }
+}
+
+/// Strict `report_finding` validation: ok echoes `recorded`, failures carry
+/// the schema error so the model can retry within the same turn budget.
+fn report_finding(args: &serde_json::Value) -> ToolOutput {
+    match crate::review_job::parse_report(args) {
+        Ok(_) => ToolOutput::ok("recorded".into()),
+        Err(e) => ToolOutput::err(format!("invalid finding: {e}")),
     }
 }
 
