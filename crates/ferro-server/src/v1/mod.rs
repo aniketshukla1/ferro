@@ -1,5 +1,6 @@
 //! /api/v1 route handlers (BACKEND.md § 6 B1 surface).
 
+pub mod ai;
 pub mod desktop;
 pub mod events;
 pub mod files;
@@ -44,6 +45,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(session::routes())
         .merge(files::routes())
         .merge(markdown::routes())
+        .merge(ai::routes())
+        .merge(ai::review_routes())
         .merge(highlight::routes())
         .merge(outline::routes())
         .merge(pr::routes())

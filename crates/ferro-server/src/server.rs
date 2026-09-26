@@ -107,6 +107,7 @@ pub fn build_state(
         bus: crate::bus::Events::new(),
         jobs: crate::jobs::JobManager::default(),
         settings: crate::state::SettingsStore { dirs: dirs.clone() },
+        ai_convs: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         host,
         dirs,
         limits: Limits::default(),

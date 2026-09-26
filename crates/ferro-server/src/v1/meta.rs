@@ -42,6 +42,10 @@ pub const FEATURES: &[&str] = &[
     "review.drafts",
     "review.viewed",
     "review.rounds",
+    "ai",
+    "ai.ask",
+    "ai.review",
+    "ai.commit",
 ];
 
 fn git_info(root: &std::path::Path) -> (bool, Option<String>, Option<String>) {
