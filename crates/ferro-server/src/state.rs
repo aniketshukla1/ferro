@@ -148,6 +148,10 @@ pub struct AppState {
     pub bus: Events,
     pub jobs: JobManager,
     pub settings: SettingsStore,
+    /// AI conversations by `c_…` id (B5): 1 h TTL, 20 turns. Evicted lazily
+    /// on each `/ai/ask`.
+    pub ai_convs:
+        Arc<parking_lot::Mutex<std::collections::HashMap<String, ferro_agent::Conversation>>>,
     pub host: Host,
     pub dirs: FerroDirs,
     pub limits: Limits,
