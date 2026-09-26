@@ -15,6 +15,10 @@ pub enum ProviderError {
     Transport(String),
     #[error("bad response: {0}")]
     BadResponse(String),
+    #[error("cancelled")]
+    Cancelled,
+    #[error("rate limited")]
+    RateLimited { retry_after_ms: u64 },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -387,14 +391,100 @@ impl LlmClient for OpenAiCompat {
     }
 }
 
+/// Raw streamed turn for the v2 adapter (usage + finish reason included).
+#[derive(Debug, Default)]
+pub struct RawTurn {
+    pub content: Option<String>,
+    pub tool_calls: Vec<WireToolCall>,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub finish_reason: Option<String>,
+    pub refusal: bool,
+}
+
+impl OpenAiCompat {
+    /// Stream with caller-built tool JSON and usage reporting. `on_text`
+    /// receives content pieces live.
+    pub(crate) async fn stream_raw(
+        &self,
+        messages: &[ChatMessage],
+        tools_json: Vec<serde_json::Value>,
+        on_text: &tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<RawTurn, ProviderError> {
+        let req = serde_json::json!({
+            "model": self.model,
+            "messages": messages,
+            "tools": tools_json,
+            "tool_choice": if tools_json.is_empty() { serde_json::Value::Null } else { serde_json::json!("auto") },
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        });
+        // Omit empty tools entirely (D19): rebuild without the keys.
+        let mut req = req;
+        if tools_json.is_empty() {
+            if let Some(m) = req.as_object_mut() {
+                m.remove("tools");
+                m.remove("tool_choice");
+            }
+        }
+        let url = format!("{}/chat/completions", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .header("Accept", "text/event-stream, application/json")
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Transport(e.to_string()))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            let short: String = body.chars().take(500).collect();
+            return Err(ProviderError::BadResponse(format!("{status}: {short}")));
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut stream = resp.bytes_stream();
+        let mut fold = SseFold::default();
+        use tokio_stream::StreamExt as _;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| ProviderError::Transport(e.to_string()))?;
+            fold.feed_bytes(&chunk, &tx);
+            while let Ok(d) = rx.try_recv() {
+                if let Some(c) = d.content_piece {
+                    let _ = on_text.send(c);
+                }
+            }
+        }
+        let content = if fold.content.is_empty() { None } else { Some(std::mem::take(&mut fold.content)) };
+        let prompt_tokens = fold.prompt_tokens;
+        let completion_tokens = fold.completion_tokens;
+        let finish_reason = std::mem::take(&mut fold.finish_reason);
+        let refusal = fold.refusal;
+        let finished = fold.finish();
+        Ok(RawTurn {
+            content,
+            tool_calls: finished.tool_calls,
+            prompt_tokens,
+            completion_tokens,
+            finish_reason,
+            refusal,
+        })
+    }
+}
 /// Incremental OpenAI-SSE folder: byte-buffered and line-split, so a
 /// multi-byte character split across network chunks is never corrupted (D18).
 /// Complete lines decode independently; source-invalid bytes go lossy (§ 5.2).
+/// Also accumulates usage (`stream_options.include_usage`) and finish reason.
 #[derive(Default)]
 pub struct SseFold {
     pending: Vec<u8>,
     content: String,
     calls: std::collections::BTreeMap<u64, (Option<String>, String, String)>,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub finish_reason: Option<String>,
+    pub refusal: bool,
 }
 
 impl SseFold {
@@ -424,6 +514,20 @@ impl SseFold {
             Err(_) => return,
         };
         let Some(delta) = v.pointer("/choices/0/delta") else {
+            // Non-delta lines carry finish reasons and usage.
+            if let Some(fr) = v
+                .pointer("/choices/0/finish_reason")
+                .and_then(|f| f.as_str())
+            {
+                if self.finish_reason.is_none() {
+                    self.finish_reason = Some(fr.to_string());
+                }
+            }
+            if let Some(u) = v.get("usage") {
+                self.prompt_tokens += u.get("prompt_tokens").and_then(|n| n.as_u64()).unwrap_or(0);
+                self.completion_tokens +=
+                    u.get("completion_tokens").and_then(|n| n.as_u64()).unwrap_or(0);
+            }
             return;
         };
         if let Some(c) = delta.get("content").and_then(|c| c.as_str()) {
@@ -431,6 +535,11 @@ impl SseFold {
             let _ = tx.send(ChatDelta {
                 content_piece: Some(c.to_string()),
             });
+        }
+        if let Some(r) = delta.get("refusal").and_then(|r| r.as_str()) {
+            if !r.is_empty() {
+                self.refusal = true;
+            }
         }
         if let Some(tcs) = delta.get("tool_calls").and_then(|t| t.as_array()) {
             for tc in tcs {
