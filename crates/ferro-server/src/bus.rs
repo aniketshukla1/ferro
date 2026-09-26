@@ -3,8 +3,16 @@
 
 use serde::Serialize;
 
+/// Field names go out in camelCase, like every other API payload
+/// (`workspaceKey`, `searchIndex`, `mtimeMs`). SSE data is built from this
+/// by `v1::events`, which also unwraps the single-payload variants.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "event", content = "data", rename_all = "lowercase")]
+#[serde(
+    tag = "event",
+    content = "data",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ServerEvent {
     Hello {
         api: u8,

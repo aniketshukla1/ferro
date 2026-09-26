@@ -70,11 +70,8 @@ async fn events(
                     match msg {
                         Ok((id, ev)) => {
                             let name = event_name(&ev);
-                            let data = serde_json::to_string(&ev).unwrap_or_default();
-                            // bus payloads are {event,data}; reserialize inner data only.
-                            let inner = serde_json::from_str::<serde_json::Value>(&data)
-                                .ok().and_then(|v| v.get("data").cloned()).unwrap_or(serde_json::Value::Null);
-                            if tx.send(Event::default().event(name).id(id.to_string()).json_data(inner).unwrap()).is_err() { break; }
+                            let data = event_data(&ev);
+                            if tx.send(Event::default().event(name).id(id.to_string()).json_data(data).unwrap()).is_err() { break; }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                             seq += 1;
@@ -89,6 +86,22 @@ async fn events(
     Sse::new(UnboundedReceiverStream::new(rx).map(Ok)).keep_alive(
         axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
     )
+}
+
+/// Event data exactly as API.md § 12 lists it: payload events carry the
+/// object itself (`git` a GitStatus, `job` a Job, `pr` a PrMeta), never a
+/// `{status: …}`-style wrapper; the rest are the variant's fields.
+fn event_data(ev: &crate::bus::ServerEvent) -> serde_json::Value {
+    use crate::bus::ServerEvent::*;
+    match ev {
+        Git { status } => status.clone(),
+        Job { job } => job.clone(),
+        Pr { pr } => pr.clone(),
+        other => serde_json::to_value(other)
+            .ok()
+            .and_then(|mut v| v.get_mut("data").map(serde_json::Value::take))
+            .unwrap_or(serde_json::Value::Null),
+    }
 }
 
 fn event_name(ev: &crate::bus::ServerEvent) -> &'static str {
@@ -122,5 +135,36 @@ mod tests {
         assert!(!flag(Some("0")));
         assert!(!flag(Some("false")));
         assert!(!flag(None));
+    }
+
+    /// Review fix: SSE data matches API.md § 12 (bare payloads, camelCase).
+    #[test]
+    fn event_data_matches_the_spec() {
+        use crate::bus::ServerEvent;
+        let st = serde_json::json!({ "branch": "main", "counts": { "staged": 1 } });
+        assert_eq!(event_data(&ServerEvent::Git { status: st.clone() }), st);
+        let job = serde_json::json!({ "id": "j1", "kind": "pr.open" });
+        assert_eq!(event_data(&ServerEvent::Job { job: job.clone() }), job);
+        let idx = event_data(&ServerEvent::Index {
+            state: "ready".into(),
+            files: 3,
+            ms: 1,
+            generation: 2,
+            search_index: "off".into(),
+        });
+        assert_eq!(idx["searchIndex"], "off");
+        let hello = event_data(&ServerEvent::Hello {
+            api: 1,
+            version: "x".into(),
+            workspace_key: "k".into(),
+            generation: 0,
+        });
+        assert_eq!(hello["workspaceKey"], "k");
+        let hl = event_data(&ServerEvent::Hl {
+            path: "a.rs".into(),
+            mtime_ms: 5,
+        });
+        assert_eq!(hl["mtimeMs"], 5);
+        assert_eq!(event_data(&ServerEvent::Resync {}), serde_json::json!({}));
     }
 }
