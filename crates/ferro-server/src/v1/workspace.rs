@@ -50,6 +50,10 @@ async fn open(
     .to_string();
     let files = ws.index.snapshot().len();
     s.ws.store(ws);
+    // Live updates follow the workspace: the old root's watcher stops.
+    // Setting up recursive watches walks the tree, so not on a worker.
+    let s2 = s.clone();
+    tokio::task::spawn_blocking(move || crate::watch::restart(&s2));
     s.jobs.register(
         crate::jobs::Job::new("workspace.open"),
         tokio_util::sync::CancellationToken::new(),

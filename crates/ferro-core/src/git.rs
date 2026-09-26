@@ -1,22 +1,33 @@
 //! Git v2 (B3): hardened runner, typed status/changes/log, mutations.
-//! Every invocation uses `--no-optional-locks`, `-c core.quotepath=off
-//! -c color.ui=false`, `LC_ALL=C`, `GIT_OPTIONAL_LOCKS=0`; exit status is
-//! checked and stderr (4 KiB) is captured into [`GitError`]. Timeouts: 30 s
-//! default, 120 s for push/pull. Legacy String wrappers stay for the old
-//! routes and agent tools.
+//! Every invocation goes through one runner: `--no-optional-locks`,
+//! `-c core.quotepath=off -c color.ui=false`, `LC_ALL=C`,
+//! `GIT_OPTIONAL_LOCKS=0`, literal pathspecs, no terminal prompts; exit
+//! status is checked, stderr (4 KiB) is captured into [`GitError`], stdout
+//! is capped, and every call has a timeout (30 s default, 120 s for
+//! push/pull, 10 min for commit hooks). Revs from clients pass
+//! [`check_rev`] so nothing option-shaped reaches git's argv. Legacy String
+//! wrappers stay for the old routes and agent tools.
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const NET_TIMEOUT: Duration = Duration::from_secs(120);
+/// `git commit` runs hooks (pre-commit test suites): generous but bounded.
+const HOOK_TIMEOUT: Duration = Duration::from_secs(600);
 /// stderr kept for `git_failed` detail.
 const STDERR_CAP: usize = 4096;
+/// Largest stdout kept from one git call; past it git is killed and the
+/// call fails with [`GitError::TooLarge`] (huge diffs, runaway output).
+const MAX_OUTPUT: usize = 256 * 1024 * 1024;
+/// Largest blob the cat-file reader returns.
+const BLOB_CAP: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Error, Clone)]
 pub enum GitError {
@@ -24,10 +35,14 @@ pub enum GitError {
     NotRepo,
     #[error("forbidden: {0}")]
     Forbidden(String),
+    #[error("bad revision: {0}")]
+    BadRev(String),
     #[error("git {args} failed: {stderr}")]
     Failed { args: String, stderr: String },
     #[error("git {args} timed out after {secs}s")]
     Timeout { args: String, secs: u64 },
+    #[error("output too large")]
+    TooLarge,
     #[error("cancelled")]
     Cancelled,
     #[error("git error: {0}")]
@@ -39,12 +54,101 @@ impl GitError {
         match self {
             GitError::Failed { stderr, .. } => stderr.clone(),
             GitError::Forbidden(e) => e.clone(),
+            GitError::BadRev(r) => format!("bad revision: {r}"),
             GitError::NotRepo => "not a git repository".into(),
             GitError::Timeout { args, secs } => format!("{args} timed out after {secs}s"),
+            GitError::TooLarge => "output too large".into(),
             GitError::Cancelled => "cancelled".into(),
             GitError::Io(e) => e.clone(),
         }
     }
+}
+
+/// Revs and refs arrive from query strings. Anything option-shaped
+/// (`--output=<file>`) must never reach git's argv, where `rev-parse` would
+/// echo it and `git diff` would act on it.
+pub fn check_rev(rev: &str) -> Result<(), GitError> {
+    if rev.is_empty()
+        || rev.len() > 256
+        || rev.starts_with('-')
+        || rev.chars().any(char::is_control)
+    {
+        return Err(GitError::BadRev(rev.chars().take(64).collect()));
+    }
+    Ok(())
+}
+
+/// Object ids: SHA-1 (40) or SHA-256 (64) hex.
+fn is_object_id(s: &str) -> bool {
+    (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// A repo-relative pathspec for git's argv (§ 5.1, symlinks not followed).
+fn git_path(root: &Path, p: &str, access: crate::paths::Access) -> Result<String, GitError> {
+    crate::paths::git_rel(root, p, access).map_err(|e| match e {
+        crate::paths::PathError::Empty => GitError::Failed {
+            args: "paths".into(),
+            stderr: "empty path".into(),
+        },
+        other => GitError::Forbidden(other.to_string()),
+    })
+}
+
+/// A child pipe drained on its own thread into a shared buffer. Keeps at
+/// most `cap` bytes: with `drain` the rest is read and dropped (stderr must
+/// never block git); otherwise reading stops and [`Pipe::overflowed`] turns
+/// true so the caller can kill the child.
+struct Pipe {
+    buf: Arc<Mutex<Vec<u8>>>,
+    overflow: Arc<AtomicBool>,
+}
+
+impl Pipe {
+    fn spawn<R: std::io::Read + Send + 'static>(
+        h: Option<R>,
+        cap: usize,
+        drain: bool,
+        done: mpsc::Sender<()>,
+    ) -> Self {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let overflow = Arc::new(AtomicBool::new(false));
+        let (b2, o2) = (buf.clone(), overflow.clone());
+        std::thread::spawn(move || {
+            if let Some(mut h) = h {
+                let mut chunk = vec![0u8; 64 * 1024];
+                loop {
+                    let n = match h.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    };
+                    let mut b = b2.lock().unwrap_or_else(|e| e.into_inner());
+                    let room = cap.saturating_sub(b.len());
+                    b.extend_from_slice(&chunk[..n.min(room)]);
+                    if n > room && !drain {
+                        o2.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            }
+            let _ = done.send(());
+        });
+        Self { buf, overflow }
+    }
+
+    fn overflowed(&self) -> bool {
+        self.overflow.load(Ordering::Relaxed)
+    }
+
+    fn take(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.buf.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+fn kill(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +178,12 @@ impl GitRepo {
             .args(args)
             .env("GIT_OPTIONAL_LOCKS", "0")
             .env("LC_ALL", "C")
+            // Every pathspec ferro passes is a literal path: no globs and no
+            // `:(top)` / `:/` magic (a stray `*.rs` must not discard all).
+            .env("GIT_LITERAL_PATHSPECS", "1")
+            // Credentials are never prompted for on ferro's terminal: a
+            // push/pull without cached creds fails fast instead of hanging.
+            .env("GIT_TERMINAL_PROMPT", "0")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
@@ -97,94 +207,101 @@ impl GitRepo {
         timeout: Duration,
         stop: Option<&AtomicBool>,
     ) -> Result<String, GitError> {
-        let mut child = self
-            .command(args)
-            .spawn()
-            .map_err(|e| GitError::Io(e.to_string()))?;
-        // Drain pipes on threads: a child writing more than the pipe buffer
-        // must never block while we poll (large diffs).
-        let out_h = child.stdout.take().map(|mut h| {
-            std::thread::spawn(move || {
-                use std::io::Read;
-                let mut buf = Vec::new();
-                let _ = h.read_to_end(&mut buf);
-                buf
-            })
-        });
-        let err_h = child.stderr.take().map(|mut h| {
-            std::thread::spawn(move || {
-                use std::io::Read;
-                let mut buf = Vec::new();
-                let _ = h.read_to_end(&mut buf);
-                buf
-            })
-        });
-        let t0 = Instant::now();
-        let status = loop {
-            if stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(GitError::Cancelled);
-            }
-            match child.try_wait().map_err(|e| GitError::Io(e.to_string()))? {
-                Some(st) => break st,
-                None => {
-                    if t0.elapsed() > timeout {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(GitError::Timeout {
-                            args: args.join(" "),
-                            secs: timeout.as_secs(),
-                        });
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            }
-        };
-        let stdout = out_h.and_then(|h| h.join().ok()).unwrap_or_default();
-        let stderr = err_h.and_then(|h| h.join().ok()).unwrap_or_default();
-        if status.success() {
-            return Ok(String::from_utf8_lossy(&stdout).into_owned());
-        }
-        let stderr = String::from_utf8_lossy(&stderr).into_owned();
-        if stderr.contains("not a git repository") {
-            return Err(GitError::NotRepo);
-        }
-        let mut err = stderr;
-        if err.len() > STDERR_CAP {
-            err.truncate(STDERR_CAP);
-        }
-        Err(GitError::Failed {
-            args: args.join(" "),
-            stderr: err,
-        })
+        self.exec(args, None, timeout, stop, &[])
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
     }
 
     /// Raw bytes (for `-z` outputs).
     pub fn run_bytes(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
-        let out = self
-            .command(args)
-            .stdout(Stdio::piped())
-            .output()
-            .map_err(|e| GitError::Io(e.to_string()))?;
-        if out.status.success() {
-            return Ok(out.stdout);
-        }
-        Err(Self::fail(args, &out.stderr))
+        self.exec(args, None, DEFAULT_TIMEOUT, None, &[])
     }
 
-    /// Raw bytes for `git diff`: exit code 1 means "differences found" and
-    /// still carries the full output on stdout.
+    /// Raw bytes for `git diff`: exit code 1 means "differences found"
+    /// (`--no-index` implies `--exit-code`) and still carries the output.
     pub fn run_diff_bytes(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
-        let out = self
-            .command(args)
-            .stdout(Stdio::piped())
-            .output()
-            .map_err(|e| GitError::Io(e.to_string()))?;
-        if out.status.success() || out.status.code() == Some(1) {
-            return Ok(out.stdout);
+        self.exec(args, None, DEFAULT_TIMEOUT, None, &[1])
+    }
+
+    /// Feed stdin (commit message via `-F -`, never argv). Commit hooks run
+    /// here, hence the long timeout.
+    pub fn run_stdin(&self, args: &[&str], input: &[u8]) -> Result<String, GitError> {
+        self.exec(args, Some(input), HOOK_TIMEOUT, None, &[])
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    }
+
+    /// The one place git is spawned. stdout/stderr drain on their own
+    /// threads; the call wakes when stdout closes (git exited) instead of
+    /// polling on a fixed tick, and the child is killed on cancel, timeout
+    /// or stdout past [`MAX_OUTPUT`]. `ok_codes` are extra successful exits.
+    fn exec(
+        &self,
+        args: &[&str],
+        input: Option<&[u8]>,
+        timeout: Duration,
+        stop: Option<&AtomicBool>,
+        ok_codes: &[i32],
+    ) -> Result<Vec<u8>, GitError> {
+        let deadline = Instant::now() + timeout;
+        let mut cmd = self.command(args);
+        if input.is_some() {
+            cmd.stdin(Stdio::piped());
         }
-        Err(Self::fail(args, &out.stderr))
+        let mut child = cmd.spawn().map_err(|e| GitError::Io(e.to_string()))?;
+        if let (Some(data), Some(mut h)) = (input, child.stdin.take()) {
+            // Own thread: a child that writes before it reads can't deadlock us.
+            let data = data.to_vec();
+            std::thread::spawn(move || {
+                use std::io::Write;
+                let _ = h.write_all(&data);
+            });
+        }
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let out = Pipe::spawn(child.stdout.take(), MAX_OUTPUT, false, done_tx.clone());
+        let err = Pipe::spawn(child.stderr.take(), STDERR_CAP, true, done_tx);
+        let mut open_pipes = 2usize;
+        let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
+        let status = loop {
+            if stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
+                kill(&mut child);
+                return Err(GitError::Cancelled);
+            }
+            if out.overflowed() {
+                kill(&mut child);
+                return Err(GitError::TooLarge);
+            }
+            if exited.is_none() {
+                if let Some(st) = child.try_wait().map_err(|e| GitError::Io(e.to_string()))? {
+                    exited = Some((st, Instant::now()));
+                }
+            }
+            if let Some((st, at)) = exited {
+                // Pipes close with git; a hook's background process that
+                // inherited them gets a short grace, not the whole timeout.
+                if open_pipes == 0 || at.elapsed() > Duration::from_millis(250) {
+                    break st;
+                }
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                kill(&mut child);
+                return Err(GitError::Timeout {
+                    args: args.join(" "),
+                    secs: timeout.as_secs(),
+                });
+            }
+            let tick = if open_pipes == 0 {
+                Duration::from_millis(1)
+            } else {
+                Duration::from_millis(10)
+            };
+            if done_rx.recv_timeout(tick.min(deadline - now)).is_ok() {
+                open_pipes = open_pipes.saturating_sub(1);
+            }
+        };
+        if status.success() || status.code().is_some_and(|c| ok_codes.contains(&c)) {
+            return Ok(out.take());
+        }
+        Err(Self::fail(args, &err.take()))
     }
 
     fn fail(args: &[&str], stderr: &[u8]) -> GitError {
@@ -194,42 +311,16 @@ impl GitRepo {
         }
         let mut err = stderr;
         if err.len() > STDERR_CAP {
-            err.truncate(STDERR_CAP);
+            let mut cut = STDERR_CAP;
+            while !err.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            err.truncate(cut);
         }
         GitError::Failed {
             args: args.join(" "),
             stderr: err,
         }
-    }
-
-    /// Feed stdin (commit message via `-F -`, never argv).
-    pub fn run_stdin(&self, args: &[&str], input: &[u8]) -> Result<String, GitError> {
-        use std::io::Write;
-        let mut child = self
-            .command(args)
-            .stdin(Stdio::piped())
-            .spawn()
-            .map_err(|e| GitError::Io(e.to_string()))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(input)
-                .map_err(|e| GitError::Io(e.to_string()))?;
-        }
-        let out = child
-            .wait_with_output()
-            .map_err(|e| GitError::Io(e.to_string()))?;
-        if out.status.success() {
-            return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
-        }
-        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-        let mut err = stderr;
-        if err.len() > STDERR_CAP {
-            err.truncate(STDERR_CAP);
-        }
-        Err(GitError::Failed {
-            args: args.join(" "),
-            stderr: err,
-        })
     }
 
     // -- status v2 ------------------------------------------------------
@@ -261,29 +352,60 @@ impl GitRepo {
 
     // -- changes / log ---------------------------------------------------
 
-    /// Resolve a `base` form (`HEAD`, `merge-base`, `merge-base:<ref>`, any rev).
+    /// Resolve a `base` form (`HEAD`, `merge-base`, `merge-base:<ref>`, any
+    /// rev) to an object id. On an unborn branch `HEAD` is the empty tree.
     pub fn resolve_base(&self, base: &str) -> Result<String, GitError> {
         if base == "HEAD" {
-            return self
-                .run(&["rev-parse", "HEAD"])
-                .map(|s| s.trim().to_string());
+            return self.head_or_empty_tree();
         }
         if base == "merge-base" {
-            return self.merge_base_head();
+            // Workspace default: the base is HEAD itself. PR mode (B4)
+            // resolves the merge-base against the base ref at the route layer.
+            return self.head_or_empty_tree();
         }
         if let Some(r) = base.strip_prefix("merge-base:") {
+            check_rev(r)?;
             return self
                 .run(&["merge-base", "HEAD", r])
                 .map(|s| s.trim().to_string());
         }
-        self.run(&["rev-parse", base]).map(|s| s.trim().to_string())
+        self.rev_parse(base)
     }
 
-    fn merge_base_head(&self) -> Result<String, GitError> {
-        // Workspace default: the base is HEAD itself. PR mode (B4) resolves
-        // the merge-base against the base ref at the route layer.
-        self.run(&["rev-parse", "HEAD"])
+    /// `rev-parse --verify` of a client-supplied rev: exactly one object,
+    /// never an echoed flag.
+    pub fn rev_parse(&self, rev: &str) -> Result<String, GitError> {
+        check_rev(rev)?;
+        self.run(&["rev-parse", "--verify", "--quiet", rev])
             .map(|s| s.trim().to_string())
+            .map_err(|e| match e {
+                GitError::Failed { .. } => GitError::BadRev(rev.chars().take(64).collect()),
+                other => other,
+            })
+    }
+
+    /// True on a fresh `git init` (HEAD names a branch with no commits yet).
+    pub fn is_unborn(&self) -> bool {
+        self.run(&["rev-parse", "--verify", "--quiet", "HEAD"])
+            .is_err()
+            && self.run(&["symbolic-ref", "-q", "HEAD"]).is_ok()
+    }
+
+    /// `HEAD`, or the empty tree on an unborn branch so a fresh repository
+    /// shows every file as added instead of failing.
+    fn head_or_empty_tree(&self) -> Result<String, GitError> {
+        match self.run(&["rev-parse", "--verify", "--quiet", "HEAD"]) {
+            Ok(s) => Ok(s.trim().to_string()),
+            Err(GitError::NotRepo) => Err(GitError::NotRepo),
+            Err(e) => {
+                if self.run(&["symbolic-ref", "-q", "HEAD"]).is_err() {
+                    return Err(e);
+                }
+                // The empty tree in this repository's object format.
+                self.run_stdin(&["hash-object", "-t", "tree", "--stdin"], b"")
+                    .map(|s| s.trim().to_string())
+            }
+        }
     }
 
     /// `--numstat -z -M` file stats between base and target (`worktree` /
@@ -298,21 +420,23 @@ impl GitRepo {
                 let staged_letters = self.name_status(&[&base_sha, "--cached"])?;
                 let unstaged_letters = self.name_status(&[])?;
                 let mut files = merge_numstats(staged, unstaged, staged_letters, unstaged_letters);
-                for (path, lines) in self.untracked_with_lines()? {
-                    match files.iter_mut().find(|f| f.path == path) {
-                        Some(f) => {
-                            f.additions += lines;
-                            if f.status.0 == ChangeStatus::Untracked {
-                                f.additions = lines;
-                            }
-                        }
+                let at: std::collections::HashMap<String, usize> = files
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| (f.path.clone(), i))
+                    .collect();
+                for (path, lines, binary) in self.untracked_with_lines()? {
+                    match at.get(&path) {
+                        // Still in the diff (e.g. `git rm --cached`): count the
+                        // on-disk copy as re-added lines.
+                        Some(&i) => files[i].additions += lines,
                         None => files.push(ChangedFile {
                             path,
                             old_path: None,
                             status: ChangeStatusStr(ChangeStatus::Untracked),
                             additions: lines,
                             deletions: 0,
-                            binary: false,
+                            binary,
                         }),
                     }
                 }
@@ -324,9 +448,7 @@ impl GitRepo {
                 (None, join_counts(counts, &letters))
             }
             rev => {
-                let sha = self
-                    .run(&["rev-parse", rev])
-                    .map(|s| s.trim().to_string())?;
+                let sha = self.rev_parse(rev)?;
                 let range = format!("{base_sha}..{sha}");
                 let counts = self.numstat(&[&range])?;
                 let letters = self.name_status(&[&range])?;
@@ -431,7 +553,11 @@ impl GitRepo {
         Ok(map)
     }
 
-    fn untracked_with_lines(&self) -> Result<Vec<(String, u64)>, GitError> {
+    /// Untracked files with their line counts (what `--numstat` would call
+    /// additions) and a binary flag. Counting streams the file, so size never
+    /// costs memory, and only regular files are opened: an untracked symlink
+    /// (to `/dev/zero`, a FIFO, or outside the workspace) is never followed.
+    fn untracked_with_lines(&self) -> Result<Vec<(String, u64, bool)>, GitError> {
         let raw = self.run_bytes(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
         let mut out = Vec::new();
         for chunk in raw.split(|&b| b == 0) {
@@ -439,18 +565,8 @@ impl GitRepo {
                 continue;
             }
             let path = String::from_utf8_lossy(&chunk[3..]).into_owned();
-            let full = self.root.join(&path);
-            let lines = std::fs::read(&full)
-                .ok()
-                .map(|b| {
-                    if b.contains(&0) {
-                        0
-                    } else {
-                        b.iter().filter(|&&c| c == b'\n').count() as u64
-                    }
-                })
-                .unwrap_or(0);
-            out.push((path, lines));
+            let (lines, binary) = count_lines(&self.root.join(&path));
+            out.push((path, lines, binary));
         }
         Ok(out)
     }
@@ -484,7 +600,7 @@ impl GitRepo {
             ) else {
                 continue;
             };
-            if sha.len() != 40 {
+            if !is_object_id(sha) {
                 continue;
             }
             out.push(Commit {
@@ -507,27 +623,11 @@ impl GitRepo {
                 stderr: "no paths".into(),
             });
         }
-        let root_canon = self
-            .root
-            .canonicalize()
-            .unwrap_or_else(|_| self.root.clone());
+        // Lexical + parent-containment only: a symlink is staged, restored or
+        // deleted as the link itself, never as its target.
         paths
             .iter()
-            .map(|p| {
-                let abs = crate::paths::resolve(&root_canon, p, crate::paths::Access::Write)
-                    .map_err(|e| match e {
-                        crate::paths::PathError::Escapes | crate::paths::PathError::Protected => {
-                            GitError::Forbidden(e.to_string())
-                        }
-                        _ => GitError::Failed {
-                            args: "resolve".into(),
-                            stderr: e.to_string(),
-                        },
-                    })?;
-                abs.strip_prefix(&root_canon)
-                    .map(|r| r.to_string_lossy().to_string())
-                    .map_err(|_| GitError::Forbidden("path escapes root".into()))
-            })
+            .map(|p| git_path(&self.root, p, crate::paths::Access::Write))
             .collect()
     }
 
@@ -540,23 +640,66 @@ impl GitRepo {
 
     pub fn unstage_paths(&self, paths: &[String]) -> Result<String, GitError> {
         let safe = self.write_paths(paths)?;
-        let mut args = vec!["restore", "--staged", "--"];
+        // Before the first commit there is no HEAD to restore the index
+        // from; unstaging means dropping the entries from the index.
+        let mut args = if self.is_unborn() {
+            vec!["rm", "--cached", "-r", "-q", "--"]
+        } else {
+            vec!["restore", "--staged", "--"]
+        };
         args.extend(safe.iter().map(|s| s.as_str()));
         self.run(&args)
     }
 
-    /// Destructive: tracked → restore worktree; untracked → delete.
+    /// Destructive: tracked → restore worktree; untracked → delete. A
+    /// directory path covers the changed files below it (its untracked files
+    /// are deleted one by one, as listed by git).
     pub fn discard_paths(&self, paths: &[String]) -> Result<(), GitError> {
         let safe = self.write_paths(paths)?;
         // Partition via status to avoid deleting tracked content by mistake.
         let st = self.status_v2().unwrap_or_default();
         let mut tracked: Vec<&str> = Vec::new();
         let mut untracked: Vec<&str> = Vec::new();
+        let mut dirs: Vec<&str> = Vec::new();
         for p in &safe {
-            match st.files.iter().find(|f| &f.path == p) {
-                Some(f) if f.untracked => untracked.push(p),
-                _ => tracked.push(p),
+            if let Some(f) = st.files.iter().find(|f| &f.path == p) {
+                if f.untracked {
+                    untracked.push(&f.path);
+                } else {
+                    tracked.push(p);
+                }
+                continue;
             }
+            let prefix = format!("{p}/");
+            let below: Vec<&StatusFile> = st
+                .files
+                .iter()
+                .filter(|f| f.path.starts_with(&prefix))
+                .collect();
+            if below.iter().any(|f| f.untracked) {
+                untracked.extend(
+                    below
+                        .iter()
+                        .filter(|f| f.untracked)
+                        .map(|f| f.path.as_str()),
+                );
+                dirs.push(p);
+            }
+            // Unknown paths go to git too, which reports them.
+            if below.is_empty() || below.iter().any(|f| !f.untracked) {
+                tracked.push(p);
+            }
+        }
+        // Git lists untracked files one by one (`-uall`); a directory entry
+        // is a nested repository, which discard never deletes.
+        if let Some(d) = untracked
+            .iter()
+            .find(|u| std::fs::symlink_metadata(self.root.join(u)).is_ok_and(|m| m.is_dir()))
+        {
+            return Err(GitError::Forbidden(format!(
+                "{} is a nested repository; delete it by hand",
+                d.trim_end_matches('/')
+            )));
         }
         if !tracked.is_empty() {
             let mut args = vec!["restore", "--source=HEAD", "--worktree", "--"];
@@ -564,12 +707,18 @@ impl GitRepo {
             self.run(&args)?;
         }
         for u in untracked {
-            let abs = self.root.join(u);
-            if abs.is_file() || abs.is_symlink() {
-                std::fs::remove_file(&abs).map_err(|e| GitError::Io(e.to_string()))?;
-            } else if abs.is_dir() {
-                std::fs::remove_dir_all(&abs).map_err(|e| GitError::Io(e.to_string()))?;
+            // `symlink_metadata` above: a link is removed, its target never
+            // touched.
+            match std::fs::remove_file(self.root.join(u)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(GitError::Io(e.to_string()));
+                }
+                _ => {}
             }
+        }
+        // Directories the client asked to discard: drop the ones left empty.
+        for d in dirs {
+            prune_empty_dirs(&self.root.join(d));
         }
         Ok(())
     }
@@ -622,44 +771,69 @@ impl GitRepo {
 
     /// Blob bytes at `rev:path` through the long-lived batch process.
     pub fn blob_bytes(&self, rev: &str, path: &str) -> Result<Vec<u8>, GitError> {
-        if rev.len() > 256 || path.len() > 512 {
+        self.blob_bytes_max(rev, path, BLOB_CAP)
+    }
+
+    /// Blob bytes at `rev:path`, or [`GitError::TooLarge`] past `max` bytes
+    /// (checked from the object header, before the body is read). An empty
+    /// `rev` reads the index (stage 0), like `git show :path`.
+    pub fn blob_bytes_max(&self, rev: &str, path: &str, max: u64) -> Result<Vec<u8>, GitError> {
+        let no_blob = || GitError::Failed {
+            args: "blob".into(),
+            stderr: "no such blob".into(),
+        };
+        if !rev.is_empty() {
+            check_rev(rev)?;
+        }
+        if path.is_empty() || path.len() > 512 || path.chars().any(char::is_control) {
             return Err(GitError::Failed {
                 args: "blob".into(),
-                stderr: "bad rev/path".into(),
+                stderr: "bad path".into(),
             });
         }
         let sha = self
-            .run_bytes(&["rev-parse", "--verify", &format!("{rev}:{path}")])
+            .run_bytes(&["rev-parse", "--verify", "--quiet", &format!("{rev}:{path}")])
             .map(|o| String::from_utf8_lossy(&o).trim().to_string())
-            .map_err(|_| GitError::Failed {
-                args: "blob".into(),
-                stderr: "no such blob".into(),
+            .map_err(|e| match e {
+                GitError::NotRepo => GitError::NotRepo,
+                _ => no_blob(),
             })?;
-        if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(GitError::Failed {
-                args: "blob".into(),
-                stderr: "no such blob".into(),
-            });
+        if !is_object_id(&sha) {
+            return Err(no_blob());
         }
-        self.batch
+        let mut batch = self
+            .batch
             .lock()
-            .map_err(|_| GitError::Io("batch lock".into()))?
-            .read(&self.root, &sha)
-            .ok_or_else(|| GitError::Failed {
-                args: "blob".into(),
-                stderr: "no such blob".into(),
-            })
+            .map_err(|_| GitError::Io("batch lock".into()))?;
+        match batch.read(&sha, max.min(BLOB_CAP)) {
+            Blob::Bytes(b) => Ok(b),
+            Blob::TooLarge => Err(GitError::TooLarge),
+            Blob::Missing => Err(no_blob()),
+        }
     }
 }
 
+enum Blob {
+    Bytes(Vec<u8>),
+    TooLarge,
+    Missing,
+}
+
 /// Long-lived `git cat-file --batch` reader (one per workspace, shared by
-/// clones). Respawns transparently after any failure.
+/// clones). Respawns transparently after any failure; killed and reaped on
+/// drop (workspace switch), so no process outlives its workspace.
 #[derive(Debug)]
 struct CatFileBatch {
     root: PathBuf,
     child: Option<std::process::Child>,
     stdin: Option<std::process::ChildStdin>,
     stdout: Option<std::io::BufReader<std::process::ChildStdout>>,
+}
+
+impl Drop for CatFileBatch {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 impl CatFileBatch {
@@ -720,57 +894,57 @@ impl CatFileBatch {
         self.stdout = None;
     }
 
-    /// Read one blob; `None` on any failure (caller respawns next time).
-    fn read(&mut self, root: &Path, sha: &str) -> Option<Vec<u8>> {
+    /// Read one blob of at most `max` bytes. Any protocol surprise (missing
+    /// object, non-blob, oversized body) shuts the process down so the next
+    /// read starts in sync on a fresh one.
+    fn read(&mut self, sha: &str, max: u64) -> Blob {
         use std::io::{BufRead, Read, Write};
-        let _ = root;
         if !self.ensure() {
-            return None;
+            return Blob::Missing;
         }
         let (stdin, stdout) = match (self.stdin.as_mut(), self.stdout.as_mut()) {
             (Some(a), Some(b)) => (a, b),
             _ => {
                 self.shutdown();
-                return None;
+                return Blob::Missing;
             }
         };
-        if writeln!(stdin, "{sha}").is_err() {
+        if writeln!(stdin, "{sha}").is_err() || stdin.flush().is_err() {
             self.shutdown();
-            return None;
+            return Blob::Missing;
         }
-        stdin.flush().ok()?;
         let mut header = String::new();
         if stdout.read_line(&mut header).is_err() {
             self.shutdown();
-            return None;
+            return Blob::Missing;
         }
         // `<sha> <type> <size>`; missing objects reply `<sha> missing`.
         let mut parts = header.split_whitespace();
         let (Some(_), Some(ty), Some(size)) = (parts.next(), parts.next(), parts.next()) else {
             self.shutdown();
-            return None;
+            return Blob::Missing;
+        };
+        let Ok(size) = size.parse::<u64>() else {
+            self.shutdown();
+            return Blob::Missing;
         };
         if ty != "blob" {
-            // Drain nothing: non-blob replies carry no body. Resync by restart.
+            // Non-blob bodies are not drained: resync by restart.
             self.shutdown();
-            return None;
+            return Blob::Missing;
         }
-        let size: usize = size.parse().ok()?;
-        if size > 256 * 1024 * 1024 {
+        if size > max {
+            // Skipping the body would mean reading it; a respawn is cheaper.
             self.shutdown();
-            return None;
+            return Blob::TooLarge;
         }
-        let mut buf = vec![0u8; size];
-        if stdout.read_exact(&mut buf).is_err() {
-            self.shutdown();
-            return None;
-        }
+        let mut buf = vec![0u8; size as usize];
         let mut nl = [0u8; 1];
-        if stdout.read_exact(&mut nl).is_err() {
+        if stdout.read_exact(&mut buf).is_err() || stdout.read_exact(&mut nl).is_err() {
             self.shutdown();
-            return None;
+            return Blob::Missing;
         }
-        Some(buf)
+        Blob::Bytes(buf)
     }
 }
 
@@ -890,7 +1064,7 @@ fn parse_status_v2(raw: &[u8]) -> GitStatus {
                 }
             } else if let Some(v) = line.strip_prefix("# branch.upstream ") {
                 st.upstream = Some(v.to_string());
-            } else if let Some(v) = line.strip_prefix("# branch.abort ") {
+            } else if let Some(v) = line.strip_prefix("# branch.ab ") {
                 for part in v.split_whitespace() {
                     if let Some(a) = part.strip_prefix('+') {
                         st.ahead = a.parse().unwrap_or(0);
@@ -1234,6 +1408,9 @@ pub fn diff_head(root: &Path, rel: Option<&str>) -> String {
 
 #[allow(dead_code)]
 pub fn merge_base(root: &Path, target: &str) -> String {
+    if check_rev(target).is_err() {
+        return String::new();
+    }
     GitRepo::new(root.to_path_buf())
         .run(&["merge-base", "HEAD", target])
         .unwrap_or_default()
@@ -1267,47 +1444,90 @@ pub fn apply(root: &Path, patch: &str) -> Result<(), String> {
     run_check(root, &["apply", f.path().to_string_lossy().as_ref()]).map(|_| ())
 }
 
-/// Revert paths to HEAD and delete listed untracked files.
+/// Revert paths to HEAD and delete listed untracked files. Symlinks are
+/// reverted or deleted as links; their targets are never touched.
 pub fn revert(root: &Path, tracked: &[String], untracked: &[String]) -> Result<(), String> {
-    let repo = GitRepo::new(root.to_path_buf());
-    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let mut safe_tracked = Vec::with_capacity(tracked.len());
-    for t in tracked {
-        let p = crate::paths::resolve(&root_canon, t, crate::paths::Access::Write)
-            .map_err(|e| e.to_string())?;
-        let rel = p
-            .strip_prefix(&root_canon)
-            .map_err(|_| "path escapes root".to_string())?;
-        safe_tracked.push(rel.to_string_lossy().to_string());
-    }
+    let safe_tracked = resolve_write_args(root, tracked)?;
     if !safe_tracked.is_empty() {
         let mut args = vec!["checkout", "HEAD", "--"];
         args.extend(safe_tracked.iter().map(|s| s.as_str()));
         run_check(root, &args)?;
     }
-    for u in untracked {
-        let p = crate::paths::resolve(&root_canon, u, crate::paths::Access::Write)
-            .map_err(|e| e.to_string())?;
-        if p.is_file() {
+    for u in resolve_write_args(root, untracked)? {
+        let p = root.join(&u);
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| !m.is_dir()) {
             std::fs::remove_file(&p).map_err(|e| e.to_string())?;
         }
     }
-    let _ = repo;
     Ok(())
 }
 
 fn resolve_write_args(root: &Path, paths: &[String]) -> Result<Vec<String>, String> {
-    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     paths
         .iter()
-        .map(|p| {
-            let abs = crate::paths::resolve(&root_canon, p, crate::paths::Access::Write)
-                .map_err(|e| e.to_string())?;
-            abs.strip_prefix(&root_canon)
-                .map(|r| r.to_string_lossy().to_string())
-                .map_err(|_| "path escapes root".to_string())
-        })
+        .map(|p| git_path(root, p, crate::paths::Access::Write).map_err(|e| e.stderr()))
         .collect()
+}
+
+/// Lines in a regular file as `--numstat` counts additions (a last line
+/// without a newline counts), plus git's binary test (NUL in the first
+/// 8 KiB). Streams the file, so size costs no memory. A symlink is one line
+/// (git records its target path); FIFOs and devices count as nothing.
+fn count_lines(full: &Path) -> (u64, bool) {
+    use std::io::Read;
+    let Ok(md) = std::fs::symlink_metadata(full) else {
+        return (0, false);
+    };
+    if md.file_type().is_symlink() {
+        return (1, false);
+    }
+    if !md.is_file() {
+        return (0, false);
+    }
+    let Ok(mut f) = std::fs::File::open(full) else {
+        return (0, false);
+    };
+    let mut buf = vec![0u8; 64 * 1024];
+    let (mut lines, mut first, mut last) = (0u64, true, b'\n');
+    loop {
+        let n = match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        if first {
+            if buf[..n.min(8192)].contains(&0) {
+                return (0, true);
+            }
+            first = false;
+        }
+        lines += memchr::memchr_iter(b'\n', &buf[..n]).count() as u64;
+        last = buf[n - 1];
+    }
+    if last != b'\n' {
+        lines += 1;
+    }
+    (lines, false)
+}
+
+/// Remove `dir` and its subdirectories when empty, bottom-up. Never
+/// follows symlinks and never removes anything that still has entries.
+fn prune_empty_dirs(dir: &Path) {
+    let Ok(md) = std::fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !md.is_dir() {
+        return;
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                prune_empty_dirs(&e.path());
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
 }
 
 pub fn stage(root: &Path, paths: &[String]) -> Result<String, String> {

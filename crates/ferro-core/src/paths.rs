@@ -43,17 +43,14 @@ fn guard_write(root: &Path, resolved: PathBuf, access: Access) -> Result<PathBuf
     Ok(resolved)
 }
 
-pub fn resolve(root: &Path, rel: &str, access: Access) -> Result<PathBuf, PathError> {
-    // Canonical root when it exists so every later comparison is consistent
-    // (macOS /tmp is a symlink). When the root itself is missing there is
-    // nothing to symlink through below it, so the lexical check below stands.
-    let root_canon = root.canonicalize().ok();
-    let root_ref: &Path = root_canon.as_deref().unwrap_or(root);
+/// Lexical checks shared by [`resolve`] and [`git_rel`]: `/`-separated,
+/// relative, no `..`, NUL, drive or UNC prefixes, and (for writes) no VCS
+/// metadata component.
+fn lexical(rel: &str, access: Access) -> Result<String, PathError> {
     let rel = rel.trim().replace('\\', "/");
     if rel.starts_with('/') {
         return Err(PathError::Escapes);
     }
-    let rel = rel.trim_start_matches('/');
     if rel.is_empty() {
         return Err(PathError::Empty);
     }
@@ -87,6 +84,37 @@ pub fn resolve(root: &Path, rel: &str, access: Access) -> Result<PathBuf, PathEr
     {
         return Err(PathError::Protected);
     }
+    Ok(rel)
+}
+
+/// A repo-relative path for git's argv, cleaned to `a/b/c` form. Same
+/// lexical rules as [`resolve`], but the final component is never followed:
+/// git stages, diffs and restores a symlink itself, not its target. Parent
+/// directories must still resolve inside the root (symlink-aware), so
+/// nothing reaches through a symlinked directory.
+pub fn git_rel(root: &Path, rel: &str, access: Access) -> Result<String, PathError> {
+    let rel = lexical(rel, access)?;
+    let parts: Vec<&str> = rel
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    let Some((_, parents)) = parts.split_last() else {
+        return Err(PathError::Empty);
+    };
+    if !parents.is_empty() {
+        resolve(root, &parents.join("/"), access)?;
+    }
+    Ok(parts.join("/"))
+}
+
+pub fn resolve(root: &Path, rel: &str, access: Access) -> Result<PathBuf, PathError> {
+    // Canonical root when it exists so every later comparison is consistent
+    // (macOS /tmp is a symlink). When the root itself is missing there is
+    // nothing to symlink through below it, so the lexical check below stands.
+    let root_canon = root.canonicalize().ok();
+    let root_ref: &Path = root_canon.as_deref().unwrap_or(root);
+    let rel = lexical(rel, access)?;
+    let rel = rel.as_str();
     // Join to the root. When the root is canonical, every comparison below
     // is symlink-aware; otherwise the lexical containment check stands alone.
     let joined = root_ref.join(rel);

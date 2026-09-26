@@ -82,59 +82,76 @@ impl GitRepo {
         context: usize,
         ignore_ws: bool,
     ) -> Result<FileDiffRaw, GitError> {
-        // Resolve through § 5.1 first (read access is enough; git reads it).
-        let root_canon = self
-            .root
-            .canonicalize()
-            .unwrap_or_else(|_| self.root.clone());
-        let rel = crate::paths::resolve(&root_canon, path, crate::paths::Access::Read)
+        // § 5.1, lexically: git diffs a symlink as a link, never its target.
+        let rel = crate::paths::git_rel(&self.root, path, crate::paths::Access::Read)
             .map_err(|_| GitError::Forbidden("path escapes root".into()))?;
-        let rel = rel
-            .strip_prefix(&root_canon)
-            .map(|r| r.to_string_lossy().to_string())
-            .unwrap_or_else(|_| path.to_string());
-        // Base passes straight to git unless it is a merge-base form.
-        let base_owned;
-        let base_arg: &str = if base == "merge-base" || base.starts_with("merge-base:") {
-            base_owned = self.resolve_base(base)?;
-            &base_owned
+        // Base passes straight to git unless it is a merge-base form; either
+        // way nothing option-shaped reaches argv.
+        let mut base_owned = if base == "merge-base" || base.starts_with("merge-base:") {
+            self.resolve_base(base)?
         } else {
-            base
+            super::git::check_rev(base)?;
+            base.to_string()
         };
-        let ctx = context.clamp(0, 50).to_string();
-        let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "-M"];
-        let ctx_arg = format!("-U{ctx}");
-        args.push(&ctx_arg);
-        if ignore_ws {
-            args.push("-w");
-        }
-        let rev_target;
-        if target == "worktree" {
-            args.push(base_arg);
-        } else if target == "index" {
-            args.push("--cached");
-            args.push(base_arg);
-        } else {
-            rev_target = self
-                .run(&["rev-parse", target])
-                .map(|s| s.trim().to_string())?;
-            args.push(base_arg);
-            args.push(&rev_target);
-        }
-        args.push("--");
-        args.push(&rel);
-        // borrowck: base_owned/rev_target outlive args.
-        let out = self.run_diff_bytes(&args)?;
+        let rev_target = match target {
+            "worktree" | "index" => None,
+            rev => Some(self.rev_parse(rev)?),
+        };
+        let ctx_arg = format!("-U{}", context.clamp(0, 50));
+        // Fixed a/ b/ prefixes: `diff.noprefix`, `diff.mnemonicPrefix` or
+        // `diff.srcPrefix` in the user's config must not change the output
+        // the parser reads.
+        let build = |base_arg: &str| -> Vec<String> {
+            let mut args: Vec<String> = [
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "-M",
+            ]
+            .map(String::from)
+            .to_vec();
+            args.push(ctx_arg.clone());
+            if ignore_ws {
+                args.push("-w".into());
+            }
+            if target == "index" {
+                args.push("--cached".into());
+            }
+            args.push(base_arg.to_string());
+            if let Some(t) = &rev_target {
+                args.push(t.clone());
+            }
+            args.push("--".into());
+            args.push(rel.clone());
+            args
+        };
+        let run = |args: &[String]| {
+            self.run_diff_bytes(&args.iter().map(String::as_str).collect::<Vec<_>>())
+        };
+        let out = match run(&build(&base_owned)) {
+            Ok(out) => out,
+            // A fresh `git init` has no HEAD yet: diff against the empty tree.
+            Err(GitError::Failed { .. }) if base_owned == "HEAD" && self.is_unborn() => {
+                base_owned = self.resolve_base("HEAD")?;
+                run(&build(&base_owned))?
+            }
+            Err(e) => return Err(e),
+        };
+        let base_arg = base_owned.as_str();
         let d = parse_diff(&out, ChangeStatus::Modified);
         if d.hunks.is_empty() && !d.binary {
             // Empty diff: unchanged, or untracked (worktree only), or unknown.
+            let abs = self.root.join(&rel);
+            let on_disk = std::fs::symlink_metadata(&abs)
+                .is_ok_and(|m| m.is_file() || m.file_type().is_symlink());
             if target == "worktree"
-                && self.root.join(&rel).is_file()
+                && on_disk
                 && self
                     .run(&["ls-files", "--error-unmatch", "--", &rel])
                     .is_err()
             {
-                let abs = self.root.join(&rel);
                 let out = self.run_diff_bytes(&[
                     "diff",
                     "--no-index",
@@ -144,7 +161,13 @@ impl GitRepo {
                     "/dev/null",
                     &abs.to_string_lossy(),
                 ])?;
-                return Ok(parse_diff(&out, ChangeStatus::Added));
+                // `--no-index` headers carry the absolute path; the file is
+                // the workspace-relative one that was asked for.
+                let mut d = parse_diff(&out, ChangeStatus::Added);
+                d.new_path = rel;
+                d.old_path = None;
+                d.status = ChangeStatus::Added;
+                return Ok(d);
             }
             return Ok(d);
         }
@@ -161,8 +184,15 @@ impl GitRepo {
                         && (f.index == Some("R") || f.worktree == Some("R"))
                 });
                 if let Some(orig) = hit.and_then(|f| f.orig_path.clone()) {
-                    let mut args2: Vec<&str> =
-                        vec!["diff", "--no-color", "--no-ext-diff", "-M", &ctx_arg];
+                    let mut args2: Vec<&str> = vec![
+                        "diff",
+                        "--no-color",
+                        "--no-ext-diff",
+                        "--src-prefix=a/",
+                        "--dst-prefix=b/",
+                        "-M",
+                        &ctx_arg,
+                    ];
                     if ignore_ws {
                         args2.push("-w");
                     }
@@ -186,17 +216,33 @@ impl GitRepo {
     }
 
     /// Full side content for highlighting: worktree file, index blob, rev
-    /// blob, or empty. Callers cap highlighting at 2 MiB per side.
-    pub fn side_bytes(&self, path: &str, side: &DiffSide) -> Vec<u8> {
+    /// blob, or empty. Sides over `max` bytes fail with
+    /// [`GitError::TooLarge`] before they are read. A worktree symlink yields
+    /// its target path, which is what git diffs, never the target's content.
+    pub fn side_bytes(&self, path: &str, side: &DiffSide, max: u64) -> Result<Vec<u8>, GitError> {
+        let rel = crate::paths::git_rel(&self.root, path, crate::paths::Access::Read)
+            .map_err(|_| GitError::Forbidden("path escapes root".into()))?;
         match side {
-            DiffSide::Empty => Vec::new(),
-            DiffSide::Worktree => std::fs::read(self.root.join(path)).unwrap_or_default(),
-            DiffSide::Index => self
-                .run_bytes(&["show", &format!(":{path}")])
-                .unwrap_or_default(),
-            DiffSide::Rev(rev) => self
-                .run_bytes(&["show", &format!("{rev}:{path}")])
-                .unwrap_or_default(),
+            DiffSide::Empty => Ok(Vec::new()),
+            DiffSide::Worktree => {
+                let full = self.root.join(&rel);
+                let md =
+                    std::fs::symlink_metadata(&full).map_err(|e| GitError::Io(e.to_string()))?;
+                if md.file_type().is_symlink() {
+                    let target =
+                        std::fs::read_link(&full).map_err(|e| GitError::Io(e.to_string()))?;
+                    return Ok(target.to_string_lossy().into_owned().into_bytes());
+                }
+                if !md.is_file() {
+                    return Err(GitError::Io(format!("not a file: {rel}")));
+                }
+                if md.len() > max {
+                    return Err(GitError::TooLarge);
+                }
+                std::fs::read(&full).map_err(|e| GitError::Io(e.to_string()))
+            }
+            DiffSide::Index => self.blob_bytes_max("", &rel, max),
+            DiffSide::Rev(rev) => self.blob_bytes_max(rev, &rel, max),
         }
     }
 }

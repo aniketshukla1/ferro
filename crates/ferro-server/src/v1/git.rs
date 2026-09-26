@@ -40,6 +40,8 @@ fn map_err(e: ferro_core::git::GitError) -> ApiError {
     match e {
         G::NotRepo => no_git(),
         G::Forbidden(what) => ApiError::new(ErrorCode::Forbidden, what),
+        G::BadRev(rev) => ApiError::bad_request(format!("bad revision: {rev}")),
+        G::TooLarge => ApiError::new(ErrorCode::TooLarge, "git output too large"),
         G::Cancelled => ApiError::new(ErrorCode::Cancelled, "cancelled"),
         G::Timeout { args, secs } => ApiError::detail(
             ErrorCode::GitFailed,
@@ -371,24 +373,39 @@ fn render_diff(
     let (old_html, new_html) = if want_hl {
         let base_sha = g.resolve_base(base).map_err(map_err)?;
         let old_path = raw.old_path.as_deref().unwrap_or(&display);
+        // Sides past DIFF_HL_BYTES are never read (served plain); unreadable
+        // ones (deleted, absent) count as empty.
+        let side = |path: &str, side: &DiffSide| -> Option<Vec<u8>> {
+            match g.side_bytes(path, side, DIFF_HL_BYTES) {
+                Ok(b) => Some(b),
+                Err(ferro_core::git::GitError::TooLarge) => None,
+                Err(_) => Some(Vec::new()),
+            }
+        };
         let old_bytes = match raw.status {
-            ferro_core::git::ChangeStatus::Added => Vec::new(),
-            _ => g.side_bytes(old_path, &DiffSide::Rev(base_sha)),
+            ferro_core::git::ChangeStatus::Added => Some(Vec::new()),
+            _ => side(old_path, &DiffSide::Rev(base_sha)),
         };
         let new_bytes = match target {
-            "worktree" => g.side_bytes(&display, &DiffSide::Worktree),
-            "index" => g.side_bytes(&display, &DiffSide::Index),
+            "worktree" => side(&display, &DiffSide::Worktree),
+            "index" => side(&display, &DiffSide::Index),
             rev => match g.resolve_base(rev) {
-                Ok(sha) => g.side_bytes(&display, &DiffSide::Rev(sha)),
-                Err(_) => Vec::new(),
+                Ok(sha) => side(&display, &DiffSide::Rev(sha)),
+                Err(_) => Some(Vec::new()),
             },
         };
-        let old_key = raw.old_blob.as_deref().map(|s| format!("b:{s}"));
+        // Content-addressed keys; the file name picks the syntax, so it is
+        // part of the key (a rename .js → .ts must re-highlight).
+        let name = |p: &str| p.rsplit('/').next().unwrap_or(p).to_ascii_lowercase();
+        let old_key = raw
+            .old_blob
+            .as_deref()
+            .map(|s| format!("b:{s}:{}", name(old_path)));
         let new_key = raw
             .new_blob
             .as_deref()
             .filter(|s| !s.is_empty())
-            .map(|s| format!("b:{s}"))
+            .map(|s| format!("b:{s}:{}", name(&display)))
             .or_else(|| {
                 let abs = g.root.join(&display);
                 std::fs::metadata(&abs).ok().and_then(|m| {
@@ -399,8 +416,8 @@ fn render_diff(
                 })
             });
         (
-            cached_highlight(old_key, &old_bytes, old_path),
-            cached_highlight(new_key, &new_bytes, &display),
+            old_bytes.and_then(|b| cached_highlight(old_key, &b, old_path)),
+            new_bytes.and_then(|b| cached_highlight(new_key, &b, &display)),
         )
     } else {
         (None, None)
@@ -614,13 +631,18 @@ fn pair_change_blocks(
 /// UTF-16 ranges inside a row's text.
 type Ranges16 = Vec<(usize, usize)>;
 
+/// Beyond these, a pair gets no intraline ranges: Myers is O((N+M)·D), so
+/// a one-line change in a minified bundle would pin a thread for minutes.
+const INTRALINE_MAX_BYTES: usize = 16 * 1024;
+const INTRALINE_MAX_TOKENS: usize = 2_000;
+
 fn intraline_pair(a: &str, b: &str) -> Option<(Ranges16, Ranges16)> {
-    if a == b {
+    if a == b || a.len() + b.len() > INTRALINE_MAX_BYTES {
         return None;
     }
     let ta = word_tokens(a);
     let tb = word_tokens(b);
-    if ta.is_empty() && tb.is_empty() {
+    if ta.is_empty() && tb.is_empty() || ta.len() + tb.len() > INTRALINE_MAX_TOKENS {
         return None;
     }
     let va: Vec<&str> = ta.iter().map(|(s, e)| &a[*s..*e]).collect();
@@ -717,27 +739,30 @@ fn blob_source(
     path: &str,
     max_bytes: u64,
 ) -> Result<Vec<u8>, ApiError> {
+    // Sizes are checked before anything is read (stat / object header).
+    let too_large = || ApiError::new(ErrorCode::TooLarge, "blob over maxRawBytes");
     if rev == "worktree" {
         let abs = resolve_worktree(g, path)?;
-        let bytes =
-            std::fs::read(&abs).map_err(|_| ApiError::not_found(format!("cannot read: {path}")))?;
-        if bytes.len() as u64 > max_bytes {
-            return Err(ApiError::new(ErrorCode::TooLarge, "blob over maxRawBytes"));
+        let not_found = || ApiError::not_found(format!("cannot read: {path}"));
+        let md = std::fs::metadata(&abs).map_err(|_| not_found())?;
+        if !md.is_file() {
+            return Err(not_found());
         }
-        return Ok(bytes);
-    }
-    if rev == "index" {
-        let bytes = g.side_bytes(path, &ferro_core::diff::DiffSide::Index);
-        if bytes.len() as u64 > max_bytes {
-            return Err(ApiError::new(ErrorCode::TooLarge, "blob over maxRawBytes"));
+        if md.len() > max_bytes {
+            return Err(too_large());
         }
-        return Ok(bytes);
+        return std::fs::read(&abs).map_err(|_| not_found());
     }
-    let bytes = g.blob_bytes(rev, path).map_err(map_err)?;
-    if bytes.len() as u64 > max_bytes {
-        return Err(ApiError::new(ErrorCode::TooLarge, "blob over maxRawBytes"));
-    }
-    Ok(bytes)
+    // `index` is the stage-0 blob (`:path`); anything else is `rev:path`.
+    let rev_arg = if rev == "index" { "" } else { rev };
+    g.blob_bytes_max(rev_arg, path, max_bytes)
+        .map_err(|e| match e {
+            ferro_core::git::GitError::TooLarge => too_large(),
+            ferro_core::git::GitError::Failed { .. } => {
+                ApiError::not_found(format!("no blob: {rev}:{path}"))
+            }
+            other => map_err(other),
+        })
 }
 
 async fn blob_lines(
@@ -980,4 +1005,29 @@ async fn gutter(
         "modified": modified,
         "deleted": deleted,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intraline_pairs_words() {
+        let (a, b) = intraline_pair("let x = foo(1);", "let x = bar(1);").unwrap();
+        assert_eq!((a, b), (vec![(8, 11)], vec![(8, 11)]));
+    }
+
+    #[test]
+    fn intraline_skips_huge_lines() {
+        // A one-line change in a minified bundle: no word diff at all,
+        // and no multi-second Myers run to get there.
+        let a: String = (0..20_000).map(|i| format!("a{i},")).collect();
+        let b: String = (0..20_000).map(|i| format!("b{i};")).collect();
+        let t0 = std::time::Instant::now();
+        assert!(intraline_pair(&a, &b).is_none());
+        let many_a = "x ".repeat(1_500);
+        let many_b = "y ".repeat(1_500);
+        assert!(intraline_pair(&many_a, &many_b).is_none());
+        assert!(t0.elapsed() < std::time::Duration::from_millis(200));
+    }
 }

@@ -380,10 +380,12 @@ async fn blob_lines_and_raw() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["total"], 2);
     assert!(v["lines"][1]["text"].as_str().unwrap().contains("modified"));
-    // Bad rev → git_failed.
+    // No such blob at that rev → 404; an option-shaped rev → 400.
     let (s, v) = j(app.clone(), "/api/v1/git/blob/lines?rev=nope&path=a.txt").await;
-    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
-    assert_eq!(v["error"]["code"], "git_failed");
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    assert_eq!(v["error"]["code"], "not_found");
+    let (s, v) = j(app.clone(), "/api/v1/git/blob/lines?rev=--all&path=a.txt").await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     // Raw carries the sandbox CSP.
     let res = app
         .clone()
@@ -568,4 +570,213 @@ async fn diff_too_large() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["tooLarge"], false);
     assert!(!v["hunks"].as_array().unwrap().is_empty());
+}
+
+/// A committed repo with `files`, leaked like the other fixtures.
+fn repo_with(files: &[(&str, &str)]) -> &'static tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    git(&["init", "-b", "main"], d.path());
+    git(&["config", "user.email", "t@t"], d.path());
+    git(&["config", "user.name", "t"], d.path());
+    git(&["config", "commit.gpgsign", "false"], d.path());
+    for (p, body) in files {
+        std::fs::write(d.path().join(p), body).unwrap();
+    }
+    git_commit(d.path(), "init");
+    Box::leak(Box::new(d))
+}
+
+#[tokio::test]
+async fn option_shaped_revs_never_reach_git() {
+    let dir = repo_with(&[("a.txt", "one\n")]);
+    std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
+    let app = plain_state_over(dir.path());
+    let out = tempfile::tempdir().unwrap();
+    let victim = out.path().join("pwned.txt");
+    // `git rev-parse` echoes unknown flags and `git diff --output=<file>`
+    // writes wherever it is told: both must be refused up front.
+    let flag = format!("--output%3D{}", victim.display());
+    for uri in [
+        format!("/api/v1/git/changes?base={flag}"),
+        format!("/api/v1/git/changes?target={flag}"),
+        format!("/api/v1/git/changes?base=merge-base:{flag}"),
+        format!("/api/v1/git/diff?path=a.txt&base={flag}"),
+        format!("/api/v1/git/diff?path=a.txt&target={flag}"),
+        format!("/api/v1/git/gutter?path=a.txt&base={flag}"),
+        format!("/api/v1/git/blob/lines?path=a.txt&rev={flag}"),
+    ] {
+        let (s, v) = j(app.clone(), &uri).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{uri}: {v}");
+    }
+    assert!(!victim.exists(), "a flag-shaped rev wrote a file");
+    // Ordinary revs still work.
+    let (s, v) = j(app, "/api/v1/git/changes?base=HEAD~0").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn discard_paths_are_literal_and_symlink_safe() {
+    let dir = repo_with(&[("a.txt", "one\n"), ("b.txt", "bee\n")]);
+    std::fs::write(dir.path().join("a.txt"), "edit a\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "edit b\n").unwrap();
+    let app = plain_state_over(dir.path());
+    // A glob is a literal (missing) file name, not "every .txt".
+    let (s, _) = p(
+        app.clone(),
+        "/api/v1/git/discard",
+        r#"{"paths":["*.txt"],"confirm":true}"#,
+    )
+    .await;
+    assert_ne!(s, StatusCode::OK);
+    let read = |p: &str| std::fs::read_to_string(dir.path().join(p)).unwrap();
+    assert_eq!(
+        (read("a.txt"), read("b.txt")),
+        ("edit a\n".into(), "edit b\n".into())
+    );
+    #[cfg(unix)]
+    {
+        // Discarding an untracked link deletes the link; its target keeps
+        // its uncommitted edits.
+        std::os::unix::fs::symlink("a.txt", dir.path().join("link.txt")).unwrap();
+        let (s, v) = p(
+            app.clone(),
+            "/api/v1/git/discard",
+            r#"{"paths":["link.txt"],"confirm":true}"#,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert!(std::fs::symlink_metadata(dir.path().join("link.txt")).is_err());
+        assert_eq!(read("a.txt"), "edit a\n");
+    }
+}
+
+#[tokio::test]
+async fn untracked_diff_reports_the_requested_path() {
+    let app = state();
+    let (s, v) = j(app, "/api/v1/git/diff?path=new.txt").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["path"], "new.txt");
+    assert_eq!(v["status"], "A");
+}
+
+#[tokio::test]
+async fn fresh_repo_before_first_commit() {
+    let d = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+    git(&["init", "-b", "main"], d.path());
+    git(&["config", "user.email", "t@t"], d.path());
+    git(&["config", "user.name", "t"], d.path());
+    git(&["config", "commit.gpgsign", "false"], d.path());
+    std::fs::write(d.path().join("first.txt"), "hello\nworld\n").unwrap();
+    let app = plain_state_over(d.path());
+    let (s, v) = j(app.clone(), "/api/v1/git/changes").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["files"][0]["path"], "first.txt");
+    assert_eq!(v["files"][0]["additions"], 2);
+    let (s, v) = j(app.clone(), "/api/v1/git/diff?path=first.txt").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "A");
+    // Stage, unstage and stage again before any commit exists.
+    let body = r#"{"paths":["first.txt"]}"#;
+    let (s, v) = p(app.clone(), "/api/v1/git/stage", body).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = p(app.clone(), "/api/v1/git/unstage", body).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["counts"]["untracked"], 1);
+    let (s, v) = p(app.clone(), "/api/v1/git/stage", body).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = j(app.clone(), "/api/v1/git/changes?target=index").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["files"][0]["status"], "A");
+}
+
+#[tokio::test]
+async fn fs_batch_deletes_whole_directories() {
+    let d = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+    std::fs::create_dir_all(d.path().join("src/deep")).unwrap();
+    std::fs::create_dir_all(d.path().join("srcx")).unwrap();
+    for p in ["src/a.rs", "src/deep/b.rs", "srcx/c.rs", "top.rs"] {
+        std::fs::write(d.path().join(p), "x\n").unwrap();
+    }
+    let home = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+    let dirs = ferro_core::dirs::FerroDirs::new(
+        home.path().join("c"),
+        home.path().join("s"),
+        home.path().join("h"),
+    );
+    let st = server::build_state(
+        d.path().to_path_buf(),
+        dirs,
+        ferro_server::Host::Cli,
+        "test".into(),
+    );
+    st.ws().index.rebuild().await;
+    std::fs::remove_dir_all(d.path().join("src")).unwrap();
+    // A moved-away directory arrives as its own path only.
+    let (_, removed) = ferro_server::watch::apply_fs_batch(
+        &st.ws(),
+        &[],
+        &["src".to_string(), "nope".to_string()],
+    )
+    .unwrap();
+    assert_eq!(removed, vec!["src/a.rs", "src/deep/b.rs"]);
+    let snap = st.ws().index.file_index.load();
+    let mut paths: Vec<&str> = snap.paths.iter().map(String::as_str).collect();
+    paths.sort();
+    // `srcx/` shares the prefix text but is not below `src/`.
+    assert_eq!(paths, vec!["srcx/c.rs", "top.rs"]);
+    assert!(ferro_server::watch::apply_fs_batch(&st.ws(), &[], &["nope".to_string()]).is_none());
+}
+
+#[tokio::test]
+async fn watcher_follows_workspace_switch() {
+    use ferro_server::state::AppState;
+    let a = repo_with(&[("a.txt", "a\n")]);
+    let b = repo_with(&[("b.txt", "b\n")]);
+    let home = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+    let dirs = ferro_core::dirs::FerroDirs::new(
+        home.path().join("c"),
+        home.path().join("s"),
+        home.path().join("h"),
+    );
+    let st: Arc<AppState> = server::build_state(
+        a.path().to_path_buf(),
+        dirs,
+        ferro_server::Host::Cli,
+        "test".into(),
+    );
+    st.ws().index.rebuild().await;
+    ferro_server::watch::start(&st);
+    let guard = Arc::new(ferro_server::guard::GuardConfig::new(
+        Some(TOKEN.into()),
+        7778,
+        vec![],
+        false,
+    ));
+    let last = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let app = server::build_router(st.clone(), guard, last, false, None);
+    let body = serde_json::json!({ "path": b.path() }).to_string();
+    let (s, v) = p(app, "/api/v1/workspace/open", &body).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Let the restart and B's initial index settle.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let mut rx = st.bus.subscribe();
+    // The old root is no longer watched: its changes must not touch B.
+    std::fs::write(a.path().join("b.txt"), "from the old root\n").unwrap();
+    std::fs::remove_file(a.path().join("a.txt")).unwrap();
+    // The new root is.
+    std::fs::write(b.path().join("live.txt"), "hello\n").unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    let mut saw = false;
+    while tokio::time::Instant::now() < deadline && !saw {
+        if let Ok(Ok((_, ferro_server::bus::ServerEvent::Fs { changes, .. }))) =
+            tokio::time::timeout(Duration::from_secs(8), rx.recv()).await
+        {
+            saw = changes.iter().any(|c| c.path == "live.txt");
+        }
+    }
+    assert!(saw, "new workspace must be watched");
+    let snap = st.ws().index.file_index.load();
+    assert!(snap.paths.iter().any(|p| p == "live.txt"));
+    assert!(snap.paths.iter().any(|p| p == "b.txt"));
+    assert!(!snap.paths.iter().any(|p| p == "a.txt"));
 }

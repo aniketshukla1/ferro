@@ -191,19 +191,50 @@ fn publish_snapshot(idx: &crate::fileindex::FileIndex, files: &[FileEntry]) {
     idx.store(paths, sizes, mtimes);
 }
 
+/// Largest file the index lists; bigger ones stay searchable on demand.
+pub(crate) const MAX_LISTED_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Directory names never indexed, at any depth: VCS metadata, ferro's own
+/// state, build output.
+fn is_skip_name(name: &std::ffi::OsStr) -> bool {
+    name == ".git" || name == ".ferro" || name == "target" || name == "node_modules"
+}
+
+/// True when a workspace-relative path has a never-indexed component.
+pub(crate) fn is_skipped(rel: &Path) -> bool {
+    rel.components().any(|c| is_skip_name(c.as_os_str()))
+}
+
+/// The walker behind every listing: gitignore-aware (nested files, global
+/// excludes, `info/exclude`), hidden files included, symlinks not followed,
+/// skip-list directories pruned instead of walked. The watcher walks newly
+/// appeared directories with the same builder, so both always agree.
+pub(crate) fn walk_builder(path: &Path) -> ignore::WalkBuilder {
+    let mut b = ignore::WalkBuilder::new(path);
+    b.hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .follow_links(false)
+        .filter_entry(|e| e.depth() == 0 || !is_skip_name(e.file_name()));
+    b
+}
+
+/// Modification time in whole seconds, the unit the index stores.
+pub(crate) fn mtime_secs(md: &std::fs::Metadata) -> i64 {
+    md.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn walk(root: &Path) -> Vec<FileEntry> {
     use std::sync::Mutex;
     // build_parallel() actually uses .threads(); build() ignores it (D11).
     // Entries stream in from N threads; one lock per file is noise next to IO.
     let out = Mutex::new(Vec::new());
-    let walker = ignore::WalkBuilder::new(root)
-        .hidden(false)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .follow_links(false)
-        .threads(num_cpus())
-        .build_parallel();
+    let walker = walk_builder(root).threads(num_cpus()).build_parallel();
     walker.run(|| {
         Box::new(|entry| {
             let entry = match entry {
@@ -212,32 +243,17 @@ fn walk(root: &Path) -> Vec<FileEntry> {
             };
             if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 let path = entry.path();
-                let skip = path.components().any(|c| {
-                    let s = c.as_os_str().to_string_lossy();
-                    s == ".git" || s == ".ferro" || s == "target" || s == "node_modules"
-                });
-                if !skip {
-                    let rel = path
-                        .strip_prefix(root)
-                        .unwrap_or(path)
-                        .to_string_lossy()
-                        .to_string();
+                let rel_path = path.strip_prefix(root).unwrap_or(path);
+                // Relative components only: a root that itself lives under
+                // a `target/` directory must still be indexed.
+                if !is_skipped(rel_path) {
+                    let rel = rel_path.to_string_lossy().to_string();
                     // One stat per file, reused for size + mtime (D10).
                     let (size, mtime) = entry
                         .metadata()
-                        .map(|m| {
-                            (
-                                m.len(),
-                                m.modified()
-                                    .ok()
-                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                    .map(|d| d.as_secs() as i64)
-                                    .unwrap_or(0),
-                            )
-                        })
+                        .map(|m| (m.len(), mtime_secs(&m)))
                         .unwrap_or((0, 0));
-                    // Skip huge binaries from listing (>8MB) but keep them searchable on demand.
-                    if size <= 8 * 1024 * 1024 {
+                    if size <= MAX_LISTED_BYTES {
                         out.lock().unwrap().push(FileEntry {
                             path: rel,
                             size,
