@@ -10,8 +10,8 @@ pub mod tools;
 pub use agent::{Agent, AgentEvent, Step, Transcript};
 pub use provider_v2::{
     Anthropic, ChatReq, CompatV2, LlmClientV2, LlmEvent, Msg, MsgBlock, MsgRole, ProviderKind,
-    ProviderSpec, StopReason, ToolCallV2, ToolSchema, TurnOutcome, Usage, make_client, provider_status,
-    resolve_provider, ArcV2,
+    ProviderSpec, StopReason, ToolCallV2, ToolSchema, TurnBlock, TurnOutcome, Usage, make_client,
+    provider_status, resolve_provider, ArcV2,
 };
 pub use patch::{
     changes, needs_destructive, normalize, revert, touched_files, ApplyReport, ChangeKind,
