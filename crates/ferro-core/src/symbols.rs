@@ -127,6 +127,20 @@ fn outline_lang(lang: Lang, text: &str) -> Option<Vec<Symbol>> {
             hits.push((ns, ne, ds, de, suffix));
         }
     }
+    // One span can match several tags patterns (Rust methods match both
+    // `function_item` and the `declaration_list` method rule): keep a
+    // single hit per (name, def) span, preferring `method`.
+    fn suffix_rank(s: &str) -> u8 {
+        match s {
+            "method" => 0,
+            "function" => 1,
+            _ => 2,
+        }
+    }
+    hits.sort_by(|a, b| {
+        (a.0, a.1, a.2, a.3, suffix_rank(&a.4)).cmp(&(b.0, b.1, b.2, b.3, suffix_rank(&b.4)))
+    });
+    hits.dedup_by(|a, b| (a.0, a.1, a.2, a.3) == (b.0, b.1, b.2, b.3));
     // Byte ranges back to names + def spans resolved on the live tree.
     let mut def_ids: HashSet<usize> = HashSet::new();
     for (_, _, ds, de, _) in &hits {
