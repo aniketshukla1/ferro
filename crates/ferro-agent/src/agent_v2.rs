@@ -10,7 +10,7 @@ use tokio::task::JoinSet;
 
 use crate::provider::ProviderError;
 use crate::provider_v2::{
-    ArcV2, ChatReq, LlmEvent, Msg, MsgBlock, MsgRole, StopReason, TurnBlock, Usage,
+    ArcV2, ChatReq, LlmEvent, Msg, MsgBlock, MsgRole, StopReason, ToolSchema, TurnBlock, Usage,
 };
 use crate::tools_v2::{dispatch_v2, tool_schemas, ToolCtx, ToolOutput};
 
@@ -30,6 +30,8 @@ pub struct AgentV2 {
     pub context_tokens: usize,
     pub max_tokens: u32,
     pub effort: Option<String>,
+    /// Tool list override (review runs add `report_finding`).
+    pub tools_override: Option<Vec<ToolSchema>>,
 }
 
 impl AgentV2 {
@@ -42,6 +44,7 @@ impl AgentV2 {
             context_tokens: 48_000,
             max_tokens: 64_000,
             effort: None,
+            tools_override: None,
         }
     }
 }
@@ -287,7 +290,7 @@ impl AgentV2 {
             cache: conv.messages.is_empty(),
         });
 
-        let tools = tool_schemas();
+        let tools = self.tools_override.clone().unwrap_or_else(tool_schemas);
         let mut usage = Usage::default();
         let mut steps = Vec::new();
         let mut truncated = false;
@@ -596,6 +599,7 @@ mod tests {
             context_tokens: 48_000,
             max_tokens: 64_000,
             effort: None,
+            tools_override: None,
         }
     }
 
@@ -741,5 +745,75 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, AgentError::Cancelled));
         assert_eq!(mock.stream_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// Seeded-bug fixture: a scripted review run reports 3 findings through
+    /// the strict tool; the pipeline validates, snaps, and dedupes to ≥ 2.
+    #[tokio::test]
+    async fn seeded_bug_run_collects_findings() {
+        let (_dir, ctx) = fixture_ctx();
+        let finding = |id: &str, line: u64| {
+            v2call(
+                id,
+                crate::review_job::REPORT_FINDING_TOOL,
+                serde_json::json!({
+                    "path": "a.txt", "line": line, "side": "RIGHT",
+                    "severity": "high", "category": "bug",
+                    "title": format!("bug {id}"), "body": "detail", "confidence": 0.8,
+                }),
+            )
+        };
+        let mock = Arc::new(Mock {
+            turns: Mutex::new(VecDeque::from(vec![
+                outcome(
+                    "reviewing",
+                    vec![finding("r1", 1), finding("r2", 1), finding("r3", 50)],
+                ),
+                TurnOutcome {
+                    text: "done".into(),
+                    thinking: vec![],
+                    calls: vec![],
+                    blocks: vec![TurnBlock::Text("done".into())],
+                    stop: StopReason::EndTurn,
+                    usage: Usage::default(),
+                },
+            ])),
+            stream_calls: AtomicUsize::new(0),
+            seen: Mutex::new(vec![]),
+        });
+        let mut agent = agent_from_mock(mock, ctx);
+        agent.tools_override = Some(crate::review_tool_schemas());
+        let mut conv = Conversation::new("c_seed");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let stop = tokio_util::sync::CancellationToken::new();
+        let out = agent
+            .run(&mut conv, "review", None, &tx, &stop)
+            .await
+            .unwrap();
+        let mut raws = Vec::new();
+        for step in &out.steps {
+            for call in &step.calls {
+                if call.name == crate::review_job::REPORT_FINDING_TOOL && call.result.ok {
+                    raws.push(crate::review_job::parse_report(&call.args).unwrap());
+                }
+            }
+        }
+        assert_eq!(raws.len(), 3);
+        // a.txt line 50 snaps to the only changed line; titles differ so
+        // nothing dedupes away.
+        let mut changed = std::collections::HashMap::new();
+        changed.insert(
+            "a.txt".into(),
+            (
+                std::collections::HashSet::from([1]),
+                std::collections::HashSet::new(),
+            ),
+        );
+        let snapped: Vec<_> = raws
+            .iter()
+            .filter_map(|f| crate::review_job::snap_to_diff(f, &changed))
+            .collect();
+        let finals = crate::review_job::dedupe(snapped);
+        assert!(finals.len() >= 2, "{finals:?}");
     }
 }

@@ -6,6 +6,7 @@ pub mod provider;
 pub mod provider_v2;
 pub mod redact;
 pub mod review;
+pub mod review_job;
 pub mod session;
 pub mod tools;
 pub mod tools_v2;
@@ -28,8 +29,13 @@ pub use provider_v2::{
 };
 pub use redact::{is_clean, is_never_send, never_send_matcher, redact_text, REDACTED};
 pub use review::{drafts, submit as submit_review, Draft, ReviewStore};
+pub use review_job::{
+    changed_lines, dedupe, group_files, parse_report, report_finding_schema, review_system_prompt,
+    snap_to_diff, ChangedFile, RawFinding, REPORT_FINDING_TOOL,
+};
 pub use session::{log_ask, log_ask_in, new_id, session_dir};
 pub use tools::{dispatch, registry, AccessLabel, ToolCall, ToolDef, ToolResult};
 pub use tools_v2::{
-    default_never_send, dispatch_v2, tool_schemas, ToolCtx, ToolOutput, TOOL_OUTPUT_CHARS,
+    default_never_send, dispatch_v2, review_tool_schemas, tool_schemas, ToolCtx, ToolOutput,
+    TOOL_OUTPUT_CHARS,
 };
