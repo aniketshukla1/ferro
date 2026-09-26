@@ -4,6 +4,7 @@ pub mod patch;
 pub mod policy;
 pub mod provider;
 pub mod provider_v2;
+pub mod redact;
 pub mod review;
 pub mod session;
 pub mod tools;
@@ -25,7 +26,10 @@ pub use provider_v2::{
     LlmClientV2, LlmEvent, Msg, MsgBlock, MsgRole, ProviderKind, ProviderSpec, StopReason,
     ToolCallV2, ToolSchema, TurnBlock, TurnOutcome, Usage,
 };
+pub use redact::{is_clean, is_never_send, never_send_matcher, redact_text, REDACTED};
 pub use review::{drafts, submit as submit_review, Draft, ReviewStore};
 pub use session::{log_ask, log_ask_in, new_id, session_dir};
 pub use tools::{dispatch, registry, AccessLabel, ToolCall, ToolDef, ToolResult};
-pub use tools_v2::{dispatch_v2, tool_schemas, ToolCtx, ToolOutput, TOOL_OUTPUT_CHARS};
+pub use tools_v2::{
+    default_never_send, dispatch_v2, tool_schemas, ToolCtx, ToolOutput, TOOL_OUTPUT_CHARS,
+};
