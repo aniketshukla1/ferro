@@ -17,6 +17,7 @@ pub use github::GitHub;
 pub use gitlab::GitLab;
 pub use parse::{parse_mr_url, parse_pr_url, ForgeRef, Provider};
 pub use store::ReviewStore;
+pub use store::{Draft, DraftPatch, DraftSource, Finding, NewDraft, Round, ViewedState};
 pub use token::{resolve_gitlab_token, resolve_token, TokenSource};
 
 use github::{
