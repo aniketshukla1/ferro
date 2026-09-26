@@ -81,6 +81,14 @@ pub struct ReviewStore {
     dir: PathBuf,
 }
 
+impl Clone for ReviewStore {
+    fn clone(&self) -> Self {
+        Self {
+            dir: self.dir.clone(),
+        }
+    }
+}
+
 impl ReviewStore {
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }

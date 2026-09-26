@@ -66,6 +66,10 @@ fn git(args: &[&str], dir: &std::path::Path) {
 }
 
 fn router_over(root: std::path::PathBuf) -> axum::Router {
+    app_over(root).0
+}
+
+fn app_over(root: std::path::PathBuf) -> (axum::Router, Arc<ferro_server::state::AppState>) {
     let home = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     let dirs = ferro_core::dirs::FerroDirs::new(
         home.path().join("c"),
@@ -80,7 +84,10 @@ fn router_over(root: std::path::PathBuf) -> axum::Router {
         false,
     ));
     let last = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    server::build_router(st, guard, last, false, None)
+    (
+        server::build_router(st.clone(), guard, last, false, None),
+        st,
+    )
 }
 
 fn plain_state() -> axum::Router {
@@ -226,22 +233,136 @@ async fn commit_message_conflicts_when_nothing_staged() {
 }
 
 #[tokio::test]
-async fn findings_wait_for_review_job() {
+async fn review_validates_scope_and_focus() {
+    let _np = NoProvider::lock();
     let (s, v) = body_json(
         plain_state()
+            .oneshot(post("/api/v1/ai/review", r#"{"scope":"bogus"}"#))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(v["error"]["code"], "bad_request");
+    let (s, v) = body_json(
+        plain_state()
+            .oneshot(post(
+                "/api/v1/ai/review",
+                r#"{"scope":"changes","focus":["vibes"]}"#,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+}
+
+#[tokio::test]
+async fn review_without_provider_is_unsupported() {
+    let _np = NoProvider::lock();
+    let (s, v) = body_json(
+        git_state()
+            .oneshot(post("/api/v1/ai/review", r#"{"scope":"changes"}"#))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(v["error"]["code"], "unsupported");
+}
+
+fn seed_finding() -> ferro_forge::Finding {
+    ferro_forge::Finding {
+        id: "f_1".into(),
+        head_sha: "abc".into(),
+        path: "a.txt".into(),
+        line: 1,
+        start_line: None,
+        side: "RIGHT".into(),
+        severity: "high".into(),
+        category: "bug".into(),
+        title: "off by one".into(),
+        body: "detail".into(),
+        suggestion: None,
+        confidence: 0.9,
+        created_at: "2026-09-26T00:00:00Z".into(),
+        dismissed: false,
+        dismiss_reason: None,
+    }
+}
+
+fn git_app() -> (
+    axum::Router,
+    Arc<ferro_server::state::AppState>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    git(&["init", "-b", "main"], dir.path());
+    git(&["config", "user.email", "t@t"], dir.path());
+    git(&["config", "user.name", "t"], dir.path());
+    git(&["config", "commit.gpgsign", "false"], dir.path());
+    std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+    git(&["add", "."], dir.path());
+    git(&["commit", "-m", "init"], dir.path());
+    let (router, st) = app_over(dir.path().to_path_buf());
+    // Keep the tempdir alive: the router holds the root path; the dir
+    // itself must outlive the test — return it.
+    (router, st, dir)
+}
+
+#[tokio::test]
+async fn findings_accept_and_dismiss_roundtrip() {
+    let (router, st, _dir) = git_app();
+    let ws = st.ws();
+    let store = ferro_forge::ReviewStore::new(st.dirs.workspace_state_dir(&ws.key).join("review"));
+    store.save_findings("abc", &[seed_finding()]).unwrap();
+
+    let (s, v) = body_json(
+        router
+            .clone()
+            .oneshot(post(
+                "/api/v1/ai/findings/f_1/accept",
+                r#"{"body":"please fix"}"#,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["source"], "ai");
+    assert_eq!(v["findingId"], "f_1");
+    assert_eq!(v["body"], "please fix");
+
+    let (s, _) = body_json(
+        router
+            .clone()
+            .oneshot(post(
+                "/api/v1/ai/findings/f_1/dismiss",
+                r#"{"reason":"wontfix"}"#,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+
+    // Dismissed findings no longer accept.
+    let (s, v) = body_json(
+        router
+            .clone()
             .oneshot(post("/api/v1/ai/findings/f_1/accept", "{}"))
             .await
             .unwrap(),
     )
     .await;
-    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
-    assert_eq!(v["error"]["code"], "not_ready");
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+
     let (s, _) = body_json(
-        plain_state()
-            .oneshot(post("/api/v1/ai/findings/f_1/dismiss", "{}"))
+        router
+            .oneshot(post("/api/v1/ai/findings/f_nope/dismiss", "{}"))
             .await
             .unwrap(),
     )
     .await;
-    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }
