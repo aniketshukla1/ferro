@@ -11,7 +11,8 @@ use std::sync::Mutex;
 
 use super::error::ForgeError;
 use super::github::{
-    Checks, ForgeComment, PullMeta, ReviewComment, ReviewEvent, ReviewThread, SubmitResponse,
+    Checks, ForgeComment, LearnComment, PullMeta, ReviewComment, ReviewEvent, ReviewThread,
+    SubmitResponse,
 };
 use super::parse::ForgeRef;
 
@@ -558,6 +559,59 @@ impl GitLab {
                 .delete(&self.path(r, &format!("/draft_notes/{id}")))
                 .await;
         }
+    }
+
+    /// Notes on the project's most recently merged merge requests (at most `max_prs`, and
+    /// 50), and how many merge requests that covered. System notes are skipped.
+    pub async fn merged_review_comments(
+        &self,
+        r: &ForgeRef,
+        max_prs: usize,
+    ) -> Result<(usize, Vec<LearnComment>), ForgeError> {
+        let base = format!("{}/projects/{}", self.api_base, r.encoded_project());
+        let want = max_prs.clamp(1, 50);
+        let v = self
+            .get(&format!(
+                "{base}/merge_requests?state=merged&order_by=updated_at&sort=desc&per_page={want}"
+            ))
+            .await?;
+        let mut out = Vec::new();
+        let mut n = 0;
+        for mr in v.as_array().cloned().unwrap_or_default().iter().take(want) {
+            let Some(iid) = mr["iid"].as_u64() else {
+                continue;
+            };
+            n += 1;
+            let pr_author = mr["author"]["username"].as_str().unwrap_or("").to_string();
+            let web = mr["web_url"].as_str().unwrap_or("").to_string();
+            let notes = self
+                .get(&format!(
+                    "{base}/merge_requests/{iid}/notes?per_page=100&sort=asc"
+                ))
+                .await?;
+            for note in notes.as_array().cloned().unwrap_or_default() {
+                if note["system"].as_bool() == Some(true) {
+                    continue;
+                }
+                let login = note["author"]["username"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                out.push(LearnComment {
+                    id: note["id"].to_string(),
+                    pr: iid,
+                    url: format!("{web}#note_{}", note["id"]),
+                    bot: note["author"]["bot"].as_bool().unwrap_or(false)
+                        || login.ends_with("-bot")
+                        || login.ends_with("_bot"),
+                    author: login,
+                    pr_author: pr_author.clone(),
+                    path: note["position"]["new_path"].as_str().map(str::to_string),
+                    body: note["body"].as_str().unwrap_or("").to_string(),
+                });
+            }
+        }
+        Ok((n, out))
     }
 
     pub async fn post_comment(&self, r: &ForgeRef, body: &str) -> Result<ForgeComment, ForgeError> {

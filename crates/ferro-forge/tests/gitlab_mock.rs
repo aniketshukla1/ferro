@@ -640,3 +640,40 @@ async fn approve_reply_and_reply_drafts() {
     g.discard_drafts(&mr_ref(), &[id]).await;
     assert_eq!(m.hits("DELETE", &format!("{MR}/draft_notes/55")), 1);
 }
+
+#[tokio::test]
+async fn merged_review_comments_read_notes_of_merged_mrs() {
+    let base = "/api/v4/projects/group%2Fsub%2Fproj".to_string();
+    let m = Routed::start(vec![
+        ("GET", format!("{base}/merge_requests"), 200, serde_json::json!([
+            {"iid": 4, "author": {"username": "ann"}, "web_url": "https://git.example.com/group/sub/proj/-/merge_requests/4"}
+        ])),
+        ("GET", format!("{base}/merge_requests/4/notes"), 200, serde_json::json!([
+            {"id": 71, "system": true, "author": {"username": "ann"}, "body": "changed the description"},
+            {"id": 72, "system": false, "author": {"username": "rev", "bot": false}, "body": "Use the logger, not println",
+             "position": {"new_path": "src/main.rs"}},
+            {"id": 73, "system": false, "author": {"username": "ci-bot"}, "body": "pipeline passed"}
+        ])),
+    ])
+    .await;
+    let (prs, notes) = m
+        .client()
+        .merged_review_comments(&mr_ref(), 30)
+        .await
+        .unwrap();
+    assert_eq!(prs, 1);
+    assert_eq!(notes.len(), 2);
+    assert_eq!(
+        notes[0].url,
+        "https://git.example.com/group/sub/proj/-/merge_requests/4#note_72"
+    );
+    assert_eq!(
+        (
+            notes[0].pr,
+            notes[0].pr_author.as_str(),
+            notes[0].path.as_deref()
+        ),
+        (4, "ann", Some("src/main.rs"))
+    );
+    assert!(notes[1].bot);
+}

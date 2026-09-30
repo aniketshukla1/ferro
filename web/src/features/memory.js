@@ -1,9 +1,10 @@
 // Team review memory (API.md § 17, FRONTEND.md § 6.24): what reviewers dismiss and accept
 // becomes rules. "Don't report this again" rules hide a kind of finding (in some paths or
 // everywhere); conventions tell the AI reviewer what this team cares about. Team rules live in
-// .ferro-rules.json (shared through git); personal ones stay on this machine. Loads on first use.
+// .ferro-rules.json (shared through git); personal ones stay on this machine. "Learn from PRs"
+// proposes conventions from the review comments on merged pull requests. Loads on first use.
 import { h, mount } from '../core/dom.js';
-import { request } from '../core/api.js';
+import { request, has } from '../core/api.js';
 import { bus } from '../core/bus.js';
 import { plural, relTime } from '../core/util.js';
 import { icon } from '../ui/icons.js';
@@ -40,7 +41,7 @@ export function openRuleDialog(prefill = {}) {
     const dir = dirOf(path);
     const family = prefill.rule && prefill.rule.includes('.') ? `${prefill.rule.split('.')[0]}.*` : null;
     const text = h('textarea', { class: 'input', rows: '2', placeholder: 'e.g. Every public function has a doc comment', 'aria-label': 'Convention' }, prefill.text || '');
-    const reason = h('input', { class: 'input', placeholder: convention ? 'Optional: why it matters' : 'Why? e.g. test fixtures, not real keys', 'aria-label': 'Reason' });
+    const reason = h('input', { class: 'input', value: prefill.reason || '', placeholder: convention ? 'Optional: why it matters' : 'Why? e.g. test fixtures, not real keys', 'aria-label': 'Reason' });
     const custom = h('input', { class: 'input sm', placeholder: 'glob, e.g. tests/**', 'aria-label': 'Custom paths' });
     const err = h('p', { class: 'agent-error', role: 'alert', hidden: true });
     const body = h('div', { class: 'mem-form' },
@@ -108,13 +109,16 @@ export function openRuleDialog(prefill = {}) {
 
 export function renderMemoryTab(el) {
   const addBtn = h('button', { class: 'btn sm', on: { click: () => openRuleDialog({ kind: 'convention', appliesTo: 'ai' }) } }, icon('plus', 'sm'), 'Convention');
+  const learnBtn = h('button', { class: 'btn sm', hidden: !has('memory.learn'), 'data-tip': 'Find the feedback your reviewers keep giving on merged pull requests', on: { click: () => learn() } }, icon('git-pull-request', 'sm'), 'Learn from PRs');
   const info = h('p', { class: 'faint small mem-info' });
+  const learnEl = h('p', { class: 'faint small mem-learn', role: 'status', hidden: true });
   const sugEl = h('div', { class: 'mem-sugs' });
   const teamEl = h('div', { class: 'mem-group' });
   const meEl = h('div', { class: 'mem-group' });
+  let forge = null;
   mount(el, h('div', { class: 'mem' },
-    h('div', { class: 'ck-top' }, icon('layers', 'sm'), h('span', { class: 'ck-title' }, 'Team review memory'), h('span', { class: 'ck-sp' }), addBtn),
-    info, sugEl, teamEl, meEl));
+    h('div', { class: 'ck-top' }, icon('layers', 'sm'), h('span', { class: 'ck-title' }, 'Team review memory'), h('span', { class: 'ck-sp' }), learnBtn, addBtn),
+    info, learnEl, sugEl, teamEl, meEl));
 
   async function load() {
     let m;
@@ -130,11 +134,20 @@ export function renderMemoryTab(el) {
         ? `Warning: git ignores ${m.team.path}, so your team will never get these rules. Remove the matching line from .gitignore (or add !${m.team.path}).`
         : `Team rules live in ${m.team.path}${m.team.exists ? '' : ' (not created yet)'}: commit it so everyone gets them. Personal rules stay on this machine.`;
     info.classList.toggle('agent-error', !!m.team.gitIgnored);
+    forge = m.forge || null;
+    learnBtn.disabled = !forge;
+    learnBtn.dataset.tip = forge ? `Find the feedback your reviewers keep giving on ${forge.host}/${forge.repo}` : 'Needs a GitHub or GitLab remote';
+    if (!running) {
+      learnEl.hidden = !m.learned?.at;
+      learnEl.textContent = m.learned?.at ? `Learned from merged pull requests ${relTime(m.learned.at)}.` : '';
+    }
     mount(sugEl, m.suggestions.length ? [h('div', { class: 'mem-head' }, 'Suggested'), m.suggestions.map((s) => h('div', { class: 'mem-sug' },
       h('div', { class: 'mem-line' }, h('span', { class: `mem-kind ${s.rule.kind}` }, s.rule.kind === 'ignore' ? 'Ignore' : 'Convention'), h('span', null, describe(s.rule))),
-      h('div', { class: 'faint small' }, `${s.why}: ${s.examples.join(', ')}`),
+      s.source === 'merged'
+        ? [h('div', { class: 'faint small' }, s.why), evidence(s.evidence)]
+        : h('div', { class: 'faint small' }, `${s.why}: ${s.examples.join(', ')}`),
       h('div', { class: 'row mem-actions' },
-        h('button', { class: 'btn sm', on: { click: async () => { if (await openRuleDialog({ ...s.rule, path: s.examples[0], paths: s.rule.paths?.length ? s.rule.paths : undefined })) load(); } } }, 'Create rule…'),
+        h('button', { class: 'btn sm', on: { click: async () => { if (await openRuleDialog({ ...s.rule, path: s.source === 'merged' ? undefined : s.examples[0], paths: s.rule.paths?.length ? s.rule.paths : undefined })) load(); } } }, 'Create rule…'),
         h('button', { class: 'btn ghost sm', on: { click: async () => { await request('memory/suggestions/dismiss', { method: 'POST', body: { key: s.key } }).catch(() => {}); load(); } } }, 'Not now'))))] : null);
     const rows = (list) => list.map((r) => h('div', { class: 'mem-rule' },
       h('div', { class: 'mem-line' }, h('span', { class: `mem-kind ${r.kind}` }, r.kind === 'ignore' ? 'Ignore' : 'Convention'), h('span', { class: 'mem-desc' }, describe(r))),
@@ -179,6 +192,70 @@ export function renderMemoryTab(el) {
         },
       }],
     });
+  }
+
+  /** The review comments behind a learned convention, each linking to its pull request. */
+  function evidence(list = []) {
+    return h('ul', { class: 'mem-evidence small' }, list.slice(0, 4).map((e) => h('li', null,
+      h('a', { href: e.url, target: '_blank', rel: 'noopener noreferrer' }, `#${e.pr}`),
+      h('span', { class: 'faint' }, ` ${e.author}: `), `“${e.excerpt}”`)),
+    list.length > 4 ? h('li', { class: 'faint' }, `and ${list.length - 4} more`) : null);
+  }
+
+  let running = false;
+  function learn() {
+    if (!forge || running) return;
+    const count = h('select', { class: 'input sm', 'aria-label': 'How many pull requests' }, [20, 50, 100].map((n) => h('option', { value: String(n), selected: n === 50 || undefined }, `last ${n}`)));
+    openDialog({
+      title: 'Learn from merged pull requests',
+      className: 'mem-dialog',
+      width: 'min(520px, calc(100vw - 32px))',
+      body: h('div', { class: 'mem-form' },
+        h('p', null, 'ferro reads the review comments on the ', count, ` merged pull requests of ${forge.host}/${forge.repo} and asks your AI provider which feedback your reviewers keep giving.`),
+        h('p', { class: 'faint small' }, 'Only comment text is sent, not code. Secrets are stripped and files matching ai.neverSend are skipped. Each finding becomes a suggestion you accept or skip, with links to the comments behind it.')),
+      actions: [{ label: 'Cancel' }, { label: 'Learn', primary: true, run: () => { start(Number(count.value)); return true; } }],
+    });
+  }
+  async function start(prs) {
+    let job;
+    try {
+      job = (await request('memory/learn', { method: 'POST', body: { prs } })).job;
+    } catch (e) {
+      toast({ kind: 'error', title: 'Cannot learn from pull requests', message: e.message });
+      return;
+    }
+    running = true;
+    learnBtn.disabled = true;
+    learnEl.hidden = false;
+    learnEl.textContent = `Reading the last ${prs} merged pull requests…`;
+    let settled = false;
+    const onJob = (j) => {
+      if (j?.id !== job.id || settled) return;
+      if (j.state === 'running' || j.state === 'queued') {
+        const p = j.progress || {};
+        learnEl.textContent = p.stage === 'ai' ? `Finding repeated feedback in ${plural(p.comments, 'review comment')}…` : `Reading the last ${prs} merged pull requests of ${forge?.repo || 'this repository'}…`;
+        return;
+      }
+      settled = true;
+      offJob();
+      clearInterval(poll);
+      running = false;
+      learnBtn.disabled = !forge;
+      const r = j.result || {};
+      if (j.state === 'failed') toast({ kind: 'error', title: 'Learning from pull requests failed', message: j.error?.message });
+      else if (j.state === 'done') {
+        toast({
+          kind: r.conventions ? 'ok' : 'info',
+          title: r.conventions ? `Found ${plural(r.conventions, 'convention')}` : 'No repeated feedback found',
+          message: `${plural(r.comments || 0, 'review comment')} on ${plural(r.prs || 0, 'merged pull request')}`,
+          timeout: 4000,
+        });
+      }
+      load();
+    };
+    const offJob = bus.on('ev:job', onJob);
+    // Events can be missed across a reconnect: poll while it runs.
+    const poll = setInterval(() => request(`jobs/${encodeURIComponent(job.id)}`).then(onJob).catch(() => {}), 2000);
   }
 
   const off = bus.on('memory:changed', load);

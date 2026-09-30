@@ -60,3 +60,38 @@ test('suggestions come from repeated dismissals; conventions are added by hand',
   await dialog.getByRole('button', { name: 'Save rule' }).click();
   await expect(mem.locator('.mem-group').first().locator('.mem-desc')).toHaveText('Every public function has a doc comment');
 });
+
+test('learn from merged pull requests proposes conventions with the comments behind them', async ({ page }) => {
+  await page.goto('/web/index.html?mock=1');
+  await expect(page.locator('#app')).not.toHaveAttribute('aria-busy', 'true', { timeout: 10_000 });
+  await palette(page, 'Team Review Memory');
+  const tab = page.locator('.mem');
+  await tab.getByRole('button', { name: 'Learn from PRs' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Learn from merged pull requests' });
+  await expect(dialog).toContainText('github.com/aniketshukla1/ferro');
+  await expect(dialog).toContainText('Only comment text is sent, not code');
+  await dialog.getByLabel('How many pull requests').selectOption('20');
+  await dialog.getByRole('button', { name: 'Learn' }).click();
+  await expect(page.locator('.toast', { hasText: 'Found 2 conventions' })).toBeVisible();
+  await expect(tab.locator('.mem-learn')).toContainText('Learned from merged pull requests');
+
+  const sug = tab.locator('.mem-sug', { hasText: 'Add a regression test with every bug fix' });
+  await expect(sug).toContainText('Asked for in 3 review comments across 3 merged pull requests');
+  const link = sug.locator('.mem-evidence a').first();
+  await expect(link).toHaveText('#412');
+  await expect(link).toHaveAttribute('href', 'https://github.com/aniketshukla1/ferro/pull/412');
+  await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+
+  // Accept one as a team convention; skip the other.
+  await sug.getByRole('button', { name: 'Create rule…' }).click();
+  const ruleDialog = page.getByRole('dialog', { name: 'Add a team convention' });
+  await expect(ruleDialog.getByLabel('Convention')).toHaveValue('Add a regression test with every bug fix');
+  await expect(ruleDialog.getByLabel('Reason')).toHaveValue('Reviewers asked for this in 3 merged pull requests');
+  await ruleDialog.getByLabel(/My team/).check();
+  await ruleDialog.getByRole('button', { name: 'Save rule' }).click();
+  await expect(tab.locator('.mem-group').first()).toContainText('Add a regression test with every bug fix');
+  await expect(tab.locator('.mem-sug', { hasText: 'Add a regression test' })).toHaveCount(0);
+  const other = tab.locator('.mem-sug', { hasText: 'Return errors with context' });
+  await other.getByRole('button', { name: 'Not now' }).click();
+  await expect(other).toHaveCount(0);
+});

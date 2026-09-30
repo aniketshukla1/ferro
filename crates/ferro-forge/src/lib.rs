@@ -15,11 +15,12 @@ pub use checkout::{gc_worktrees, open_pr, CheckoutOpts, OpenedPr, WorktreeEntry}
 pub use error::ForgeError;
 pub use github::GitHub;
 pub use gitlab::GitLab;
-pub use parse::{parse_mr_url, parse_pr_url, ForgeRef, Provider};
+pub use parse::{parse_mr_url, parse_pr_url, parse_remote, ForgeRef, Provider};
 pub use store::ReviewStore;
 pub use store::{Draft, DraftPatch, DraftSource, Finding, NewDraft, Round, ViewedState};
 pub use token::{resolve_gitlab_token, resolve_token, TokenSource};
 
+pub use github::LearnComment;
 use github::{
     Checks, ForgeComment, PullMeta, ReviewComment, ReviewEvent, ReviewThread, SubmitResponse,
 };
@@ -56,6 +57,18 @@ impl ForgeClient {
         match self {
             ForgeClient::GitHub(g) => g.pull(r).await,
             ForgeClient::GitLab(g) => g.pull(r).await,
+        }
+    }
+
+    /// Review comments on recently merged pull requests (see `GitHub::merged_review_comments`).
+    pub async fn merged_review_comments(
+        &self,
+        r: &ForgeRef,
+        max_prs: usize,
+    ) -> Result<(usize, Vec<LearnComment>), ForgeError> {
+        match self {
+            ForgeClient::GitHub(g) => g.merged_review_comments(r, max_prs).await,
+            ForgeClient::GitLab(g) => g.merged_review_comments(r, max_prs).await,
         }
     }
 

@@ -350,6 +350,73 @@ impl GitHub {
         ForgeComment::parse(&v)
     }
 
+    /// Review comments on the repository's most recently merged pull requests (at most
+    /// `max_prs`), newest first, and how many merged pull requests that covered. Reads the
+    /// repository-wide review-comment list (up to 1,000 comments) instead of one call per PR.
+    pub async fn merged_review_comments(
+        &self,
+        r: &ForgeRef,
+        max_prs: usize,
+    ) -> Result<(usize, Vec<LearnComment>), ForgeError> {
+        let base = format!("{}/repos/{}/{}", self.api_base, r.owner, r.repo);
+        let mut merged: HashMap<u64, String> = HashMap::new();
+        for page in 1..=5 {
+            let v = self
+                .get(&format!(
+                    "{base}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}"
+                ))
+                .await?;
+            let arr = v.as_array().cloned().unwrap_or_default();
+            for p in &arr {
+                if merged.len() >= max_prs {
+                    break;
+                }
+                if let (false, Some(n)) = (p["merged_at"].is_null(), p["number"].as_u64()) {
+                    merged.insert(n, p["user"]["login"].as_str().unwrap_or("").to_string());
+                }
+            }
+            if merged.len() >= max_prs || arr.len() < 100 {
+                break;
+            }
+        }
+        let mut out = Vec::new();
+        if merged.is_empty() {
+            return Ok((0, out));
+        }
+        for page in 1..=10 {
+            let v = self
+                .get(&format!(
+                    "{base}/pulls/comments?sort=created&direction=desc&per_page=100&page={page}"
+                ))
+                .await?;
+            let arr = v.as_array().cloned().unwrap_or_default();
+            for c in &arr {
+                let pr = c["pull_request_url"]
+                    .as_str()
+                    .and_then(|u| u.rsplit('/').next())
+                    .and_then(|n| n.parse::<u64>().ok());
+                let Some((pr, pr_author)) = pr.and_then(|n| merged.get(&n).map(|a| (n, a))) else {
+                    continue;
+                };
+                let login = c["user"]["login"].as_str().unwrap_or("").to_string();
+                out.push(LearnComment {
+                    id: c["id"].to_string(),
+                    pr,
+                    url: c["html_url"].as_str().unwrap_or("").to_string(),
+                    bot: c["user"]["type"] == "Bot" || login.ends_with("[bot]"),
+                    author: login,
+                    pr_author: pr_author.clone(),
+                    path: c["path"].as_str().map(str::to_string),
+                    body: c["body"].as_str().unwrap_or("").to_string(),
+                });
+            }
+            if arr.len() < 100 {
+                break;
+            }
+        }
+        Ok((merged.len(), out))
+    }
+
     pub async fn post_comment(&self, r: &ForgeRef, body: &str) -> Result<ForgeComment, ForgeError> {
         let v = self
             .post(
@@ -577,6 +644,20 @@ impl Checks {
             url,
         }
     }
+}
+
+/// A review comment on a merged pull request, the raw material for learned conventions.
+#[derive(Debug, Clone, Serialize)]
+pub struct LearnComment {
+    pub id: String,
+    pub pr: u64,
+    pub url: String,
+    pub author: String,
+    /// The pull request's author: their own comments are replies, not review feedback.
+    pub pr_author: String,
+    pub bot: bool,
+    pub path: Option<String>,
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

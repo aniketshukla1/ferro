@@ -255,3 +255,7 @@
 .ck-hidden { display: flex; flex-direction: column; }
 .review-suppressed { margin: 4px 0 8px; }
 .review-suppressed ul { margin: 4px 0; padding-left: 18px; }
+.mem-learn { margin: 0; }
+.mem-evidence { margin: 2px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 2px; color: var(--fg-muted); }
+.mem-evidence li { overflow-wrap: anywhere; }
+.mem-evidence a { color: var(--fg); font-family: var(--font-mono); }

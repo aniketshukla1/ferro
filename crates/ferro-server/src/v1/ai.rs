@@ -50,7 +50,7 @@ fn opt_setting(eff: &BTreeMap<String, serde_json::Value>, key: &str) -> Option<S
 
 /// Resolve the effective provider from settings (explicit choice wins;
 /// `auto` follows the Appendix B env order).
-fn resolve_spec(
+pub(crate) fn resolve_spec(
     eff: &BTreeMap<String, serde_json::Value>,
 ) -> Result<ferro_agent::ProviderSpec, ApiError> {
     use ferro_agent::{ProviderKind, ProviderSpec};
@@ -138,7 +138,7 @@ fn resolve_spec(
     })
 }
 
-fn provider_api_err(e: ferro_agent::ProviderError) -> ApiError {
+pub(crate) fn provider_api_err(e: ferro_agent::ProviderError) -> ApiError {
     use ferro_agent::ProviderError as P;
     match e {
         P::NoKey => unsupported("no AI provider configured"),
@@ -293,7 +293,7 @@ async fn build_context(
     Ok(Some(out))
 }
 
-fn redact_enabled(eff: &BTreeMap<String, serde_json::Value>) -> bool {
+pub(crate) fn redact_enabled(eff: &BTreeMap<String, serde_json::Value>) -> bool {
     eff.get("ai.redactSecrets")
         .and_then(|v| v.as_bool())
         .unwrap_or(true)

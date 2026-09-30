@@ -317,3 +317,51 @@ async fn checks_read_every_page() {
     assert!(reqs[0].contains("per_page=100&page=1"), "{}", reqs[0]);
     assert!(reqs[1].contains("page=2"), "{}", reqs[1]);
 }
+
+#[tokio::test]
+async fn merged_review_comments_keep_only_merged_prs() {
+    let m = Mock::start(vec![
+        json(serde_json::json!([
+            {"number": 12, "merged_at": "2026-01-02T00:00:00Z", "user": {"login": "ann"}},
+            {"number": 11, "merged_at": null, "user": {"login": "bob"}},
+            {"number": 10, "merged_at": "2026-01-01T00:00:00Z", "user": {"login": "cid"}}
+        ])),
+        json(serde_json::json!([
+            {"id": 1, "pull_request_url": "https://api.github.com/repos/o/r/pulls/12", "html_url": "https://github.com/o/r/pull/12#discussion_r1",
+             "user": {"login": "rev", "type": "User"}, "path": "src/a.rs", "body": "Please add a test for this"},
+            {"id": 2, "pull_request_url": "https://api.github.com/repos/o/r/pulls/11", "html_url": "x",
+             "user": {"login": "rev", "type": "User"}, "path": "src/b.rs", "body": "Not merged: skipped"},
+            {"id": 3, "pull_request_url": "https://api.github.com/repos/o/r/pulls/10", "html_url": "y",
+             "user": {"login": "lint[bot]", "type": "Bot"}, "path": null, "body": "Coverage dropped"}
+        ])),
+    ])
+    .await;
+    let (prs, comments) = m
+        .client()
+        .merged_review_comments(&pr_ref(), 50)
+        .await
+        .unwrap();
+    assert_eq!(prs, 2);
+    assert_eq!(comments.len(), 2);
+    assert_eq!(
+        (
+            comments[0].pr,
+            comments[0].pr_author.as_str(),
+            comments[0].bot
+        ),
+        (12, "ann", false)
+    );
+    assert_eq!(comments[0].path.as_deref(), Some("src/a.rs"));
+    assert!(comments[1].bot);
+    let reqs = m.recorded();
+    assert!(
+        reqs[0].starts_with("GET /api/repos/o/r/pulls?state=closed"),
+        "{}",
+        reqs[0]
+    );
+    assert!(
+        reqs[1].starts_with("GET /api/repos/o/r/pulls/comments?"),
+        "{}",
+        reqs[1]
+    );
+}

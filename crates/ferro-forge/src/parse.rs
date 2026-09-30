@@ -175,6 +175,66 @@ fn valid_segment(s: &str, max: usize) -> bool {
 /// GitLab namespace depth: a top-level group plus up to 20 subgroups.
 const MAX_GITLAB_DEPTH: usize = 21;
 
+/// The forge repository a git remote URL points at (`https://github.com/o/r.git`,
+/// `git@gitlab.example.com:group/sub/r.git`, …), with `number` 0. The provider comes from the
+/// host name: `github` or `gitlab` in it; any other host is not recognized.
+pub fn parse_remote(url: &str) -> Option<ForgeRef> {
+    let mut s = url.trim().to_string();
+    for prefix in ["https://", "http://", "ssh://", "git://"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.to_string();
+            break;
+        }
+    }
+    // Userinfo (`git@host:…`, `https://user@host/…`).
+    let first_sep = s.find(['/', ':']).unwrap_or(s.len());
+    if let Some(at) = s[..first_sep].find('@') {
+        s = s[at + 1..].to_string();
+    }
+    let s = s.trim_end_matches('/');
+    let s = s.strip_suffix(".git").unwrap_or(s);
+    // `host:owner/repo` (scp) or `host:port/owner/repo`.
+    let (host, path) = match s.find(['/', ':']) {
+        Some(k) if s.as_bytes()[k] == b':' => {
+            let rest = &s[k + 1..];
+            let (first, after) = rest.split_once('/').unwrap_or((rest, ""));
+            if !first.is_empty() && first.bytes().all(|b| b.is_ascii_digit()) {
+                (&s[..k], after)
+            } else {
+                (&s[..k], rest)
+            }
+        }
+        Some(k) => (&s[..k], &s[k + 1..]),
+        None => return None,
+    };
+    let host = host.to_ascii_lowercase();
+    if !valid_host(&host) {
+        return None;
+    }
+    let provider = if host.contains("github") {
+        Provider::GitHub
+    } else if host.contains("gitlab") {
+        Provider::GitLab
+    } else {
+        return None;
+    };
+    let segs: Vec<&str> = path.split('/').filter(|x| !x.is_empty()).collect();
+    if segs.len() < 2 || (provider == Provider::GitHub && segs.len() != 2) {
+        return None;
+    }
+    let (repo, owner) = segs.split_last()?;
+    if !valid_name(repo) || owner.iter().any(|o| !valid_name(o)) {
+        return None;
+    }
+    Some(ForgeRef {
+        provider,
+        host,
+        owner: owner.join("/"),
+        repo: repo.to_string(),
+        number: 0,
+    })
+}
+
 /// Parse `https://<host>/<owner>/<repo>/pull/<n>` (scheme optional).
 pub fn parse_pr_url(s: &str) -> Option<ForgeRef> {
     let s = s.trim().trim_end_matches('/');
@@ -357,5 +417,36 @@ mod tests {
             (port.host.as_str(), port.owner.as_str(), port.repo.as_str()),
             ("git.corp.example:8443", "a.b", "c_d")
         );
+    }
+
+    #[test]
+    fn remotes_name_their_repository() {
+        let r = parse_remote("git@github.com:aniket/ferro.git").unwrap();
+        assert_eq!(
+            (
+                r.provider,
+                r.host.as_str(),
+                r.owner.as_str(),
+                r.repo.as_str()
+            ),
+            (Provider::GitHub, "github.com", "aniket", "ferro")
+        );
+        let r = parse_remote("https://token@github.com/o/r").unwrap();
+        assert_eq!((r.owner.as_str(), r.repo.as_str(), r.number), ("o", "r", 0));
+        let r = parse_remote("ssh://git@gitlab.example.com:2222/group/sub/proj.git").unwrap();
+        assert_eq!(
+            (
+                r.provider,
+                r.host.as_str(),
+                r.owner.as_str(),
+                r.repo.as_str()
+            ),
+            (Provider::GitLab, "gitlab.example.com", "group/sub", "proj")
+        );
+        let r = parse_remote("https://gitlab.com/g/p/").unwrap();
+        assert_eq!(r.project_path(), "g/p");
+        assert!(parse_remote("/srv/git/repo.git").is_none());
+        assert!(parse_remote("https://bitbucket.org/o/r.git").is_none());
+        assert!(parse_remote("https://github.com/o").is_none());
     }
 }

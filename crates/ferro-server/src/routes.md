@@ -52,6 +52,7 @@ records it. A new route must be listed here.
 | GET | `/api/v1/checks/coverage` | gap | `checks.coverage` |
 | GET | `/api/v1/memory` | gap | `memory` |
 | POST | `/api/v1/memory/rules`, `/api/v1/memory/signals`, `/api/v1/memory/suggestions/dismiss` | gap | `memory` |
+| POST | `/api/v1/memory/learn` | gap | `memory.learn` |
 | PATCH/DELETE | `/api/v1/memory/rules/{id}` | gap | `memory` |
 | GET | `/api/v1/pr` | B4 | `pr.github` / `pr.gitlab` |
 | POST | `/api/v1/pr/open`, `/api/v1/pr/refresh` | B4 | `pr.open` |

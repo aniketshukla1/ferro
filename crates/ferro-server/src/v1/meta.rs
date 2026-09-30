@@ -43,6 +43,7 @@ pub const FEATURES: &[&str] = &[
     "checks.security",
     "checks.coverage",
     "memory",
+    "memory.learn",
     "pr.github",
     "pr.gitlab",
     "pr.open",

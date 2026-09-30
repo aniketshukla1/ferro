@@ -26,7 +26,7 @@ const FEATURES = [
   'pr.open', 'review.drafts', 'review.viewed', 'review.rounds', 'review.submit', 'pr.threads', 'pr.conversation', 'markdown.render',
   'ai', 'ai.ask', 'ai.review', 'ai.commit',
   'symbols', 'nav', 'harness', 'git.hunk', 'harness.threads', 'lsp.diagnostics', 'update.auto', 'git.history', 'ai.explain', 'checks.breaking', 'checks.tests', 'checks.security', 'checks.coverage', 'memory',
-  'file.edit', 'ai.edit',
+  'file.edit', 'ai.edit', 'memory.learn',
 ];
 // Language-server diagnostics the mock reports once a file is opened (API.md § 4.9).
 const MOCK_DIAGNOSTICS = {
@@ -40,7 +40,21 @@ const MOCK_DIAGNOSTICS = {
 };
 const lspOpened = new Set();
 // Team review memory (API.md § 17): rules, and one suggestion from two earlier dismissals.
-const mockMemory = { team: [], personal: [], dismissed: [] };
+const mockMemory = { team: [], personal: [], dismissed: [], learnedAt: null };
+// What "Learn from PRs" finds on the sample repository: two conventions, each with the review
+// comments behind it.
+const ev = (pr, author, excerpt) => ({ pr, author, excerpt, url: `https://github.com/aniketshukla1/ferro/pull/${pr}` });
+const MOCK_LEARNED = [
+  { text: 'Add a regression test with every bug fix', category: 'tests', evidence: [ev(412, 'riya', 'Please add a regression test that fails without this fix.'), ev(398, 'sam', 'Can we get a test that reproduces the original bug?'), ev(377, 'riya', 'Needs a test before we merge, this regressed once already.')] },
+  { text: 'Return errors with context instead of unwrap in library code', category: 'errors', evidence: [ev(405, 'sam', 'Avoid unwrap here, return the error with the path it failed on.'), ev(381, 'ann', 'This unwrap will panic on a bad config; map it to an error instead.')] },
+];
+const learnedSuggestions = () => (mockMemory.learnedAt ? MOCK_LEARNED : []).map((l) => {
+  const key = `merged|${l.text.toLowerCase()}`;
+  const prs = new Set(l.evidence.map((e) => e.pr)).size;
+  return { key, source: 'merged', count: l.evidence.length, examples: l.evidence.map((e) => e.excerpt), evidence: l.evidence,
+    why: `Asked for in ${l.evidence.length} review comments across ${prs} merged pull requests`,
+    rule: { id: '', kind: 'convention', appliesTo: 'ai', category: l.category, text: l.text, paths: [], reason: `Reviewers asked for this in ${prs} merged pull requests`, author: '', createdAt: '' } };
+}).filter((x) => !mockMemory.dismissed.includes(x.key) && ![...mockMemory.team, ...mockMemory.personal].some((r) => r.text?.toLowerCase() === x.rule.text.toLowerCase()));
 const MOCK_SUGGESTION = { key: 'dismiss|ai|style|magic number', count: 2, why: 'Dismissed 2 times in crates/ferro-core/src/**', examples: ['crates/ferro-core/src/fuzzy.rs', 'crates/ferro-core/src/scan.rs'],
   rule: { id: '', kind: 'ignore', appliesTo: 'ai', category: 'style', title: 'Magic number', paths: ['crates/ferro-core/src/**'], reason: '', author: '', createdAt: '' } };
 function memoryMatches(r, f) {
@@ -481,10 +495,26 @@ export function createMockServer(opts) {
     // -------- Team review memory (API.md § 17) --------
     'GET memory': () => ({
       rules: [...mockMemory.team.map((r) => ({ ...r, scope: 'team', hits: 0 })), ...mockMemory.personal.map((r) => ({ ...r, scope: 'personal', hits: 0 }))],
-      suggestions: mockMemory.dismissed.includes(MOCK_SUGGESTION.key) || [...mockMemory.team, ...mockMemory.personal].some((r) => r.title === 'Magic number') ? [] : [MOCK_SUGGESTION],
+      suggestions: [...learnedSuggestions(), ...(mockMemory.dismissed.includes(MOCK_SUGGESTION.key) || [...mockMemory.team, ...mockMemory.personal].some((r) => r.title === 'Magic number') ? [] : [MOCK_SUGGESTION])],
       team: { path: '.ferro-rules.json', exists: mockMemory.team.length > 0, source: 'worktree', gitIgnored: false },
       signals: 2,
+      forge: { provider: 'github', host: 'github.com', repo: 'aniketshukla1/ferro' },
+      learned: { count: mockMemory.learnedAt ? MOCK_LEARNED.length : 0, at: mockMemory.learnedAt },
     }),
+    'POST memory/learn': (q, b) => {
+      const prs = Math.min(100, Math.max(5, Number(b?.prs) || 50));
+      const id = `j_learn_${Date.now()}`;
+      const job = { id, kind: 'memory.learn', state: 'running', startedAt: new Date().toISOString(), progress: { stage: 'fetch', repo: 'aniketshukla1/ferro', prs } };
+      (state.jobs ||= {})[id] = job;
+      setTimeout(() => emit('job', { ...job }), 30);
+      setTimeout(() => { job.progress = { stage: 'ai', repo: 'aniketshukla1/ferro', prs, comments: 38 }; emit('job', { ...job }); }, 250);
+      setTimeout(() => {
+        mockMemory.learnedAt = new Date().toISOString();
+        Object.assign(job, { state: 'done', endedAt: mockMemory.learnedAt, progress: undefined, result: { prs, comments: 38, conventions: MOCK_LEARNED.length, suggestions: learnedSuggestions().length, provider: 'anthropic', model: 'claude-sonnet-5' } });
+        emit('job', { ...job });
+      }, 600);
+      return { job: { id, kind: 'memory.learn' } };
+    },
     'POST memory/rules': (q, b) => {
       if (b.kind === 'ignore' && !b.rule && !b.category && !b.title) throw new ApiError(400, 'bad_request', 'an ignore rule needs a rule id, a category or a title');
       if (b.kind === 'convention' && !b.text?.trim()) throw new ApiError(400, 'bad_request', 'a convention needs its text');

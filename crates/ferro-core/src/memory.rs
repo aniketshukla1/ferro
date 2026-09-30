@@ -7,7 +7,8 @@
 //!
 //! Team rules live in the repository (`.ferro-rules.json`), so the team shares them through
 //! git and reviews changes to them like code. Personal rules, the accept / dismiss signals
-//! that suggest new rules, and hit counts stay in ferro's state directory.
+//! that suggest new rules, conventions learned from merged pull requests, and hit counts stay
+//! in ferro's state directory.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -82,6 +83,60 @@ pub struct Personal {
     /// Suggestion keys the user said no to.
     #[serde(default, rename = "dismissedSuggestions")]
     pub dismissed_suggestions: Vec<String>,
+    /// Conventions learned from review comments on merged pull requests.
+    #[serde(default)]
+    pub learned: Vec<Learned>,
+}
+
+/// A review comment on a merged pull request that shows a learned convention.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Evidence {
+    pub pr: u64,
+    pub url: String,
+    pub author: String,
+    pub excerpt: String,
+}
+
+/// Feedback reviewers keep giving on merged pull requests, as a convention to propose.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Learned {
+    pub key: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    pub evidence: Vec<Evidence>,
+    #[serde(rename = "learnedAt")]
+    pub learned_at: String,
+}
+
+const MAX_LEARNED: usize = 50;
+
+/// Stable key for a learned convention: its words, so a re-run keeps "not now" answers.
+pub fn learned_key(text: &str) -> String {
+    format!("merged|{}", words(text).join(" "))
+}
+
+impl Personal {
+    /// Merge a learning run: a convention seen again keeps its key (and any "not now") and
+    /// takes the new evidence; the newest come first, at most 50 are kept.
+    pub fn merge_learned(&mut self, fresh: Vec<Learned>) {
+        let mut out: Vec<Learned> = Vec::new();
+        for l in fresh {
+            if !out.iter().any(|o| o.key == l.key) {
+                out.push(l);
+            }
+        }
+        for old in std::mem::take(&mut self.learned) {
+            if !out
+                .iter()
+                .any(|o| o.key == old.key || same_title(&o.text, &old.text))
+            {
+                out.push(old);
+            }
+        }
+        out.truncate(MAX_LEARNED);
+        self.learned = out;
+    }
 }
 
 /// What a rule is matched against.
@@ -305,6 +360,11 @@ pub struct Suggestion {
     pub examples: Vec<String>,
     /// Plain words: why ferro suggests it.
     pub why: String,
+    /// `activity` (your accepts and dismisses) or `merged` (review comments on merged PRs).
+    pub source: String,
+    /// For `merged`: the review comments that show it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<Evidence>,
 }
 
 /// The shortest glob covering `paths`: `dir/**` when they share a directory, else none.
@@ -408,6 +468,8 @@ pub fn suggestions(p: &Personal, team: &[Rule]) -> Vec<Suggestion> {
                 rule,
                 count: sigs.len(),
                 examples,
+                source: "activity".into(),
+                evidence: vec![],
             });
         } else {
             let exists = all.iter().any(|r| {
@@ -436,8 +498,54 @@ pub fn suggestions(p: &Personal, team: &[Rule]) -> Vec<Suggestion> {
                 rule,
                 count: sigs.len(),
                 examples,
+                source: "activity".into(),
+                evidence: vec![],
             });
         }
+    }
+    for l in &p.learned {
+        let covered = all.iter().any(|r| {
+            r.kind == "convention" && r.text.as_deref().is_some_and(|t| same_title(&l.text, t))
+        });
+        if covered || p.dismissed_suggestions.contains(&l.key) {
+            continue;
+        }
+        let mut prs: Vec<u64> = l.evidence.iter().map(|e| e.pr).collect();
+        prs.sort_unstable();
+        prs.dedup();
+        out.push(Suggestion {
+            key: l.key.clone(),
+            rule: Rule {
+                id: String::new(),
+                kind: "convention".into(),
+                applies_to: "ai".into(),
+                rule: None,
+                category: l.category.clone(),
+                title: None,
+                paths: vec![],
+                text: Some(l.text.clone()),
+                reason: format!(
+                    "Reviewers asked for this in {} merged pull requests",
+                    prs.len()
+                ),
+                author: String::new(),
+                created_at: String::new(),
+            },
+            count: l.evidence.len(),
+            examples: l
+                .evidence
+                .iter()
+                .take(3)
+                .map(|e| e.excerpt.clone())
+                .collect(),
+            why: format!(
+                "Asked for in {} review comments across {} merged pull requests",
+                l.evidence.len(),
+                prs.len()
+            ),
+            source: "merged".into(),
+            evidence: l.evidence.clone(),
+        });
     }
     out.sort_by_key(|s| std::cmp::Reverse(s.count));
     out.truncate(20);
@@ -718,5 +826,54 @@ mod tests {
             !g.contains("secret"),
             "security rules do not reach the AI prompt"
         );
+    }
+
+    fn learned(text: &str, prs: &[u64]) -> Learned {
+        Learned {
+            key: learned_key(text),
+            text: text.into(),
+            category: Some("tests".into()),
+            evidence: prs
+                .iter()
+                .map(|&pr| Evidence {
+                    pr,
+                    url: format!("https://github.com/o/r/pull/{pr}#c"),
+                    author: "rev".into(),
+                    excerpt: "please add a test".into(),
+                })
+                .collect(),
+            learned_at: now_iso(),
+        }
+    }
+
+    #[test]
+    fn learned_conventions_become_suggestions_until_covered_or_declined() {
+        let mut p = Personal::default();
+        p.merge_learned(vec![learned("Add a test for every bug fix", &[3, 7, 7])]);
+        let s = suggestions(&p, &[]);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].source, "merged");
+        assert_eq!(s[0].rule.kind, "convention");
+        assert_eq!(
+            s[0].rule.text.as_deref(),
+            Some("Add a test for every bug fix")
+        );
+        assert_eq!(
+            s[0].why,
+            "Asked for in 3 review comments across 2 merged pull requests"
+        );
+        assert_eq!(s[0].evidence.len(), 3);
+        // A team convention with the same words covers it.
+        let mut team = ignore(None, None, None, &[]);
+        team.kind = "convention".into();
+        team.text = Some("add a test for every bug fix".into());
+        assert!(suggestions(&p, &[team]).is_empty());
+        // "Not now" sticks, also across a re-run that learns it again.
+        p.dismissed_suggestions
+            .push(learned_key("Add a test for every bug fix"));
+        p.merge_learned(vec![learned("Add a test for every bug fix", &[9, 11])]);
+        assert!(suggestions(&p, &[]).is_empty());
+        assert_eq!(p.learned.len(), 1);
+        assert_eq!(p.learned[0].evidence[0].pr, 9);
     }
 }
