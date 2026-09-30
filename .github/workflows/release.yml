@@ -1,0 +1,97 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            use-cross: false
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            use-cross: false
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            use-cross: false
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            use-cross: false
+          - os: macos-13
+            target: x86_64-apple-darwin
+            use-cross: false
+          - os: macos-14
+            target: aarch64-apple-darwin
+            use-cross: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            use-cross: false
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            use-cross: false
+          - os: ubuntu-latest
+            target: x86_64-unknown-freebsd
+            use-cross: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: install musl tools (x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: install musl tools (aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install cross
+        if: matrix.use-cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+      - name: Build
+        if: "!matrix.use-cross"
+        run: cargo build --release -p ferro --target ${{ matrix.target }}
+      - name: Build with cross
+        if: matrix.use-cross
+        run: cross build --release -p ferro --target ${{ matrix.target }}
+      - name: Check binary size for x86_64-unknown-linux-gnu
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/ferro"
+          strip "$bin"
+          size=$(stat -c%s "$bin" 2>/dev/null || stat -f%z "$bin")
+          echo "Binary size: $size bytes"
+          if [ "$size" -gt 25165824 ]; then
+            echo "Binary is larger than 24 MiB (BACKEND.md § 5.5)!"
+            exit 1
+          fi
+      - name: package (flat archive)
+        shell: bash
+        run: |
+          stage="stage"
+          mkdir -p "$stage"
+          bin="target/${{ matrix.target }}/release/ferro"
+          [ "${{ matrix.os }}" = "windows-latest" ] && bin="$bin.exe"
+          cp "$bin" README.md LICENSE "$stage/"
+          tar -czf "ferro-${{ matrix.target }}.tar.gz" -C "$stage" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ferro-${{ matrix.target }}.tar.gz
+          path: ferro-${{ matrix.target }}.tar.gz
+
+  checksum:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum ferro-*.tar.gz > checksums.txt
+          cat checksums.txt
+          sha256sum -c checksums.txt

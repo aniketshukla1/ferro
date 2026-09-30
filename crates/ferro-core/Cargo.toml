@@ -1,0 +1,76 @@
+[package]
+name = "ferro-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ferro core — index, fuzzy, search, git"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ignore.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+syntect = "5"
+lru = "0.12"
+tempfile = "3"
+pulldown-cmark = "0.12"
+ammonia = "4"
+thiserror = "2"
+# Linux/FreeBSD Secret Service through zbus (pure Rust): no libdbus, so musl and cross builds work.
+keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
+time = { version = "0.3", features = ["formatting"] }
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+rayon = "1.10"
+memchr = "2.7"
+regex = "1.11"
+regex-syntax = "0.8"
+globset = "0.4"
+memmap2 = "0.9"
+arc-swap = "1.7"
+parking_lot = "0.12"
+notify = "8"
+streaming-iterator = "0.1"
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-c = { version = "0.24", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-c-sharp = { version = "0.23", optional = true }
+tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-php = { version = "0.24", optional = true }
+
+[features]
+# Default set: Rust, Go, TypeScript/TSX, JavaScript, Python, Java, C. C++, C#, Ruby and PHP stay
+# opt-in (their parse tables are the largest; Ruby + PHP alone add 3 MiB) and fall back to the regex
+# extractor. Binary budget: stripped x86_64-linux <= 24 MiB (BACKEND.md § 5.5, set 2026-09-29).
+default = [
+    "ts-rust", "ts-go", "ts-typescript", "ts-javascript", "ts-python",
+    "ts-java", "ts-c",
+]
+tree-sitter = ["dep:tree-sitter"]
+ts-rust = ["tree-sitter", "dep:tree-sitter-rust"]
+ts-go = ["tree-sitter", "dep:tree-sitter-go"]
+ts-typescript = ["tree-sitter", "dep:tree-sitter-typescript"]
+ts-javascript = ["tree-sitter", "dep:tree-sitter-javascript"]
+ts-python = ["tree-sitter", "dep:tree-sitter-python"]
+ts-java = ["tree-sitter", "dep:tree-sitter-java"]
+ts-c = ["tree-sitter", "dep:tree-sitter-c"]
+ts-cpp = ["tree-sitter", "dep:tree-sitter-cpp"]
+ts-csharp = ["tree-sitter", "dep:tree-sitter-c-sharp"]
+ts-ruby = ["tree-sitter", "dep:tree-sitter-ruby"]
+ts-php = ["tree-sitter", "dep:tree-sitter-php"]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "engines"
+harness = false

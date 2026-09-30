@@ -1,0 +1,214 @@
+/* ferro code viewer (virtualized rows, sticky gutter) and image view */
+.cv {
+  position: relative;
+  flex: 1; min-height: 0;
+  overflow: auto;
+  background: var(--bg-0);
+  font: 400 var(--code-fs)/var(--code-lh) var(--font-mono);
+  font-variant-ligatures: none;
+  tab-size: var(--tab-size);
+  contain: strict;
+  --gutter-w: 60px;
+}
+.cv:focus-visible { outline: none; }
+.cv-sizer { position: relative; min-width: 100%; }
+.cv-row {
+  position: absolute; left: 0; top: 0;
+  display: flex;
+  height: var(--code-lh);
+  min-width: 100%;
+  white-space: pre;
+  color: var(--code-fg);
+}
+.cv-ln {
+  position: sticky; left: 0; z-index: 2;
+  flex: none;
+  width: var(--gutter-w);
+  padding-right: 20px;
+  text-align: right;
+  color: color-mix(in srgb, var(--fg-faint) 85%, transparent);
+  background: var(--bg-0);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  cursor: pointer;
+}
+.cv-ln:hover { color: var(--fg-muted); }
+.cv-ln::after {
+  /* git change marker lives at the gutter's right edge */
+  content: ""; position: absolute; top: 3px; bottom: 3px; right: 7px; width: 2px; border-radius: 2px;
+  background: transparent;
+}
+.cv-row.g-add .cv-ln::after { background: var(--gutter-add); }
+.cv-row.g-mod .cv-ln::after { background: var(--gutter-mod); }
+.cv-row.g-del .cv-ln::after { background: linear-gradient(135deg, var(--gutter-del) 45%, transparent 45%); top: auto; bottom: -3px; height: 7px; width: 7px; border-radius: 0; }
+.cv-code { padding: 0 56px 0 4px; }
+.cv-row.cur { background: var(--line-hl); }
+.cv-row.cur .cv-ln { color: var(--fg); background: linear-gradient(var(--line-hl), var(--line-hl)), var(--bg-0); }
+.cv-row.sel { background: var(--line-sel); }
+.cv-row.sel .cv-ln { color: var(--fg); background: linear-gradient(var(--line-sel), var(--line-sel)), var(--bg-0); }
+.cv-row.skel .cv-code { display: flex; align-items: center; }
+.cv-row.skel .cv-code .skel { height: 7px; opacity: 0.7; }
+.cv-cut { color: var(--fg-faint); margin-left: 8px; font-family: var(--font-ui); font-size: var(--fs-xs); cursor: pointer; }
+.cv-cut:hover { color: var(--fg); text-decoration: underline; }
+/* word wrap: the list sets each row's measured height; rows span the view and wrap inside it */
+.cv.wrapped .cv-row { right: 0; min-width: 0; align-items: flex-start; overflow: hidden; white-space: pre-wrap; word-break: break-all; }
+.cv.wrapped .cv-code { flex: 1; min-width: 0; }
+
+/* inline edit (features/inline-edit.js): the box lies over extra height under the last edited line */
+.cv-row.editing { background: var(--line-sel); }
+.cv-row.editing .cv-ln { color: var(--fg); background: linear-gradient(var(--line-sel), var(--line-sel)), var(--bg-0); box-shadow: inset -2px 0 0 var(--fg-muted); }
+.cv-zone {
+  position: absolute; left: 0; top: 0; z-index: 4;
+  padding: 6px 24px 10px calc(var(--gutter-w) - 10px);
+  white-space: normal; font: 400 var(--fs-sm)/1.4 var(--font-ui); color: var(--fg);
+}
+.cv-selbar {
+  position: absolute; left: 0; top: 0; z-index: 4;
+  display: flex; gap: 4px; padding: 3px;
+  border: 1px solid var(--border-strong); border-radius: var(--r-md);
+  background: var(--bg-2); box-shadow: var(--shadow-md);
+  font: 400 var(--fs-sm)/1 var(--font-ui); white-space: nowrap;
+}
+.ie {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px; border: 1px solid var(--border-strong); border-radius: var(--r-md);
+  background: var(--bg-1); box-shadow: var(--shadow-md);
+}
+.ie.dirty { border-color: var(--fg-faint); }
+.ie-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ie-head > .i { color: var(--fg-muted); flex: none; }
+.ie-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ie-sp { flex: 1; }
+.ie-ai { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ie-ai[hidden] { display: none; }
+.ie-prompt { flex: 1 1 280px; min-width: 0; }
+.ie-ai-status { flex-basis: 100%; display: flex; align-items: baseline; gap: 8px; }
+.ie-ai-status:has(.ie-ai-note:empty):has(.link-btn[hidden]) { display: none; }
+/* The textarea lies over a <pre> with the same metrics: the pre shows the colors, the textarea the caret. */
+.ie-code {
+  position: relative; overflow-x: auto; overflow-y: hidden;
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-0);
+  font: 400 var(--code-fs)/var(--code-lh) var(--font-mono); font-variant-ligatures: none; tab-size: var(--tab-size);
+}
+.ie-code:focus-within { border-color: var(--fg-faint); }
+.ie-hl, .ie-input {
+  margin: 0; padding: 6px 10px; border: 0;
+  font: inherit; letter-spacing: normal; tab-size: inherit;
+  white-space: pre; overflow-wrap: normal; word-break: normal;
+}
+.ie-hl { min-width: 100%; width: max-content; min-height: calc(var(--code-lh) + 12px); color: var(--code-fg); pointer-events: none; }
+.ie-input {
+  position: absolute; left: 0; top: 0; resize: none; overflow: hidden;
+  background: transparent; color: transparent; caret-color: var(--fg); outline: none;
+}
+.ie-input::selection { background: var(--line-sel); color: transparent; }
+.ie.busy .ie-code { opacity: 0.85; }
+.ie-diff { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-0); font: 400 var(--fs-xs)/1.55 var(--font-mono); }
+.ie-diff[hidden] { display: none; }
+.ie-diff-head { position: sticky; top: 0; padding: 3px 8px; background: var(--bg-1); border-bottom: 1px solid var(--border); font-family: var(--font-ui); }
+.ie-drow { display: flex; white-space: pre; }
+.ie-drow.add { background: var(--diff-add-bg); }
+.ie-drow.del { background: var(--diff-del-bg); }
+.ie-dmark { flex: none; width: 18px; text-align: center; color: var(--fg-faint); user-select: none; }
+.ie-err { margin: 0; color: var(--danger); font-size: var(--fs-sm); }
+.ie-err[hidden] { display: none; }
+.ie-foot { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ie-dot { padding: 0 2px; }
+
+/* overview ruler (a canvas: its height must be set, top/bottom alone keep the 100px default) */
+.cv-ruler {
+  position: absolute; right: 0; top: 0; width: 14px; height: 100%;
+  z-index: 5; pointer-events: auto; cursor: pointer;
+  background: transparent;
+}
+.cv-ruler:hover { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+
+/* hairline under the breadcrumbs once the code has scrolled */
+.cv-shadow {
+  position: absolute; left: 0; right: 0; top: 0; height: 1px; pointer-events: none; z-index: 3;
+  background: var(--border); opacity: 0; transition: opacity var(--dur-2);
+}
+.cv-wrap.scrolled .cv-shadow { opacity: 1; }
+.cv-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* find bar (floats over the code, below the breadcrumbs) */
+.findbar {
+  position: absolute; top: var(--sp-4); right: var(--sp-7); z-index: 6;
+  display: flex; align-items: center; gap: 2px;
+  height: 36px; padding: 0 var(--sp-2) 0 var(--sp-5);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-3);
+  box-shadow: var(--shadow-md);
+  color: var(--fg-faint);
+  animation: pop-in var(--dur-2) var(--ease-out);
+}
+.fb-input { width: 220px; height: 28px; margin-left: var(--sp-3); border: 0; background: transparent; color: var(--fg); font: 13px var(--font-mono); }
+.fb-input:focus-visible { outline: none; }
+.fb-input::placeholder { color: var(--fg-faint); font-family: var(--font-ui); }
+.fb-opts { display: flex; gap: 1px; }
+.fb-count { min-width: 76px; padding: 0 var(--sp-3); text-align: right; font-size: var(--fs-xs); white-space: nowrap; }
+.findbar.bad .fb-count { color: var(--danger); }
+.fb-sep { width: 1px; height: 16px; margin: 0 var(--sp-2); background: var(--border-strong); }
+
+/* status overlay for loading/errors */
+.view-center { flex: 1; display: grid; place-items: center; }
+
+/* jump-to-line flash */
+.cv-row.flash { animation: line-flash 1s var(--ease-out); }
+@keyframes line-flash {
+  from { background: color-mix(in srgb, var(--fg) 16%, transparent); }
+  to { background: var(--line-hl); }
+}
+
+/* loading placeholder while a document's metadata loads */
+.loading-doc { display: flex; flex-direction: column; gap: 12px; padding: 16px 0 0 76px; }
+.loading-doc .skel { height: 8px; }
+
+/* image view */
+.imgv { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.imgv-stage {
+  flex: 1; min-height: 0; overflow: auto;
+  display: grid; place-items: center; padding: var(--sp-8);
+  background-color: var(--bg-0);
+  background-image: conic-gradient(var(--bg-2) 25%, transparent 0 50%, var(--bg-2) 0 75%, transparent 0);
+  background-size: 16px 16px;
+  cursor: default;
+}
+.imgv-stage:focus-visible { outline: none; }
+.imgv-stage.plain { background-image: none; }
+.imgv-stage.panning { cursor: grabbing; }
+.imgv-stage img { max-width: none; box-shadow: 0 0 0 1px var(--border); }
+.imgv-stage img.pixelated { image-rendering: pixelated; }
+.imgv-bar {
+  display: flex; align-items: center; gap: var(--sp-2);
+  height: 36px; flex: none; padding: 0 var(--sp-3) 0 var(--sp-6);
+  border-top: 1px solid var(--border); background: var(--bg-chrome);
+  color: var(--fg-faint); font-size: var(--fs-xs);
+}
+.imgv-sp { flex: 1; }
+.imgv-zoom { min-width: 44px; text-align: center; color: var(--fg-muted); }
+
+/* ui.overviewRuler: false */
+.no-ruler .cv-ruler { display: none; }
+
+/* CSV / TSV table view */
+.csv-wrap { display: flex; flex-direction: column; }
+.csv-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.csv-body[hidden] { display: none; }
+.csv-head, .csv-row { display: grid; grid-template-columns: var(--csv-cols, 56px); }
+.csv-head { flex: none; overflow: hidden; border-bottom: 1px solid var(--border-strong); background: var(--bg-1); font-weight: 600; color: var(--fg); }
+.csv-grid { position: relative; flex: 1; min-height: 0; overflow: auto; outline: none; font: var(--code-fs)/26px var(--font-mono); }
+.csv-row { position: absolute; left: 0; top: 0; min-width: 100%; height: 26px; border-bottom: 1px solid var(--border); }
+.csv-row:hover { background: var(--hover); }
+.csv-head > span, .csv-row > span { padding: 0 var(--sp-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-right: 1px solid var(--border); line-height: 26px; }
+.csv-head > span { font: 600 var(--fs-sm)/30px var(--font-ui); }
+.csv-rn { color: var(--fg-faint); text-align: right; font-variant-numeric: tabular-nums; }
+.csv-head .csv-rn { color: var(--fg-faint); }
+.csv-bar { display: inline-flex; align-items: center; gap: var(--sp-5); }
+/* Language-server diagnostics (problems.js): the line number carries the severity. */
+.cv-row.diag-error .cv-ln { color: var(--danger); font-weight: 600; }
+.cv-row.diag-warning .cv-ln { color: var(--warn); font-weight: 600; }
+.cv-row.diag-error .cv-code { text-decoration: underline wavy color-mix(in srgb, var(--danger) 55%, transparent); text-decoration-skip-ink: none; text-underline-offset: 3px; }
+.cv-row.diag-warning .cv-code { text-decoration: underline wavy color-mix(in srgb, var(--warn) 55%, transparent); text-decoration-skip-ink: none; text-underline-offset: 3px; }

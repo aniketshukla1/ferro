@@ -1,0 +1,584 @@
+/* Review mode styles: PR bar, review overview, inline threads, composer, drafts, submit dialog (FRONTEND.md § 6.13) */
+
+/* ---------- PR Bar ---------- */
+.pr-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 38px;
+  min-height: 38px;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--border);
+  padding: 0 var(--sp-2, 8px);
+  gap: var(--sp-2, 8px);
+  font-size: var(--fs-xs, 11px);
+  z-index: 5;
+  box-sizing: border-box;
+}
+
+.pr-bar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  overflow: hidden;
+  flex: 1;
+}
+
+.pr-bar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  flex-shrink: 0;
+}
+
+.pr-number-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1, 4px);
+  font-weight: 600;
+  color: var(--fg);
+  text-decoration: none;
+  overflow: hidden;
+}
+
+.pr-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pr-author {
+  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pr-branches {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  background: var(--bg-1);
+  padding: 1px 5px;
+  border-radius: var(--rad-sm, 3px);
+  border: 1px solid var(--border);
+}
+
+.pr-state-pill {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: capitalize;
+  padding: 1px 6px;
+  border-radius: var(--rad-sm, 3px);
+}
+
+.pr-state-pill.open {
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+  color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+}
+
+.pr-state-pill.draft {
+  background: color-mix(in srgb, var(--fg-muted) 15%, transparent);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+}
+
+.pr-state-pill.merged {
+  background: color-mix(in srgb, var(--info) 15%, transparent);
+  color: var(--info);
+  border: 1px solid color-mix(in srgb, var(--info) 40%, transparent);
+}
+
+.pr-state-pill.closed {
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+}
+
+.pr-checks-badge {
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.pr-checks-badge.success { color: var(--ok); }
+.pr-checks-badge.failure { color: var(--danger); }
+.pr-checks-badge.pending { color: var(--warn); }
+
+.pr-stats {
+  display: inline-flex;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.pr-viewed-progress {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.pr-rounds-select {
+  background: var(--bg-1);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--rad-sm, 3px);
+  padding: 2px 6px;
+  font-size: var(--fs-xs, 11px);
+  font-family: inherit;
+}
+
+/* Head Moved Banner */
+.pr-head-moved-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-1, 4px) var(--sp-3, 12px);
+  background: color-mix(in srgb, var(--warn) 15%, var(--bg-chrome));
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+  color: var(--fg);
+  font-size: var(--fs-xs, 11px);
+  font-weight: 500;
+}
+
+.pr-head-moved-actions {
+  display: inline-flex;
+  gap: var(--sp-2, 8px);
+}
+
+/* ---------- Review Overview (Home in PR mode) ---------- */
+.review-overview {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: var(--sp-4, 24px) var(--sp-3, 16px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4, 20px);
+}
+
+.review-overview-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2, 8px);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--sp-3, 16px);
+}
+
+.review-overview-title {
+  font-size: var(--fs-lg, 18px);
+  font-weight: 600;
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+}
+
+.review-overview-desc {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--rad-md, 4px);
+  padding: var(--sp-3, 16px);
+  font-size: var(--fs-sm, 13px);
+  line-height: 1.5;
+}
+
+.review-overview-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+}
+
+.review-overview-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2, 8px);
+}
+
+.review-overview-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--rad-sm, 3px);
+  cursor: pointer;
+}
+
+.review-overview-file-row:hover {
+  background: var(--hover);
+}
+
+/* ---------- PR File List in Changes Panel ---------- */
+.pr-file-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-1, 4px) var(--sp-2, 8px);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-xs, 11px);
+}
+
+.pr-file-filters {
+  display: flex;
+  gap: var(--sp-1, 4px);
+  padding: var(--sp-1, 4px) var(--sp-2, 8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.pr-filter-chip {
+  padding: 2px 6px;
+  font-size: 10px;
+  border-radius: var(--rad-sm, 3px);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.pr-filter-chip.active {
+  background: var(--active-strong, var(--fg));
+  color: var(--bg-0);
+  border-color: transparent;
+}
+
+.pr-changed-since-badge {
+  font-size: 9px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: var(--rad-sm, 3px);
+  padding: 1px 4px;
+}
+
+.pr-comment-count-badge {
+  font-size: 10px;
+  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ---------- Inline Threads in Diff View ---------- */
+.diff-thread-container {
+  padding: 6px 12px 6px 48px;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.thread-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--rad-md, 4px);
+  overflow: hidden;
+  font-family: inherit;
+  font-size: var(--fs-xs, 11px);
+}
+
+.thread-card.outdated {
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+.thread-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--border);
+}
+
+.thread-author-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.thread-author {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.thread-time {
+  color: var(--fg-muted);
+}
+
+.thread-badge-outdated {
+  font-size: 10px;
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+  color: var(--warn);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.thread-comments {
+  display: flex;
+  flex-direction: column;
+}
+
+.thread-comment {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.thread-comment:last-child {
+  border-bottom: none;
+}
+
+.comment-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  color: var(--fg-muted);
+}
+
+/* UNTRUSTED comment body: plain text rendering */
+.comment-body {
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+.thread-reply-form {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  background: var(--bg-chrome);
+  border-top: 1px solid var(--border);
+  gap: 6px;
+}
+
+.thread-reply-input {
+  width: 100%;
+  min-height: 48px;
+  resize: vertical;
+  background: var(--bg-0);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--rad-sm, 3px);
+  padding: 6px;
+  font-family: inherit;
+  font-size: var(--fs-xs, 11px);
+  box-sizing: border-box;
+}
+
+.thread-reply-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* ---------- Inline Composer ---------- */
+.composer-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--rad-md, 4px);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.composer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-xs, 11px);
+  color: var(--fg-muted);
+}
+
+.composer-textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  background: var(--bg-0);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--rad-sm, 3px);
+  padding: 6px 8px;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-xs, 11px);
+  line-height: 1.4;
+  box-sizing: border-box;
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.composer-tools-left {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.composer-actions-right {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.composer-preview-pane {
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--rad-sm, 3px);
+  padding: 8px;
+  min-height: 50px;
+  font-size: var(--fs-xs, 11px);
+  overflow-y: auto;
+  max-height: 200px;
+}
+
+/* ---------- Inline Draft Card ---------- */
+.draft-card {
+  background: var(--bg-1);
+  border: 1px dashed var(--border-strong, var(--border));
+  border-radius: var(--rad-md, 4px);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.draft-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-xs, 11px);
+}
+
+.draft-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--info);
+  background: color-mix(in srgb, var(--info) 15%, transparent);
+  padding: 1px 5px;
+  border-radius: var(--rad-sm, 3px);
+}
+
+.draft-stale-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  padding: 1px 5px;
+  border-radius: var(--rad-sm, 3px);
+}
+
+.draft-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* Gutter comment trigger button on hover */
+.diff-row .diff-ln-new {
+  position: relative;
+}
+
+.gutter-comment-btn {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 2px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  z-index: 3;
+}
+
+.diff-row:hover .gutter-comment-btn {
+  display: inline-flex;
+}
+
+/* ---------- Submit Review Dialog ---------- */
+.submit-review-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3, 14px);
+  min-width: 440px;
+  max-width: 580px;
+}
+
+.submit-event-radios {
+  display: flex;
+  gap: var(--sp-3, 12px);
+  padding: var(--sp-2, 8px);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--rad-md, 4px);
+}
+
+.submit-event-radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: var(--fs-sm, 12px);
+  color: var(--fg);
+}
+
+.submit-summary-textarea {
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  background: var(--bg-1);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--rad-sm, 3px);
+  padding: 8px;
+  font-family: inherit;
+  font-size: var(--fs-sm, 12px);
+  box-sizing: border-box;
+}
+
+.submit-drafts-list {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--rad-sm, 3px);
+  padding: 8px 10px;
+  max-height: 140px;
+  overflow-y: auto;
+  font-size: var(--fs-xs, 11px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.submit-auth-hint {
+  padding: 8px 10px;
+  border-radius: var(--rad-sm, 3px);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-1));
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+  color: var(--fg);
+  font-size: var(--fs-xs, 11px);
+}
+
+/* Layout fixes (lead review): the PR bar is a full-width row under the topbar; home drops its
+   workspace header in PR mode (the overview has its own); the bar sheds detail as it narrows. */
+.banners > .pr-bar-wrapper { border-bottom: 0; }
+.home-inner:has(> .home-review-slot:not([hidden])) > .home-head { display: none; }
+.home-review-slot .review-overview { padding: 0; max-width: none; }
+.review-overview-desc.md { width: auto; margin: 0; padding: var(--sp-4); font-size: var(--fs-md); line-height: 1.6; }
+.pr-bar-left > * { flex: none; }
+.pr-bar-left > .pr-number-title { flex: 0 1 auto; min-width: 0; }
+@media (max-width: 1100px) {
+  .pr-bar .pr-author, .pr-bar .pr-branches { display: none; }
+}
+@media (max-width: 860px) {
+  .pr-bar .pr-stats, .pr-bar .pr-checks-badge, .pr-bar .pr-ai-btn { display: none; }
+  .pr-rounds-select { max-width: 120px; }
+}

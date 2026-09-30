@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/ferro-core",
+  "crates/ferro-cli",
+  "crates/ferro-agent",
+  "crates/ferro-forge",
+  "crates/ferro-server",
+  "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ignore = "0.4"
+tracing = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+# Binary budget (BACKEND.md § 5.5: stripped x86_64-linux ≤ 20 MiB). Workspace crates keep
+# opt-level 3; dependencies build for size except the ones on hot paths (search, fuzzy,
+# highlighting, allocation), which stay at 3. The perf gate (bench/h2h.py) guards the choice.
+[profile.release.package."*"]
+opt-level = "s"
+[profile.release.package.regex]
+opt-level = 3
+[profile.release.package.regex-automata]
+opt-level = 3
+[profile.release.package.memchr]
+opt-level = 3
+[profile.release.package.aho-corasick]
+opt-level = 3
+[profile.release.package.syntect]
+opt-level = 3
+[profile.release.package.onig_sys]
+opt-level = 3
+[profile.release.package.onig]
+opt-level = 3
+[profile.release.package.libmimalloc-sys]
+opt-level = 3
+[profile.release.package.rayon]
+opt-level = 3
+[profile.release.package.rayon-core]
+opt-level = 3
+[profile.release.package.serde_json]
+opt-level = 3
+# AI providers and forges wait on the network, never on the CPU: build them for size too.
+[profile.release.package.ferro-agent]
+opt-level = "s"
+[profile.release.package.ferro-forge]
+opt-level = "s"

@@ -1,0 +1,78 @@
+//! /api/v1 route handlers (BACKEND.md § 6 B1 surface).
+
+pub mod ai;
+pub mod auth;
+pub mod checks;
+pub mod credentials;
+pub mod desktop;
+pub mod edit;
+pub mod events;
+pub mod files;
+pub mod git;
+pub mod harness;
+pub mod highlight;
+pub mod jobs;
+pub mod lsp;
+pub mod markdown;
+pub mod memory;
+pub mod meta;
+pub mod metrics;
+pub mod nav;
+pub mod outline;
+pub mod pr;
+pub mod review;
+pub mod search;
+pub mod session;
+pub mod settings;
+pub mod update;
+pub mod workspace;
+
+use axum::Router;
+use std::sync::Arc;
+
+use crate::state::AppState;
+
+/// Accept `?flag=1`, `?flag=0`, `?flag=true`, `?flag=false` (API.md writes 0/1).
+pub(crate) fn de_flag<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = serde::Deserialize::deserialize(d)?;
+    match opt.as_deref() {
+        None => Ok(None),
+        Some("1" | "true" | "yes") => Ok(Some(true)),
+        Some("0" | "false" | "no") => Ok(Some(false)),
+        Some(other) => Err(serde::de::Error::custom(format!("bad flag: {other}"))),
+    }
+}
+
+pub fn router() -> Router<Arc<AppState>> {
+    Router::new()
+        .merge(meta::routes())
+        .merge(auth::routes())
+        .merge(events::routes())
+        .merge(settings::routes())
+        .merge(checks::routes())
+        .merge(memory::routes())
+        .merge(update::routes())
+        .merge(credentials::routes())
+        .merge(lsp::routes())
+        .merge(session::routes())
+        .merge(files::routes())
+        .merge(edit::routes())
+        .merge(markdown::routes())
+        .merge(ai::routes())
+        .merge(ai::review_routes())
+        .merge(highlight::routes())
+        .merge(outline::routes())
+        .merge(pr::routes())
+        .merge(review::routes())
+        .merge(git::routes())
+        .merge(harness::routes())
+        .merge(search::routes())
+        .merge(jobs::routes())
+        .merge(nav::routes())
+        .merge(workspace::routes())
+        .merge(desktop::routes())
+        .merge(metrics::routes())
+}

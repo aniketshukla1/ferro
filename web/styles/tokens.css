@@ -1,0 +1,86 @@
+/* ferro design tokens: type, space, shape, chrome sizes, motion. Colors live in themes.css.
+   Direction: calm, precise, near-monochrome. Hierarchy comes from type weight, spacing and
+   surface elevation; color is reserved for meaning (git state, errors, diffs). */
+:root {
+  --font-ui: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* type scale (dense tool, 13px body) */
+  --fs-2xs: 10.5px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 18px;
+  --fs-2xl: 24px;
+  --fs-3xl: 30px;
+  --lh-tight: 1.25;
+  --lh: 1.5;
+  --tracking-tight: -0.011em;
+  --tracking-caps: 0.06em;
+
+  /* code */
+  --code-fs: 13px;
+  --code-lh: 20px;
+  --tab-size: 4;
+
+  /* spacing: 4px grid with a 2px half-step */
+  --sp-1: 2px;
+  --sp-2: 4px;
+  --sp-3: 6px;
+  --sp-4: 8px;
+  --sp-5: 12px;
+  --sp-6: 16px;
+  --sp-7: 20px;
+  --sp-8: 24px;
+  --sp-9: 32px;
+  --sp-10: 48px;
+
+  /* radii */
+  --r-xs: 3px;
+  --r-sm: 5px;
+  --r-md: 7px;
+  --r-lg: 10px;
+  --r-xl: 12px;
+  --r-full: 999px;
+
+  /* chrome sizes: the sidebar switcher, tab strip and inspector header share one height
+     so their bottom hairlines line up across the whole window */
+  --h-topbar: 44px;
+  --h-bar: 38px;
+  --h-tabs: var(--h-bar);
+  --h-crumbs: 30px;
+  --h-status: 26px;
+  --h-row: 26px;
+  --sidebar-w: 280px;
+  --inspector-w: 360px;
+
+  /* layering */
+  --z-sticky: 5;
+  --z-panel: 10;
+  --z-banner: 40;
+  --z-menu: 60;
+  --z-overlay: 80;
+  --z-toast: 90;
+  --z-tooltip: 100;
+
+  /* motion: short, decelerating; exits are faster than entrances */
+  --dur-1: 90ms;
+  --dur-2: 140ms;
+  --dur-3: 200ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* icons */
+  --icon: 16px;
+  --icon-stroke: 1.6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+  }
+}

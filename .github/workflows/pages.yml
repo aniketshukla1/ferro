@@ -1,0 +1,35 @@
+name: demo
+
+# The live demo (https://aniketshukla1.github.io/ferro/): the web UI with its in-browser mock
+# backend and sample data, published to GitHub Pages. No server; nothing a visitor does is saved.
+on:
+  push:
+    branches: [main]
+    paths: ['web/src/**', 'web/styles/**', 'web/assets/**', 'web/index.html', 'scripts/build-demo-site.sh', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the demo site
+        run: scripts/build-demo-site.sh _site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

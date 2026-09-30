@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "measured_at": "2026-09-25",
+    "max_regression_percent": 25,
+    "samples": 5,
+    "machine": {
+      "system": "Darwin",
+      "architecture": "arm64",
+      "processor": "Apple M1 Pro",
+      "logical_cpus": 8
+    }
+  },
+  "flask": {
+    "fuzzy": 0.7,
+    "scan": 4.5
+  },
+  "redis": {
+    "fuzzy": 0.9,
+    "scan": 22.3,
+    "open_warm": 3.2
+  }
+}

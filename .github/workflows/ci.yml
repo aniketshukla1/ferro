@@ -1,0 +1,46 @@
+name: ci
+on: [push, pull_request]
+env:
+  CARGO_DENY_VERSION: "0.20.2"
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The workspace includes the desktop app (apps/desktop/src-tauri), which links GTK/WebKitGTK.
+      - name: Linux desktop libraries
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      - name: Gate 1 - rustfmt
+        run: cargo fmt --check
+      - name: Gate 2 - clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Gate 3 - tests
+        run: cargo test --workspace
+      - name: Install pinned cargo-deny
+        run: cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
+      - name: Gate 4 - advisories and licenses
+        run: cargo deny check
+  linux-binary-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Gate 5 - stripped x86_64 Linux binary size
+        run: ./scripts/check-linux-binary-size.sh
+  desktop-check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/package.json
+      - run: pnpm --dir apps/desktop install
+      - run: cargo check -p ferro-tauri
+

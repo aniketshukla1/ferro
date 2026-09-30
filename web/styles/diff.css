@@ -1,0 +1,760 @@
+/* Diff view, gutter markers, image diffs, and git panel styling (FRONTEND.md § 5, § 6.10–6.12) */
+
+/* ---------- Git Panel in Sidebar ---------- */
+.git-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+}
+
+.git-base-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs, 11px);
+  color: var(--fg-muted);
+}
+
+.git-base-select {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-1);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  padding: 3px 6px;
+  font-size: var(--fs-xs, 11px);
+  font-family: inherit;
+}
+
+.git-base-input {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-xs, 11px);
+}
+
+.git-commit-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--sp-4);
+  gap: var(--sp-4);
+}
+
+.git-commit-input {
+  width: 100%;
+  min-height: 54px;
+  resize: vertical;
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  font-family: inherit;
+  font-size: var(--fs-sm, 12px);
+  line-height: 1.4;
+  outline: none;
+  box-sizing: border-box;
+}
+
+/* Two rows in the narrow sidebar: [Amend … 0 / 72], then [AI message][Commit ────]. */
+.git-commit-ctrls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-3);
+  font-size: var(--fs-xs, 11px);
+}
+
+.git-amend-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+  cursor: pointer;
+  color: var(--fg-muted);
+  user-select: none;
+}
+
+.git-char-count {
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: var(--fs-xs, 11px);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-faint);
+}
+
+.git-char-count.over-budget {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.git-commit-btns {
+  display: flex;
+  flex: 1 1 100%;
+  min-width: 0;
+  gap: var(--sp-2);
+}
+
+/* In a narrow sidebar the AI button drops its label (the aria-label and tooltip remain) so the
+   Commit label is never clipped. */
+.git-commit-card { container-type: inline-size; }
+.git-commit-btns .git-ai-btn { flex: none; }
+@container (max-width: 240px) { .git-ai-label { display: none; } }
+.git-commit-btns .git-commit-btn { flex: 1; min-width: 0; justify-content: center; }
+
+.git-stderr {
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-1));
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+  border-radius: var(--r-xs);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-xs, 11px);
+}
+
+.git-stderr summary {
+  cursor: pointer;
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.git-stderr-pre {
+  margin: var(--sp-2) 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--font-mono, monospace);
+  color: var(--fg);
+}
+
+.git-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.git-group-title {
+  font-weight: 500;
+  flex: 1;
+}
+
+.git-group-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.git-file-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+}
+
+/* Fixed-width column so it never shrinks and its buttons land at the same
+   x position in every row, regardless of how much the name/dir text truncates. */
+.lr-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 2px;
+}
+
+.git-recent-details {
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-2);
+  font-size: var(--fs-xs, 11px);
+}
+
+.git-recent-summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+
+.git-recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.git-commit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 2px 4px;
+  border-radius: var(--r-xs);
+}
+
+.git-commit-sha {
+  color: var(--fg-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.git-commit-subj {
+  flex: 1;
+  color: var(--fg);
+}
+
+.git-discard-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.git-discard-list {
+  max-height: 160px;
+  overflow-y: auto;
+  margin: 0;
+  padding-left: 20px;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-xs, 11px);
+  color: var(--fg-muted);
+}
+
+/* ---------- Diff View (Continuous Multi-File) ---------- */
+.view.diff {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-0);
+}
+
+.diff-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 38px;
+  min-height: 38px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-chrome);
+  padding: 0 var(--sp-4);
+  font-size: var(--fs-xs, 11px);
+  gap: var(--sp-4);
+}
+
+.diff-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--fg-muted);
+  overflow: hidden;
+}
+
+.diff-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.diff-scroller {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+  position: relative;
+  outline: none;
+}
+
+.diff-sizer {
+  position: relative;
+  width: 100%;
+  min-width: 100%;
+}
+
+/* One pooled box per visible item: the list positions the box, the item fills it from the top. */
+.diff-item {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+}
+
+/* ---------- Sticky File Headers ---------- */
+.diff-file-header {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-4);
+  background: var(--bg-chrome);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  gap: var(--sp-4);
+  font-size: var(--fs-sm, 12px);
+  z-index: 2;
+  box-sizing: border-box;
+}
+
+.diff-status-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: var(--r-xs);
+}
+
+.diff-file-path {
+  font-weight: 600;
+  color: var(--fg);
+  flex: 1;
+  font-family: var(--font-mono, monospace);
+}
+
+.diff-file-stats {
+  display: inline-flex;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs, 11px);
+}
+
+.diff-add-stat {
+  color: var(--ok);
+}
+
+.diff-del-stat {
+  color: var(--danger);
+}
+
+.diff-file-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.diff-viewed-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-xs, 11px);
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* ---------- Hunk Separators ---------- */
+.diff-hunk-sep {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--sp-4);
+  background: var(--diff-hunk-bg);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--fg-muted);
+  box-sizing: border-box;
+}
+
+.diff-hunk-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+/* ---------- Diff Rows (Split & Unified) ---------- */
+.diff-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 20px;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--code-fs);
+  line-height: 20px;
+  box-sizing: border-box;
+}
+
+/* Split layout: paired rows in one DOM row */
+.diff-row.split {
+  display: flex;
+  width: 100%;
+}
+
+.diff-cell {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  white-space: pre;
+}
+
+.diff-cell.old {
+  border-right: 1px solid var(--border);
+}
+
+.diff-cell.del {
+  background: var(--diff-del-bg);
+}
+
+.diff-cell.add {
+  background: var(--diff-add-bg);
+}
+
+.diff-cell.empty {
+  background: color-mix(in srgb, var(--fg) 2%, transparent);
+}
+
+.diff-cell .diff-ln {
+  width: 48px;
+  min-width: 48px;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--fg-faint);
+  user-select: none;
+  border-right: 1px solid var(--border);
+}
+
+.diff-cell .diff-sign {
+  width: 18px;
+  min-width: 18px;
+  text-align: center;
+  user-select: none;
+  font-weight: 600;
+}
+
+.diff-cell.del .diff-sign { color: var(--danger); }
+.diff-cell.add .diff-sign { color: var(--ok); }
+
+.diff-cell .diff-code {
+  flex: 1;
+  padding-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Review mode: gutter "+" and inline annotations (FRONTEND.md § 6.13) ---------- */
+.diff-cell {
+  position: relative;
+}
+
+.diff-comment-add-btn {
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: var(--accent);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.diff-cell:hover .diff-comment-add-btn,
+.diff-row.unified:hover .diff-comment-add-btn {
+  opacity: 1;
+}
+
+.diff-comment-add-btn[hidden] {
+  display: none;
+}
+
+.diff-row.unified .diff-comment-add-btn {
+  left: 46px;
+}
+
+.diff-annotation-slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  padding: var(--sp-2, 8px) var(--sp-3, 12px);
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Unified layout */
+.diff-row.unified {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  white-space: pre;
+}
+
+.diff-row.unified.del { background: var(--diff-del-bg); }
+.diff-row.unified.add { background: var(--diff-add-bg); }
+
+.diff-row.unified .diff-ln-old,
+.diff-row.unified .diff-ln-new {
+  width: 44px;
+  min-width: 44px;
+  text-align: right;
+  padding-right: 6px;
+  color: var(--fg-faint);
+  user-select: none;
+  border-right: 1px solid var(--border);
+}
+
+.diff-row.unified .diff-sign {
+  width: 18px;
+  min-width: 18px;
+  text-align: center;
+  user-select: none;
+  font-weight: 600;
+}
+
+.diff-row.unified.del .diff-sign { color: var(--danger); }
+.diff-row.unified.add .diff-sign { color: var(--ok); }
+
+.diff-row.unified .diff-code {
+  flex: 1;
+  padding-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Intraline range styling */
+::highlight(ferro-diff-add) {
+  background-color: var(--diff-add-word-bg);
+}
+
+::highlight(ferro-diff-del) {
+  background-color: var(--diff-del-word-bg);
+}
+
+/* ---------- Banners (Too Large & Binary) ---------- */
+.diff-banner {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-4);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm, 12px);
+  color: var(--fg-muted);
+  box-sizing: border-box;
+}
+
+/* ---------- Image Diffs (Side-by-side, Swipe, Onion-skin) ---------- */
+.diff-image-view {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 360px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
+}
+
+.diff-image-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-image-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  padding: 12px;
+}
+
+.diff-img-side {
+  display: flex;
+  gap: 16px;
+  max-height: 100%;
+}
+
+.diff-img-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.diff-img-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.diff-img-col img {
+  max-height: 250px;
+  max-width: 100%;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--bg-0);
+}
+
+.diff-img-swipe-container,
+.diff-img-onion-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 260px;
+  width: 400px;
+}
+
+.diff-img-swipe-before,
+.diff-img-onion-before {
+  position: absolute;
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.diff-img-swipe-after {
+  position: absolute;
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+  clip-path: inset(0 0 0 var(--swipe-pct, 50%));
+}
+
+.diff-img-onion-after {
+  position: absolute;
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.diff-img-swipe-slider,
+.diff-img-onion-slider {
+  position: absolute;
+  bottom: 0;
+  width: 80%;
+  z-index: 5;
+}
+
+/* ---------- Gutter Markers in Code Viewer ---------- */
+.cv-ln.gutter-add {
+  border-left: 3px solid var(--ok);
+  padding-left: 1px;
+  cursor: pointer;
+}
+
+.cv-ln.gutter-mod {
+  border-left: 3px solid var(--warn);
+  padding-left: 1px;
+  cursor: pointer;
+}
+
+.cv-ln.gutter-del {
+  border-left: 3px solid var(--danger);
+  padding-left: 1px;
+  cursor: pointer;
+}
+
+/* ---------- Mini-Diff Inline Card ---------- */
+.mini-diff-card {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 12px 4px 60px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  z-index: 15;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-sm);
+}
+
+.mini-diff-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.mini-diff-rows {
+  display: flex;
+  flex-direction: column;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.mini-diff-row {
+  display: flex;
+  align-items: center;
+  line-height: 18px;
+  padding: 1px 6px;
+  white-space: pre;
+}
+
+.mini-diff-row.del {
+  background: var(--diff-del-bg);
+}
+
+.mini-diff-row.add {
+  background: var(--diff-add-bg);
+}
+
+.mini-diff-sign {
+  width: 16px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.mini-diff-row.del .mini-diff-sign { color: var(--danger); }
+.mini-diff-row.add .mini-diff-sign { color: var(--ok); }
+
+.mini-diff-code {
+  flex: 1;
+}
+
+/* agent edit review (F4b): summary strip and per-hunk revert */
+.diff-banner-slot { flex: none; border-bottom: 1px solid var(--border); }
+.agent-bar { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-3) var(--sp-5); background: var(--bg-1); font-size: var(--fs-sm); }
+.agent-bar > .i { color: var(--fg-muted); flex: none; }
+.agent-bar-title { color: var(--fg); font-weight: 600; }
+.agent-bar-sp { flex: 1; }
+.diff-hunk-action-btn[hidden] { display: none; }
+
+/* ---------- AI change notes (explain.js) ---------- */
+.diff-note {
+  position: absolute; left: 0; right: 0; top: 0; height: 26px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 var(--sp-4);
+  font-size: var(--fs-sm); color: var(--fg);
+  background: color-mix(in srgb, var(--info) 6%, var(--bg-0));
+  border-bottom: 1px solid var(--border);
+  box-sizing: border-box; overflow: hidden;
+}
+.diff-note.file-note { height: 28px; background: color-mix(in srgb, var(--info) 9%, var(--bg-0)); }
+.diff-note-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-note-kind { flex: none; font-size: var(--fs-xs); font-weight: 600; line-height: 16px; padding: 0 6px; border-radius: 8px; border: 1px solid currentColor; }
+.diff-note-kind.added { color: var(--ok); }
+.diff-note-kind.removed { color: var(--danger); }
+.diff-note-kind.changed { color: var(--info); }
+.diff-note-kind.summary { color: var(--fg-muted); border-color: var(--border-strong); }
+
+/* ---------- coverage of added lines (Checks → Coverage → In diff) ---------- */
+.diff-cell.cov-miss .diff-ln, .diff-row.unified.cov-miss .diff-ln-new { box-shadow: inset 3px 0 0 var(--danger); color: var(--danger); }
+.diff-cell.cov-hit .diff-ln, .diff-row.unified.cov-hit .diff-ln-new { box-shadow: inset 3px 0 0 var(--ok); }

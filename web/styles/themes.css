@@ -1,0 +1,218 @@
+/* ferro themes. Each theme sets primitives; shared semantic tokens derive from them.
+   Near-monochrome chrome: surfaces and text are neutral greys and the "accent" is the
+   foreground itself; hue carries meaning (git state, diffs, errors). Code gets full IDE-style
+   syntax color (One Dark / One Light family). Syntax variables map 1:1 to the highlight classes
+   in the highlight class contract. Contrast is checked by web/tests/unit/contrast.test.js. */
+
+/* ---------- shared derived tokens ---------- */
+:root, [data-theme] {
+  --hover: color-mix(in srgb, var(--fg) 5%, transparent);
+  --press: color-mix(in srgb, var(--fg) 8.5%, transparent);
+  --active: color-mix(in srgb, var(--fg) 8%, transparent);
+  --active-strong: color-mix(in srgb, var(--fg) 12%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent) 7%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 38%, transparent);
+  --selection: color-mix(in srgb, var(--sel-tint) 32%, transparent);
+  --line-hl: color-mix(in srgb, var(--fg) 3.5%, transparent);
+  --line-sel: color-mix(in srgb, var(--sel-tint) 15%, transparent);
+  --focus: color-mix(in srgb, var(--fg) 58%, transparent);
+  --scroll-thumb: color-mix(in srgb, var(--fg) 13%, transparent);
+  --scroll-thumb-hover: color-mix(in srgb, var(--fg) 24%, transparent);
+  --backdrop: color-mix(in srgb, var(--bg-chrome) 62%, transparent);
+
+  --diff-add-bg: color-mix(in srgb, var(--ok) 11%, transparent);
+  --diff-add-word-bg: color-mix(in srgb, var(--ok) 28%, transparent);
+  --diff-del-bg: color-mix(in srgb, var(--danger) 11%, transparent);
+  --diff-del-word-bg: color-mix(in srgb, var(--danger) 28%, transparent);
+  --diff-hunk-bg: color-mix(in srgb, var(--fg) 4%, transparent);
+  --gutter-add: var(--ok);
+  --gutter-mod: var(--info);
+  --gutter-del: var(--danger);
+
+  --git-added: var(--ok);
+  --git-modified: var(--warn);
+  --git-deleted: var(--danger);
+  --git-untracked: var(--ok);
+  --git-renamed: var(--info);
+  --git-conflict: var(--danger);
+
+  --sev-high: var(--danger);
+  --sev-medium: var(--warn);
+  --sev-low: var(--info);
+  --sev-nit: var(--fg-muted);
+  --viewed: var(--ok);
+}
+
+/* ---------- graphite (dark, default) ---------- */
+:root, [data-theme="graphite"] {
+  color-scheme: dark;
+  --bg-chrome: #0f0f11;
+  --bg-0: #141416;
+  --bg-1: #18181b;
+  --bg-2: #1c1c1f;
+  --bg-3: #1c1c1f;
+  --bg-inset: #18181b;
+  --fg: #ededf0;
+  --fg-muted: #a1a1aa;
+  --fg-faint: #707079;
+  --border: #232327;
+  --border-strong: #303036;
+  --accent: #ededf0;
+  --accent-hover: #ffffff;
+  --accent-fg: #0f0f11;
+  --sel-tint: #8ea4d2;
+  --ok: #6cc38f;
+  --warn: #d8b25e;
+  --danger: #ec6f6f;
+  --info: #7eaaea;
+  --shadow-lg: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 24px 60px -12px rgba(0, 0, 0, 0.7);
+  --shadow-md: 0 0 0 1px rgba(0, 0, 0, 0.45), 0 12px 28px -10px rgba(0, 0, 0, 0.6);
+  --code-fg: #d9d9de;
+
+  --syn-comment: #7f848e;
+  --syn-doc: #8b929c;
+  --syn-keyword: #c678dd;
+  --syn-operator: #56b6c2;
+  --syn-punct: #9aa0aa;
+  --syn-string: #98c379;
+  --syn-escape: #56b6c2;
+  --syn-regex: #56b6c2;
+  --syn-number: #d19a66;
+  --syn-constant: #d19a66;
+  --syn-function: #61afef;
+  --syn-function-def: #61afef;
+  --syn-type: #e5c07b;
+  --syn-type-builtin: #e5c07b;
+  --syn-variable: #dcdfe4;
+  --syn-param: #e8b98a;
+  --syn-variable-builtin: #e06c75;
+  --syn-property: #e06c75;
+  --syn-macro: #56b6c2;
+  --syn-namespace: #e5c07b;
+  --syn-tag: #e06c75;
+  --syn-attr: #d19a66;
+  --syn-heading: #e06c75;
+  --syn-emphasis: #c678dd;
+  --syn-strong: #d19a66;
+  --syn-link: #61afef;
+  --syn-inserted: #98c379;
+  --syn-deleted: #e06c75;
+  --syn-error: #ff6b6b;
+}
+
+/* ---------- porcelain (light) ----------
+   Also the stand-in for the light pack themes until themes-extra.css arrives (dark ones fall
+   back to graphite through :root). porcelain must stay last in this selector list. */
+[data-theme="paper"], [data-theme="mist"], [data-theme="sand"], [data-theme="sage"],
+[data-theme="frost"], [data-theme="dawn"], [data-theme="chalk"], [data-theme="porcelain"] {
+  color-scheme: light;
+  --bg-chrome: #f6f6f7;
+  --bg-0: #ffffff;
+  --bg-1: #fafafb;
+  --bg-2: #f2f2f4;
+  --bg-3: #ffffff;
+  --bg-inset: #ffffff;
+  --fg: #16161a;
+  --fg-muted: #5b5b65;
+  --fg-faint: #85858f;
+  --border: #e7e7eb;
+  --border-strong: #d7d7dd;
+  --accent: #16161a;
+  --accent-hover: #000000;
+  --accent-fg: #ffffff;
+  --sel-tint: #4a72c4;
+  --ok: #1d8049;
+  --warn: #946400;
+  --danger: #c93a3a;
+  --info: #2e68c8;
+  --shadow-lg: 0 0 0 1px rgba(20, 20, 30, 0.07), 0 24px 56px -14px rgba(20, 20, 30, 0.22);
+  --shadow-md: 0 0 0 1px rgba(20, 20, 30, 0.07), 0 10px 26px -10px rgba(20, 20, 30, 0.18);
+  --code-fg: #24242a;
+
+  --syn-comment: #6e7079;
+  --syn-doc: #6e7079;
+  --syn-keyword: #a626a4;
+  --syn-operator: #0184bc;
+  --syn-punct: #5c5f69;
+  --syn-string: #3f8a3e;
+  --syn-escape: #0184bc;
+  --syn-regex: #0184bc;
+  --syn-number: #986801;
+  --syn-constant: #986801;
+  --syn-function: #3269d6;
+  --syn-function-def: #3269d6;
+  --syn-type: #a86f00;
+  --syn-type-builtin: #a86f00;
+  --syn-variable: #24242a;
+  --syn-param: #9a4f1c;
+  --syn-variable-builtin: #d14545;
+  --syn-property: #d14545;
+  --syn-macro: #0184bc;
+  --syn-namespace: #a86f00;
+  --syn-tag: #d14545;
+  --syn-attr: #986801;
+  --syn-heading: #d14545;
+  --syn-emphasis: #a626a4;
+  --syn-strong: #986801;
+  --syn-link: #3269d6;
+  --syn-inserted: #3f8a3e;
+  --syn-deleted: #d14545;
+  --syn-error: #d22b2b;
+}
+
+/* ---------- carbon (true black, highest contrast) ---------- */
+[data-theme="carbon"] {
+  color-scheme: dark;
+  --bg-chrome: #0a0a0a;
+  --bg-0: #000000;
+  --bg-1: #0e0e0e;
+  --bg-2: #141414;
+  --bg-3: #121212;
+  --bg-inset: #101010;
+  --fg: #f5f5f5;
+  --fg-muted: #a8a8a8;
+  --fg-faint: #767676;
+  --border: #1e1e1e;
+  --border-strong: #2c2c2c;
+  --accent: #f5f5f5;
+  --accent-hover: #ffffff;
+  --accent-fg: #000000;
+  --sel-tint: #90a6d4;
+  --ok: #70c994;
+  --warn: #dcb661;
+  --danger: #f07373;
+  --info: #82aeee;
+  --shadow-lg: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 24px 60px -12px rgba(0, 0, 0, 0.9);
+  --shadow-md: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 12px 28px -10px rgba(0, 0, 0, 0.8);
+  --code-fg: #e2e2e2;
+
+  --syn-comment: #7f848e;
+  --syn-doc: #8b929c;
+  --syn-keyword: #c678dd;
+  --syn-operator: #56b6c2;
+  --syn-punct: #9aa0aa;
+  --syn-string: #98c379;
+  --syn-escape: #56b6c2;
+  --syn-regex: #56b6c2;
+  --syn-number: #d19a66;
+  --syn-constant: #d19a66;
+  --syn-function: #61afef;
+  --syn-function-def: #61afef;
+  --syn-type: #e5c07b;
+  --syn-type-builtin: #e5c07b;
+  --syn-variable: #dcdfe4;
+  --syn-param: #e8b98a;
+  --syn-variable-builtin: #e06c75;
+  --syn-property: #e06c75;
+  --syn-macro: #56b6c2;
+  --syn-namespace: #e5c07b;
+  --syn-tag: #e06c75;
+  --syn-attr: #d19a66;
+  --syn-heading: #e06c75;
+  --syn-emphasis: #c678dd;
+  --syn-strong: #d19a66;
+  --syn-link: #61afef;
+  --syn-inserted: #98c379;
+  --syn-deleted: #e06c75;
+  --syn-error: #ff6b6b;
+}

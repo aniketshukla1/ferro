@@ -1,0 +1,30 @@
+/target/
+**/target/
+.DS_Store
+*.pdb
+web/dist/
+ferro-bench-*/
+.env
+node_modules/
+**/node_modules/
+.pnpm-store/
+# web/tests uses pnpm; keep npm from introducing a second lockfile.
+web/tests/package-lock.json
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/Wix/
+*.dmg
+*.app
+*.deb
+*.rpm
+*.AppImage
+.ferro/
+bench-repos/
+apps/desktop/src-tauri/gen/
+test-results/
+**/test-results/
+playwright-report/
+**/playwright-report/
+
+# README media scratch and the built demo site
+docs/assets/.frames/
+_site/

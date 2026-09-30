@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- README banner. Rendered to docs/assets/banner-{dark,light}.png by web/tests/tools/readme-media.mjs
+     (1600×560; ?theme=light for the light one). Uses the real app screenshots next to it. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --bg: #0b0b0d; --fg: #f2f2f4; --muted: #a1a1aa; --line: rgba(255,255,255,0.045); --chip: rgba(255,255,255,0.06); --chip-line: rgba(255,255,255,0.12); --glow: rgba(242, 84, 45, 0.30); --glow2: rgba(255, 140, 46, 0.16); --shot-line: rgba(255,255,255,0.10); }
+  html.light { --bg: #f7f6f3; --fg: #141417; --muted: #5b5b65; --line: rgba(0,0,0,0.05); --chip: rgba(0,0,0,0.04); --chip-line: rgba(0,0,0,0.10); --glow: rgba(242, 84, 45, 0.16); --glow2: rgba(255, 140, 46, 0.12); --shot-line: rgba(0,0,0,0.10); }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1600px; height: 560px; overflow: hidden; background: var(--bg); }
+  body { position: relative; font-family: -apple-system, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif; color: var(--fg); }
+  .grid { position: absolute; inset: 0; background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 40px 40px; mask-image: radial-gradient(ellipse 80% 90% at 35% 50%, #000 30%, transparent 75%); }
+  .glow { position: absolute; width: 900px; height: 900px; right: -120px; top: -200px; background: radial-gradient(circle, var(--glow) 0%, var(--glow2) 35%, transparent 65%); filter: blur(20px); }
+  .glow.two { width: 520px; height: 520px; left: -160px; bottom: -300px; right: auto; top: auto; opacity: 0.6; }
+  .copy { position: absolute; left: 96px; top: 50%; transform: translateY(-50%); width: 640px; }
+  .brand { display: flex; align-items: center; gap: 22px; }
+  .mark { width: 84px; height: 84px; border-radius: 19px; background: linear-gradient(135deg, #ff8c2e 0%, #f2542d 55%, #c22e3d 100%); display: grid; place-items: center; box-shadow: 0 18px 50px -12px rgba(242, 84, 45, 0.65), inset 0 1px 0 rgba(255,255,255,0.25); }
+  .mark svg { width: 52px; height: 52px; fill: #fff; }
+  .name { font-size: 92px; font-weight: 800; letter-spacing: -0.045em; line-height: 1; }
+  .tag { margin-top: 30px; font-size: 40px; font-weight: 700; letter-spacing: -0.02em; }
+  .tag em { font-style: normal; background: linear-gradient(90deg, #ff8c2e, #f2542d 60%, #c22e3d); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { margin-top: 14px; font-size: 23px; line-height: 1.45; color: var(--muted); max-width: 580px; }
+  .chips { margin-top: 30px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .chip { font-size: 17px; font-weight: 600; padding: 8px 15px; border-radius: 999px; background: var(--chip); border: 1px solid var(--chip-line); color: var(--fg); }
+  .stage { position: absolute; left: 800px; top: 58px; width: 1040px; perspective: 1800px; }
+  /* The frame shows the right half of the diff and the Checks panel. */
+  .frame { width: 1040px; height: 812px; overflow: hidden; border-radius: 16px; border: 1px solid var(--shot-line); box-shadow: 0 50px 120px -30px rgba(0,0,0,0.65), 0 0 0 1px rgba(0,0,0,0.3); transform: rotateY(-16deg) rotateX(7deg) rotateZ(1.5deg); transform-origin: left center; }
+  html.light .frame { box-shadow: 0 50px 110px -34px rgba(20,20,40,0.35), 0 0 0 1px rgba(0,0,0,0.05); }
+  .shot { width: 1300px; margin-left: -560px; display: block; }
+  .fade { position: absolute; inset: 0; background: linear-gradient(90deg, transparent 88%, var(--bg) 100%); pointer-events: none; }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+  <div class="glow"></div>
+  <div class="glow two"></div>
+  <div class="stage"><div class="frame"><img class="shot" id="shot" src="../screen-checks-dark.png" alt=""></div></div>
+  <div class="fade"></div>
+  <div class="copy">
+    <div class="brand">
+      <div class="mark"><svg viewBox="0 0 24 24"><rect x="6" y="3.5" width="4" height="17" rx="1.1"/><rect x="6" y="3.5" width="13" height="4" rx="1.1"/><rect x="6" y="10.6" width="10" height="3.6" rx="1.1"/></svg></div>
+      <div class="name">ferro</div>
+    </div>
+    <div class="tag"><em>Iron-clad</em> code review.</div>
+    <div class="sub">See what your change really does, and whether it breaks anything, before you push.</div>
+    <div class="chips"><span class="chip">Local-first</span><span class="chip">Private</span><span class="chip">GitHub &amp; GitLab</span><span class="chip">Any coding agent</span></div>
+  </div>
+  <script>
+    if (new URLSearchParams(location.search).get('theme') === 'light') {
+      document.documentElement.classList.add('light');
+      document.getElementById('shot').src = '../screen-checks-light.png';
+    }
+  </script>
+</body>
+</html>
