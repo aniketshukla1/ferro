@@ -134,7 +134,7 @@ async function boot() {
   const changesPanel = shell.registerPanel({ id: 'changes', title: 'Changes', icon: 'git-compare', keys: ['Mod+Shift+G'], render: async (s) => { (await load.panels()).renderChangesPanel(s, { onOpen }); } });
   shell.registerPanel({ id: 'search', title: 'Search', icon: 'search', keys: ['Mod+Shift+F'], render: async (s) => { search = (await load.panels()).renderSearchPanel(s, { onOpen }); }, onShow: ({ focus }) => { if (focus) search?.focus(); } });
   shell.registerPanel({ id: 'outline', title: 'Outline', icon: 'list-tree', render: async (s) => { outline = (await load.panels()).renderOutlinePanel(s, { editor }); }, onShow: ({ focus }) => { if (focus) outline?.focus(); } });
-  // History (API.md § 6.6–6.10): every commit on any ref, commit view, compare, branch switch.
+  // History: commits on any ref, commit view, compare, branch switch.
   let historyPanel = null;
   const historyCtx = { getDiffView: () => getDiffView(), onOpen, closeSidebar: () => { if (narrow.matches && session.data.layout.sidebar) shell.toggleSidebar(); } };
   if (has('git.history')) shell.registerPanel({ id: 'history', title: 'History', icon: 'history', keys: ['Mod+Shift+H'], render: async (s) => { historyPanel = (await load.history()).renderHistoryPanel(s, historyCtx); }, onShow: ({ focus }) => { if (focus) historyPanel?.focus(); } });
@@ -148,7 +148,7 @@ async function boot() {
   let diffView = null; // the Ask panel peeks at it for context without forcing the lazy load
   const getDiffView = lazy(async () => (diffView = (await load.diff()).createDiffView(shell.viewsEl, { onOpen })));
   bus.on('diff:open', (opts) => getDiffView().then((d) => d.show(opts)));
-  // AI change notes on the open diff (the diff toolbar's Explain, commit and compare headers).
+  // AI change notes on the open diff.
   bus.on('ai:explain', async () => {
     const d = await getDiffView();
     if (d.el.hidden) await d.show({});
@@ -193,7 +193,7 @@ async function boot() {
 
   registerCommands({ shell, editor, palette, find, getTree: () => tree, getSearch: () => search, aiTab, nav, getDiffView, historyCtx });
 
-  // Narrow screens start with the overlay sidebar closed (in memory only; the saved layout is untouched).
+  // Narrow screens start with the sidebar closed (in memory only, not saved).
   if (narrow.matches) session.data.layout.sidebar = false;
   shell.applyLayout();
   editor.restore(session.data);
@@ -233,29 +233,27 @@ async function boot() {
     if (p && autoReveal()) bus.emit('tree:reveal', { path: p, align: 'auto' });
   });
 
-  // `ferro file:line` or ?path=&line= deep link
-  const initial = meta.initial || (params.get('path') ? { path: params.get('path'), line: Number(params.get('line')) || undefined } : null);
-  if (initial?.path) {
-    editor.open(initial.path, { line: initial.line, focus: true });
-    const clean = new URL(location.href);
-    clean.searchParams.delete('path');
-    clean.searchParams.delete('line');
-    history.replaceState(null, '', clean);
-  }
+  // Links (`ferro open`, editors): ?path=&line=&view=, over the file ferro started with.
+  const initial = params.get('path') ? { path: params.get('path'), line: Number(params.get('line')) || undefined } : meta.initial;
+  const view = { changes: 'panel.changes', checks: 'checks.open', history: 'git.history', diff: 'diff.toggle' }[params.get('view')];
+  const opened = initial?.path ? editor.open(initial.path, { line: initial.line, focus: true }) : null;
+  if (view) Promise.resolve(opened).then(() => execute(view));
+  const clean = new URL(location.href);
+  ['path', 'line', 'view'].forEach((k) => clean.searchParams.delete(k));
+  history.replaceState(null, '', clean);
 
   connectEvents({ metrics: true });
-  // Git status: the v1 endpoint once B3 ships.
+  // Git status.
   const refreshGit = () => (has('git.status.v2') ? api.gitStatus().then((g) => { if (g) store.set('git', g); }).catch(() => {}) : Promise.resolve(null));
   if (has('git.status.v2')) refreshGit();
   bus.on('git:refresh', refreshGit);
-  // A switched workspace (a PR opened, another folder): fresh meta and status for the new root
-  // (the tree and editor reset themselves on the same event).
+  // A switched workspace (PR, folder): fresh meta and status; the tree and editor reset themselves.
   bus.on('ev:workspace', () => {
     api.meta().then((m) => store.set('meta', m)).catch(() => {});
     refreshGit();
   });
 
-  // Review mode (FRONTEND.md § 6.13): the PR bar and conversation tab install from review.js.
+  // Review mode: the PR bar and conversation tab (review.js).
   if (meta.pr) store.set('pr', meta.pr);
   store.subscribe('pr', (pr) => { if (pr) load.review().then((m) => m.installReview(shell)); }, { now: true });
 

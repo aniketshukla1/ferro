@@ -112,6 +112,21 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         allow_write: bool,
     },
+    /// Open a folder, file or file:line in the ferro already serving it, else start one.
+    /// Editor extensions call this.
+    Open {
+        /// Folder, file or file:line (default: the current folder).
+        target: Option<String>,
+        /// Also show a view: changes, checks, history, or diff (the file's diff).
+        #[arg(long, value_parser = ["changes", "checks", "history", "diff"])]
+        view: Option<String>,
+        /// Do not start a server when none is running; exit with code 3 instead.
+        #[arg(long, default_value_t = false)]
+        no_serve: bool,
+        /// Print the link instead of opening a browser.
+        #[arg(long, default_value_t = false)]
+        print: bool,
+    },
     /// Remove PR worktrees of merged or closed PRs older than 7 days.
     Gc,
     /// MCP server over stdio for coding agents (stdout is protocol-only).

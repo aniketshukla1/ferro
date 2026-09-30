@@ -1,0 +1,48 @@
+{
+  "name": "ferro",
+  "displayName": "ferro",
+  "description": "Open the file, its diff, your changes, Checks or History in ferro: fast local code review.",
+  "version": "0.1.0",
+  "publisher": "aniketshukla1",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/aniketshukla1/ferro" },
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other", "SCM Providers"],
+  "keywords": ["code review", "diff", "git", "pull request"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "ferro.openFile", "title": "Open in ferro", "category": "ferro", "icon": "$(link-external)" },
+      { "command": "ferro.showDiff", "title": "Show Diff in ferro", "category": "ferro" },
+      { "command": "ferro.reviewChanges", "title": "Review Changes in ferro", "category": "ferro" },
+      { "command": "ferro.checkChange", "title": "Check This Change in ferro", "category": "ferro", "icon": "$(pass)" },
+      { "command": "ferro.showHistory", "title": "Show History in ferro", "category": "ferro" }
+    ],
+    "menus": {
+      "editor/title": [
+        { "command": "ferro.openFile", "group": "navigation", "when": "resourceScheme == file" }
+      ],
+      "editor/context": [
+        { "command": "ferro.openFile", "group": "z_ferro@1", "when": "resourceScheme == file" },
+        { "command": "ferro.showDiff", "group": "z_ferro@2", "when": "resourceScheme == file" }
+      ],
+      "explorer/context": [
+        { "command": "ferro.openFile", "group": "z_ferro@1" }
+      ],
+      "scm/title": [
+        { "command": "ferro.checkChange", "group": "navigation" },
+        { "command": "ferro.reviewChanges", "group": "z_ferro@1" }
+      ]
+    },
+    "configuration": {
+      "title": "ferro",
+      "properties": {
+        "ferro.path": {
+          "type": "string",
+          "default": "ferro",
+          "description": "The ferro executable: a name on your PATH or a full path."
+        }
+      }
+    }
+  }
+}

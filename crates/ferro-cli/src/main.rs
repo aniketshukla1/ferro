@@ -68,13 +68,69 @@ async fn main() -> AnyhowResult {
             )
             .await
         }
+        Some(Commands::Open {
+            ref target,
+            ref view,
+            no_serve,
+            print,
+        }) => {
+            let (target, view) = (target.clone(), view.clone());
+            open_cmd(cli, target, view, no_serve, print).await
+        }
         Some(Commands::Gc) => gc().await,
         Some(Commands::Mcp { .. }) => unreachable!("handled above"),
         Some(Commands::Ssh { target, no_open }) => ferro_cli::ssh::run::run_ssh(&target, no_open)
             .await
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() }),
-        None => serve(cli).await,
+        None => serve(cli, None).await,
     }
+}
+
+/// `ferro open`: reuse the server already serving the folder (browser at the file, line and
+/// view), else start one like `ferro <target>` would.
+async fn open_cmd(
+    mut cli: Cli,
+    target: Option<String>,
+    view: Option<String>,
+    no_serve: bool,
+    print: bool,
+) -> AnyhowResult {
+    let target = target.unwrap_or_else(|| ".".into());
+    let (root, initial) = launch_target(&target);
+    // A diff needs a file; for a folder it means its changes.
+    let view = match (view.as_deref(), &initial) {
+        (Some("diff"), None) => Some("changes".to_string()),
+        _ => view,
+    };
+    let dirs = ferro_core::dirs::FerroDirs::resolve();
+    let key = dirs.workspace_key(&root);
+    if let Some(inst) = ferro_cli::instances::find(&dirs.state_dir, &key).await {
+        let (path, line) = match &initial {
+            Some((p, l)) => (Some(p.as_str()), Some(*l)),
+            None => (None, None),
+        };
+        let url = ferro_cli::instances::open_url(&inst, path, line, view.as_deref());
+        if print {
+            println!("{url}");
+        } else {
+            open::that(&url)?;
+            println!(
+                "ferro: opened in the server already running for {}",
+                root.display()
+            );
+        }
+        return Ok(());
+    }
+    if no_serve {
+        eprintln!("ferro: no server is running for {}", root.display());
+        std::process::exit(3);
+    }
+    cli.path = Some(PathBuf::from(target));
+    cli.command = None;
+    if print {
+        cli.no_open = true;
+    }
+    serve(cli, view).await
 }
 
 /// `ferro mcp`: newline-delimited JSON-RPC on stdin/stdout; logs go to stderr only.
@@ -151,7 +207,7 @@ async fn gc() -> AnyhowResult {
     Ok(())
 }
 
-async fn serve(cli: Cli) -> AnyhowResult {
+async fn serve(cli: Cli, view: Option<String>) -> AnyhowResult {
     if cli.no_auth && cli.host != "127.0.0.1" && cli.host != "localhost" && cli.host != "::1" {
         return Err("--no-auth is only allowed on loopback binds".into());
     }
@@ -198,22 +254,66 @@ async fn serve(cli: Cli) -> AnyhowResult {
         base_path: cli.base_path.clone(),
         no_lsp: cli.no_lsp,
     };
+    let https = o.tls.is_https();
+    let state_dir = dirs.state_dir.clone();
+    let key = dirs.workspace_key(&root);
     let h = ferro_server::server::serve(
-        root,
+        root.clone(),
         dirs,
         ferro_server::Host::Cli,
         env!("CARGO_PKG_VERSION").to_string(),
         o,
     )
     .await;
+    // `ferro open` finds this server by its folder (plain HTTP on this machine only).
+    let recorded = !https
+        && ferro_cli::instances::record(
+            &state_dir,
+            &key,
+            &ferro_cli::instances::Instance {
+                pid: std::process::id(),
+                root: root
+                    .canonicalize()
+                    .unwrap_or(root)
+                    .to_string_lossy()
+                    .into_owned(),
+                base: url_root(&h.url),
+                token: h.token.clone(),
+            },
+        )
+        .is_ok();
     if !cli.no_open {
-        let _ = open::that(&h.url);
+        let url = match &view {
+            Some(v) => format!("{}&view={v}", h.url),
+            None => h.url.clone(),
+        };
+        let _ = open::that(&url);
     }
     wait_shutdown(h).await;
+    if recorded {
+        ferro_cli::instances::forget(&state_dir, &key, std::process::id());
+    }
     Ok(())
 }
 
+/// Ctrl+C, or a SIGTERM (`kill`, a closing terminal) on Unix: shut down cleanly either way.
 async fn wait_shutdown(h: ferro_server::server::ServerHandle) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
     let _ = tokio::signal::ctrl_c().await;
     let _ = h.shutdown.send(());
 }

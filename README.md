@@ -295,6 +295,12 @@ For **coding agents**, install one (Claude Code, Codex, Gemini CLI, Cursor Agent
 
 <br/>
 
+## 🧩 From your editor
+
+`ferro open file:line` opens a file (or `--view changes|checks|history|diff`) in the ferro already running for that folder, and starts one when none is. The **VS Code** extension (Open in ferro, Show Diff, Review Changes, Check This Change) and ready-made **JetBrains** and **Vim** setups are in [editors/](editors/README.md).
+
+<br/>
+
 ## ⌨️ Handy shortcuts
 
 | Do this | Press | | Do this | Press |
