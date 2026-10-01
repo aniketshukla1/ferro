@@ -971,6 +971,107 @@ async fn explain_tags_hunks_caches_and_withholds_never_send() {
     assert!(!mock.bodies().join("\n").contains("hunter2-secret"));
 }
 
+#[tokio::test]
+async fn explain_gives_verdicts_and_suggestions_that_apply() {
+    let (router, _st, dir) = repo_with(&[]);
+    std::fs::write(dir.path().join("a.txt"), "one\nlet ttl = 86400;\n").unwrap();
+    std::fs::write(dir.path().join("k.txt"), "key\n").unwrap();
+    git(&["add", "k.txt"], dir.path());
+    git(&["commit", "-m", "k"], dir.path());
+    std::fs::write(
+        dir.path().join("k.txt"),
+        "key\ntoken = ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+    )
+    .unwrap();
+    let hunk_id = |path: &str| {
+        let router = router.clone();
+        let uri = format!("/api/v1/git/diff?path={path}&base=HEAD&target=worktree");
+        async move {
+            let (_, d) = body_json(router.oneshot(get(&uri)).await.unwrap()).await;
+            d["hunks"][0]["id"].as_str().unwrap().to_string()
+        }
+    };
+    let (a, k) = (hunk_id("a.txt").await, hunk_id("k.txt").await);
+    let better = "one\nlet ttl = SECS_PER_DAY; // one day";
+    let answers = [
+        serde_json::json!({ "summary": "Adds a TTL.", "hunks": [
+            { "id": a, "note": "Sets a one-day TTL.", "verdict": "improve", "why": "Name the constant.", "code": format!("```\n{better}\n```") },
+        ] }),
+        serde_json::json!({ "summary": "Adds a token.", "hunks": [
+            { "id": k, "note": "Adds a token.", "verdict": "problem", "why": "Do not commit tokens.", "code": "key\ntoken = env(\"TOKEN\")" },
+        ] }),
+    ];
+    let mock = MockAnthropic::start(
+        answers
+            .iter()
+            .map(|x| (200, text_turn(&x.to_string())))
+            .collect(),
+    )
+    .await;
+    let _env = WithAnthropic::at(&mock.url);
+    let explain = |path: &str| {
+        let router = router.clone();
+        let body = format!(r#"{{"path":"{path}","base":"HEAD","target":"worktree"}}"#);
+        async move {
+            body_json(
+                router
+                    .oneshot(post("/api/v1/ai/explain", &body))
+                    .await
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    let (s, v) = explain("a.txt").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let h = &v["hunks"][0];
+    assert_eq!(
+        (h["verdict"].clone(), h["why"].clone()),
+        (
+            serde_json::json!("improve"),
+            serde_json::json!("Name the constant.")
+        )
+    );
+    let sg = &h["suggestion"];
+    assert_eq!(
+        (sg["start"].clone(), sg["end"].clone()),
+        (serde_json::json!(1), serde_json::json!(2)),
+        "{h}"
+    );
+    assert_eq!(sg["original"], "one\nlet ttl = 86400;");
+    assert_eq!(sg["code"], better, "the code fence is stripped");
+    assert!(
+        mock.bodies()[0].contains("verdict"),
+        "the prompt asks for verdicts"
+    );
+
+    // The suggestion applies through the inline-edit endpoint, exactly over its lines.
+    let edit = serde_json::json!({ "path": "a.txt", "startLine": 1, "endLine": 2, "expected": sg["original"], "text": sg["code"] });
+    let (s, e) = body_json(
+        router
+            .clone()
+            .oneshot(post("/api/v1/file/edit", &edit.to_string()))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        format!("{better}\n")
+    );
+
+    // Over a line that holds a secret: the verdict stays, the code does not (it would be redacted).
+    let (_, v) = explain("k.txt").await;
+    let h = &v["hunks"][0];
+    assert_eq!(h["verdict"], "problem");
+    assert!(h.get("suggestion").is_none(), "{h}");
+    assert!(
+        !mock.bodies().join("\n").contains("ghp_aaaa"),
+        "secrets are redacted before sending"
+    );
+}
+
 /// One assistant turn that reports findings through the review tool, then stops for tool results.
 fn findings_turn(findings: &[serde_json::Value]) -> String {
     let mut events =

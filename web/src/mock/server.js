@@ -552,7 +552,8 @@ export function createMockServer(opts) {
       return {
         path: b.path,
         summary: `Tightens ${b.path.split('/').pop()}: clearer names and one edge case handled.`,
-        hunks: (d.hunks || []).map((hk, i) => ({ id: hk.id, kind: kindOf(hk), note: i % 2 ? 'Renames the helper so its purpose is obvious at call sites.' : 'Handles the empty-input case before the loop, so it no longer panics.' })),
+        hunks: (d.hunks || []).map((hk, i) => ({ id: hk.id, kind: kindOf(hk), note: i % 2 ? 'Renames the helper so its purpose is obvious at call sites.' : 'Handles the empty-input case before the loop, so it no longer panics.',
+          ...(i % 3 === 1 ? { verdict: 'improve', why: 'Name the magic number so the next reader knows where it comes from.' } : { verdict: 'ok' }) })),
         cached: false,
       };
     },

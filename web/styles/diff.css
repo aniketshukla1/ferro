@@ -754,6 +754,16 @@
 .diff-note-kind.removed { color: var(--danger); }
 .diff-note-kind.changed { color: var(--info); }
 .diff-note-kind.summary { color: var(--fg-muted); border-color: var(--border-strong); }
+.diff-note-verdict { flex: none; font: 600 var(--fs-xs)/16px var(--font-ui); padding: 0 6px; border-radius: 8px; border: 1px solid currentColor; background: none; cursor: pointer; }
+.diff-note-verdict.improve { color: var(--warn); }
+.diff-note-verdict.problem { color: var(--danger); }
+.diff-note.has-more { cursor: pointer; }
+.diff-note.has-more:hover { background: color-mix(in srgb, var(--fg) 5%, var(--bg-0)); }
+.hunk-review p { margin: 0 0 8px; }
+.hunk-review-diff { margin: 8px 0 0; padding: 8px 0; max-height: 50vh; overflow: auto; font: var(--code-fs)/var(--code-lh) var(--font-mono); background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-md); }
+.hunk-review-diff div { padding: 0 10px; white-space: pre; }
+.hunk-review-diff .hr-del { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.hunk-review-diff .hr-add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
 
 /* ---------- coverage of added lines (Checks → Coverage → In diff) ---------- */
 .diff-cell.cov-miss .diff-ln, .diff-row.unified.cov-miss .diff-ln-new { box-shadow: inset 3px 0 0 var(--danger); color: var(--danger); }

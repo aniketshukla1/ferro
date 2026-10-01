@@ -8,6 +8,25 @@ const FILES = [
     path: 'crates/ferro-core/src/fuzzy.rs',
     summary: 'Ranks shallow files above deep ones: score now takes ScoreOpts and subtracts a penalty per folder level.',
     notes: ['Takes the new ScoreOpts and subtracts a penalty for each folder level, so src/lib.rs outranks src/a/b/c/lib.rs.', 'Adds ScoreOpts, with a default penalty of 3 points per folder level.'],
+    // A review of each hunk (verdict, why, and the suggested new side).
+    reviews: [{
+      verdict: 'improve',
+      why: 'Clamping at 0 makes every deep match tie at 0, so their order is lost; keep the score signed.',
+      code: [
+        '/// Score `path` against `query`: higher is better, `None` when it does not match.',
+        'pub fn score(query: &str, path: &str, opts: &ScoreOpts) -> Option<i64> {',
+        '    let name = basename(path);',
+        '    let mut s = subsequence_score(query, path)?;',
+        '    if name.starts_with(query) {',
+        '        s += 40;',
+        '    }',
+        '    // Shallow files win ties: `src/lib.rs` before `src/a/b/c/lib.rs`.',
+        "    let depth = path.matches('/').count() as i64;",
+        '    // Signed on purpose: clamping at 0 would make every deep match tie.',
+        '    Some(s - depth * opts.depth_penalty)',
+        '}',
+      ].join('\n'),
+    }],
     hunks: [
       {
         oldStart: 38, newStart: 38, section: 'pub fn score(query: &str, path: &str) -> Option<i64>',
@@ -153,7 +172,7 @@ function build(file) {
       section: h.section, oldStart: h.oldStart, oldLines, newStart: h.newStart, newLines, rows,
     };
   });
-  return { path: file.path, status: 'M', binary: false, tooLarge: false, language: 'rust', hunks, additions, deletions, summary: file.summary, notes: file.notes };
+  return { path: file.path, status: 'M', binary: false, tooLarge: false, language: 'rust', hunks, additions, deletions, summary: file.summary, notes: file.notes, reviews: file.reviews };
 }
 
 let built = null;
@@ -177,7 +196,17 @@ export function showcaseExplain(path) {
   return {
     path,
     summary: f.summary,
-    hunks: f.hunks.map((h, i) => ({ id: h.id, kind: h.rows.some((r) => r.t === 'del') ? 'changed' : 'added', note: f.notes[i] || f.notes[0] })),
+    hunks: f.hunks.map((h, i) => {
+      const r = f.reviews?.[i];
+      const kind = h.rows.some((x) => x.t === 'del') ? 'changed' : 'added';
+      const out = { id: h.id, kind, note: f.notes[i] || f.notes[0], verdict: r?.verdict || 'ok' };
+      if (r?.why) out.why = r.why;
+      if (r?.code) {
+        const side = h.rows.filter((x) => x.t !== 'del');
+        out.suggestion = { start: side[0].n, end: side[side.length - 1].n, original: side.map((x) => x.text).join('\n'), code: r.code };
+      }
+      return out;
+    }),
     cached: false,
   };
 }

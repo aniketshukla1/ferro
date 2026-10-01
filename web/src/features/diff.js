@@ -133,6 +133,7 @@ const expandBtn = (cls, label, aria) => h('button', { class: `btn xs ${cls}`, 'a
 const banner = (kind, ic, action) => h('div', { class: `diff-banner ${kind}` }, icon(ic, 'sm'), h('span', { class: 'diff-banner-text' }), action);
 
 const KIND_LABEL = { added: 'Added', removed: 'Removed', changed: 'Changed' };
+const VERDICT_LABEL = { improve: 'Could be better', problem: 'Problem' };
 
 function createItem(type, layout) {
   switch (type) {
@@ -157,7 +158,7 @@ function createItem(type, layout) {
     case 'file-note':
     case 'hunk-note':
       // AI change notes (API.md § 10.8): one line; the full text is the tooltip.
-      return h('div', { class: `diff-note ${type}` }, h('span', { class: 'diff-note-kind' }), h('span', { class: 'diff-note-text' }));
+      return h('div', { class: `diff-note ${type}` }, h('span', { class: 'diff-note-kind' }), h('button', { class: 'diff-note-verdict', type: 'button' }), h('span', { class: 'diff-note-text' }));
     case 'too-large':
       return banner('too-large', 'alert', h('button', { class: 'btn sm diff-load-large-btn' }, 'Load diff'));
     case 'binary':
@@ -231,8 +232,15 @@ function updateItem(el, item, layout, findingsCtx) {
       const kind = q('.diff-note-kind');
       kind.textContent = item.type === 'file-note' ? '✦ AI' : KIND_LABEL[item.kind] || 'Changed';
       kind.className = `diff-note-kind ${item.kind || 'summary'}`;
-      q('.diff-note-text').textContent = item.note;
+      // The change's verdict (explain.js): a click opens why, and the suggested code.
+      const v = q('.diff-note-verdict');
+      v.textContent = VERDICT_LABEL[item.verdict] || '';
+      v.className = `diff-note-verdict ${item.verdict || ''}`;
+      v.hidden = !VERDICT_LABEL[item.verdict];
+      q('.diff-note-text').textContent = item.why ? `${item.note} ${item.why}` : item.note;
       el.title = item.note;
+      el.classList.toggle('has-more', !!item.why);
+      el.onclick = item.why ? () => bus.emit('ai:hunk', item) : null;
       break;
     }
     case 'too-large':
@@ -768,7 +776,7 @@ export function createDiffView(host, { onOpen } = {}) {
           action: hunkAction ? { label: hunkAction.label, run: () => hunkAction.run(f.path, hunk) } : null,
         });
         const note = nts?.hunks.get(`${f.path}\n${hunk.id}`);
-        if (note) items.push({ type: 'hunk-note', path: f.path, kind: note.kind, note: note.note });
+        if (note) items.push({ ...note, type: 'hunk-note', path: f.path, target: currentTarget });
         const onAddComment = (line, side, extend) => openComposerAt(f.path, line, side, extend);
         const push = (row) => {
           items.push({ ...row, type: 'diff-row', path: f.path, onAddComment });
