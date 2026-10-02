@@ -59,6 +59,7 @@ pub const FEATURES: &[&str] = &[
     "ai.review",
     "ai.commit",
     "ai.explain",
+    "ai.intent",
     "ai.edit",
     "harness",
     "git.hunk",

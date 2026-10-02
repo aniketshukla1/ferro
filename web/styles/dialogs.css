@@ -129,6 +129,30 @@ textarea.input { height: auto; min-height: 64px; padding: 6px 10px; resize: vert
 
 /* ask: conversation + composer (the composer sticks to the bottom of the inspector scroller) */
 .ask-panel { display: flex; flex-direction: column; gap: var(--sp-5); }
+
+/* Intent check (AI tab): what the change should do, then each requirement's status. */
+.intent { display: flex; flex-direction: column; gap: var(--sp-5); }
+.intent-text { min-height: 96px; resize: vertical; font-size: var(--fs-md); line-height: var(--lh); }
+.intent-bar { gap: var(--sp-4); align-items: center; }
+.intent-bar label { gap: var(--sp-3); align-items: center; white-space: nowrap; }
+.intent .link { text-align: left; }
+.intent-base { width: 128px; }
+.intent-out { display: flex; flex-direction: column; gap: var(--sp-4); }
+.intent-out:empty { display: none; }
+.intent-verdict { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-4); padding: var(--sp-4) var(--sp-5); border-radius: var(--r-md); border: 1px solid var(--border); }
+.intent-verdict.complete { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
+.intent-verdict.incomplete { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.intent-verdict.off-track { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.intent-summary { color: var(--fg-muted); font-size: var(--fs-sm); }
+.intent-label { margin-top: var(--sp-3); color: var(--fg-muted); font-size: var(--fs-xs); font-weight: 600; }
+.intent-list { display: flex; flex-direction: column; gap: var(--sp-4); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.intent-req { display: flex; gap: var(--sp-4); align-items: flex-start; }
+.intent-status { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 var(--sp-3); border-radius: var(--r-full); border: 1px solid; font-size: var(--fs-xs); font-weight: 600; }
+.intent-status.done { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+.intent-status.partial { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.intent-status.missing { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.intent-at { flex-wrap: wrap; gap: var(--sp-3); margin-top: var(--sp-2); }
+.intent-foot { gap: var(--sp-4); align-items: center; margin-top: var(--sp-3); }
 .ask-list { display: flex; flex-direction: column; gap: var(--sp-6); }
 .ask-empty { padding: var(--sp-8) var(--sp-4); }
 .ask-turn { display: flex; flex-direction: column; gap: var(--sp-4); font-size: var(--fs-md); line-height: var(--lh); min-width: 0; }

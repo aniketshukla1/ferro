@@ -11,6 +11,7 @@ pub mod files;
 pub mod git;
 pub mod harness;
 pub mod highlight;
+pub mod intent;
 pub mod jobs;
 pub mod lsp;
 pub mod markdown;
@@ -63,6 +64,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(markdown::routes())
         .merge(ai::routes())
         .merge(ai::review_routes())
+        .merge(intent::routes())
         .merge(highlight::routes())
         .merge(outline::routes())
         .merge(pr::routes())

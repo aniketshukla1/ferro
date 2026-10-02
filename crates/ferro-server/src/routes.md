@@ -44,6 +44,7 @@ records it. A new route must be listed here.
 | GET | `/api/v1/git/refs`, `/api/v1/git/show` | gap | `git.history` |
 | POST | `/api/v1/git/checkout`, `/api/v1/git/fetch` | gap | `git.history` |
 | POST | `/api/v1/ai/explain` | gap | `ai.explain` |
+| POST | `/api/v1/ai/intent` | intent | `ai.intent` |
 | POST | `/api/v1/ai/edit` (stream) | gap | `ai.edit` |
 | GET | `/api/v1/checks/breaking` | gap | `checks.breaking` |
 | GET | `/api/v1/checks/tests/plan` | gap | `checks.tests` |

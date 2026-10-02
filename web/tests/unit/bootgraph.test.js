@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const WEB = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SRC = join(WEB, 'src');
 const BUDGET_BYTES = 160 * 1024; // uncompressed, comments included (no build step); FRONTEND.md § 9
-const ON_DEMAND = ['features/palette.js', 'features/panels.js', 'features/find.js', 'features/settings.js', 'features/chrome.js', 'features/markdown.js', 'features/image.js', 'features/git.js', 'features/diff.js', 'features/review.js', 'features/ai.js', 'features/theme-notes.js', 'features/nav.js', 'features/agent.js', 'features/hud.js', 'features/tips.js', 'features/vim.js', 'features/threads.js', 'features/csv.js', 'features/problems.js', 'features/update.js', 'features/history.js', 'features/explain.js', 'features/checks.js', 'features/memory.js', 'features/repos.js', 'ui/dialog.js', 'core/match.js'];
+const ON_DEMAND = ['features/palette.js', 'features/panels.js', 'features/find.js', 'features/settings.js', 'features/chrome.js', 'features/markdown.js', 'features/image.js', 'features/git.js', 'features/diff.js', 'features/review.js', 'features/ai.js', 'features/theme-notes.js', 'features/nav.js', 'features/agent.js', 'features/hud.js', 'features/tips.js', 'features/vim.js', 'features/threads.js', 'features/csv.js', 'features/problems.js', 'features/update.js', 'features/history.js', 'features/explain.js', 'features/checks.js', 'features/memory.js', 'features/repos.js', 'features/intent.js', 'ui/dialog.js', 'core/match.js'];
 
 function staticImports(file) {
   const text = readFileSync(file, 'utf8');

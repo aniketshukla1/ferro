@@ -13,6 +13,7 @@ import { formatCount, formatMs, plural, basename } from '../core/util.js';
 import { icon } from '../ui/icons.js';
 import { toast } from '../ui/overlay.js';
 import { openDialog } from '../ui/dialog.js';
+import { createIntentPanel } from './intent.js';
 
 const SEV_ORDER = ['nit', 'low', 'medium', 'high'];
 const SEV_LABEL = { high: 'High', medium: 'Medium', low: 'Low', nit: 'Nit' };
@@ -23,7 +24,8 @@ const FOCUS_OPTIONS = [['bugs', 'Bugs'], ['security', 'Security'], ['performance
 export function renderAiTab(el, ctx = {}) {
   const seg = h('div', { class: 'seg ai-seg', role: 'group', 'aria-label': 'AI mode', hidden: true },
     h('button', { 'aria-pressed': 'true', 'data-mode': 'ask', on: { click: () => setMode('ask') } }, 'Ask'),
-    h('button', { 'aria-pressed': 'false', 'data-mode': 'review', on: { click: () => setMode('review') } }, 'Review'));
+    h('button', { 'aria-pressed': 'false', 'data-mode': 'review', on: { click: () => setMode('review') } }, 'Review'),
+    has('ai.intent') ? h('button', { 'aria-pressed': 'false', 'data-mode': 'intent', 'data-tip': 'Does the change do what it should?', on: { click: () => setMode('intent') } }, 'Intent') : null);
   const body = h('div', { class: 'ai-body' });
   mount(el, h('div', { class: 'ai-head' }, seg), body);
 
@@ -39,7 +41,9 @@ export function renderAiTab(el, ctx = {}) {
     if (panels) {
       panels.ask.el.hidden = mode !== 'ask';
       panels.review.el.hidden = mode !== 'review';
+      if (panels.intent) panels.intent.el.hidden = mode !== 'intent';
       if (mode === 'ask') panels.ask.focus();
+      if (mode === 'intent') panels.intent?.focus();
     }
   }
 
@@ -50,8 +54,9 @@ export function renderAiTab(el, ctx = {}) {
     if (!status?.configured) { renderSetupCard(body, status); return; }
     const ask = createAskPanel(ctx);
     const review = createReviewPanel(ctx, { onAskFollowup: (f) => { setMode('ask'); ask.prefillFromFinding(f); } });
-    panels = { ask, review };
-    mount(body, ask.el, review.el);
+    const intent = has('ai.intent') ? createIntentPanel(ctx) : null;
+    panels = { ask, review, intent };
+    mount(body, ask.el, review.el, intent?.el);
     seg.hidden = false;
     setMode(store.get('aiMode') || 'ask');
   })();

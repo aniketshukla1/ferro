@@ -26,7 +26,7 @@ const FEATURES = [
   'pr.open', 'review.drafts', 'review.viewed', 'review.rounds', 'review.submit', 'pr.threads', 'pr.conversation', 'markdown.render',
   'ai', 'ai.ask', 'ai.review', 'ai.commit',
   'symbols', 'nav', 'harness', 'git.hunk', 'harness.threads', 'lsp.diagnostics', 'update.auto', 'git.history', 'ai.explain', 'checks.breaking', 'checks.tests', 'checks.security', 'checks.coverage', 'memory',
-  'file.edit', 'ai.edit', 'memory.learn',
+  'file.edit', 'ai.edit', 'memory.learn', 'ai.intent',
 ];
 // Language-server diagnostics the mock reports once a file is opened (API.md § 4.9).
 const MOCK_DIAGNOSTICS = {
@@ -40,6 +40,24 @@ const MOCK_DIAGNOSTICS = {
 };
 const lspOpened = new Set();
 // Team review memory (API.md § 17): rules, and one suggestion from two earlier dismissals.
+// Intent check (intent.js): one requirement done, one partly, one missing.
+const MOCK_INTENT = {
+  verdict: 'incomplete',
+  summary: 'Ranks file-name prefix matches first; the depth penalty skips exact matches, and the old ranking is gone.',
+  counts: { done: 1, partial: 1, missing: 1 },
+  requirements: [
+    { text: 'Rank files whose name starts with the query first', status: 'done', evidence: [{ path: 'crates/ferro-core/src/fuzzy.rs', line: 118 }], note: 'A basename prefix bonus is added to the score.' },
+    { text: 'Penalize deeply nested paths', status: 'partial', evidence: [{ path: 'crates/ferro-core/src/fuzzy.rs', line: 131 }], note: 'The penalty is skipped for exact matches.' },
+    { text: 'Keep the old ranking behind a setting', status: 'missing', evidence: [], note: 'No setting reads the old ranking.' },
+  ],
+  unrequested: [{ path: 'crates/ferro-core/src/scan.rs', line: 44, what: 'Changes the scan buffer size' }],
+  edgeCases: [{ text: 'An empty query divides by zero in the depth penalty', path: 'crates/ferro-core/src/fuzzy.rs', line: 131 }, { text: 'Paths with a trailing slash count one level too deep' }],
+  tests: [{ text: 'A file-name prefix match outranks a deeper exact match', path: 'crates/ferro-core/tests/fuzzy_golden.rs' }, { text: 'An empty query returns every file in index order' }],
+  markdown: '### Intent check: 1 of 3 done\n\n- [x] Rank files whose name starts with the query first\n- [ ] Penalize deeply nested paths (partial)\n- [ ] Keep the old ranking behind a setting (missing)\n',
+  model: 'claude-sonnet-5',
+  cached: false,
+};
+
 const mockMemory = { team: [], personal: [], dismissed: [], learnedAt: null };
 // What "Learn from PRs" finds on the sample repository: two conventions, each with the review
 // comments behind it.
@@ -222,6 +240,19 @@ export function createMockServer(opts) {
 
   const routes = {
     'GET meta': () => meta(),
+    'POST ai/intent': (q, b) => {
+      if (!String(b?.intent || '').trim()) throw new ApiError(400, 'bad_request', 'describe what the change should do');
+      const id = `j_in_${Date.now().toString(36)}`;
+      const job = { id, kind: 'ai.intent', state: 'running', startedAt: new Date().toISOString(), progress: { stage: 'diff' } };
+      state.jobs = state.jobs || {};
+      state.jobs[id] = job;
+      const step = (ms, f) => setTimeout(() => { f(); emit('job', { ...job }); }, ms);
+      step(50, () => {});
+      step(150, () => { job.progress = { stage: 'context', files: 3 }; });
+      step(250, () => { job.progress = { stage: 'ai', files: 3, callers: 2 }; });
+      step(400, () => Object.assign(job, { state: 'done', progress: null, endedAt: new Date().toISOString(), result: { ...MOCK_INTENT, intent: b.intent, range: { base: b.base, target: b.target } } }));
+      return { job: { id, kind: 'ai.intent' } };
+    },
     'GET workspace/recent': () => ({
       items: state.recent.map((r) => ({ ...r, name: r.root.split('/').pop(), current: r.root === state.ws.root, git: true })),
     }),

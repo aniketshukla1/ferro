@@ -1157,3 +1157,107 @@ async fn team_memory_steers_and_filters_the_ai_review() {
         "{sent}"
     );
 }
+
+async fn run_intent(router: axum::Router, intent: &str) -> serde_json::Value {
+    let body =
+        serde_json::json!({ "intent": intent, "base": "HEAD", "target": "worktree" }).to_string();
+    let (s, v) = body_json(
+        router
+            .clone()
+            .oneshot(post("/api/v1/ai/intent", &body))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let id = v["job"]["id"].as_str().unwrap().to_string();
+    for _ in 0..100 {
+        let (_, j) = body_json(
+            router
+                .clone()
+                .oneshot(get(&format!("/api/v1/jobs/{id}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        if ["done", "failed", "cancelled"].contains(&j["state"].as_str().unwrap_or("")) {
+            return j;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("intent job never finished");
+}
+
+#[tokio::test]
+async fn intent_check_cites_only_changed_lines_and_is_cached() {
+    let answer = serde_json::json!({
+        "verdict": "complete",
+        "summary": "Adds the reset limit but not the expiry.",
+        "requirements": [
+            { "text": "Limit reset requests", "status": "done", "evidence": [{ "path": "a.txt", "line": 2 }, { "path": "a.txt", "line": 90 }], "note": "limit = 5" },
+            { "text": "Expire reset links", "status": "missing", "note": "No expiry anywhere." }
+        ],
+        "unrequested": [{ "path": "a.txt", "line": 3, "what": "Adds a debug print" }],
+        "edgeCases": [{ "text": "A limit of zero", "path": "a.txt", "line": 2 }],
+        "tests": [{ "text": "The sixth request in an hour is refused" }]
+    });
+    let mock = MockAnthropic::start(vec![(200, text_turn(&answer.to_string()))]).await;
+    let _env = WithAnthropic::at(&mock.url);
+    let (router, _st, _dir) = repo_with(&[(
+        "a.txt",
+        "one\nlimit = 5\nprint(\"debug\")\ntoken = ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+    )]);
+
+    // Nothing to check against: refused before any job starts.
+    let (s, _) = body_json(
+        router
+            .clone()
+            .oneshot(post(
+                "/api/v1/ai/intent",
+                r#"{"intent":"  ","base":"HEAD","target":"worktree"}"#,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let intent = "Limit password reset requests to 5 an hour, and expire reset links";
+    let j = run_intent(router.clone(), intent).await;
+    assert_eq!(j["state"], "done", "{j}");
+    let r = &j["result"];
+    assert_eq!(
+        r["verdict"], "incomplete",
+        "the model said complete, but a requirement is missing"
+    );
+    assert_eq!(
+        r["requirements"][0]["evidence"],
+        serde_json::json!([{ "path": "a.txt", "line": 2 }]),
+        "line 90 is not in the change"
+    );
+    assert_eq!(r["unrequested"][0]["what"], "Adds a debug print");
+    let md = r["markdown"].as_str().unwrap();
+    assert!(
+        md.contains("- [ ] Expire reset links (missing): No expiry anywhere."),
+        "{md}"
+    );
+    let sent = mock.bodies().join("\n");
+    assert!(
+        sent.contains("Limit password reset requests"),
+        "the description reaches the model"
+    );
+    assert!(
+        sent.contains("    2| limit = 5"),
+        "new-side lines are numbered: {sent}"
+    );
+    assert!(!sent.contains("ghp_aaaa"), "secrets are redacted: {sent}");
+
+    // The same change and description again: from the cache, with no second model call.
+    let j = run_intent(router, intent).await;
+    assert_eq!(
+        (j["state"].as_str(), j["result"]["cached"].as_bool()),
+        (Some("done"), Some(true)),
+        "{j}"
+    );
+    assert_eq!(mock.bodies().len(), 1);
+}
