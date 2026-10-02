@@ -10,6 +10,14 @@ async function palette(page, text) {
   await page.keyboard.press('Enter');
 }
 
+// Toasts stack over the foot of the inspector and stay while the pointer is on one. A click on a
+// button under one keeps landing on the toast, which then never leaves: clear them first. In the
+// page, so a toast timing out in the meantime cannot race the click.
+async function dismissToasts(page) {
+  await page.evaluate(() => document.querySelectorAll('.toast [aria-label="Dismiss"]').forEach((b) => b.click()));
+  await expect(page.locator('.toast')).toHaveCount(0);
+}
+
 test('ignoring a security finding creates a team rule that hides it', async ({ page }) => {
   await page.goto('/web/index.html?mock=1');
   await expect(page.locator('#app')).not.toHaveAttribute('aria-busy', 'true', { timeout: 10_000 });
@@ -24,6 +32,7 @@ test('ignoring a security finding creates a team rule that hides it', async ({ p
   await dialog.getByLabel(/My team/).check();
   await dialog.getByRole('button', { name: 'Save rule' }).click();
   await expect(sec.locator('.ck-status')).toHaveText('1 finding · 1 ignored');
+  await dismissToasts(page);
   await sec.getByRole('button', { name: 'Show 1 ignored finding' }).click();
   await expect(sec.locator('.ck-hidden .ck-item')).toContainText('ignored by team');
   await expect(sec.locator('.ck-hidden .ck-item')).toContainText('Ignored: rotated; kept as a revoked sample');
@@ -37,6 +46,7 @@ test('ignoring a security finding creates a team rule that hides it', async ({ p
   await expect(team.locator('.mem-head')).toHaveText('Team · 0');
   const mine = mem.locator('.mem-group').nth(1);
   await expect(mine.locator('.mem-head')).toHaveText('Just me · 1');
+  await dismissToasts(page);
   await mine.getByRole('button', { name: 'Delete' }).click();
   await page.getByRole('dialog', { name: 'Delete this rule?' }).getByRole('button', { name: 'Delete' }).click();
   await expect(mine.locator('.mem-head')).toHaveText('Just me · 0');
