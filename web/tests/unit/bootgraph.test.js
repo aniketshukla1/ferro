@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const WEB = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SRC = join(WEB, 'src');
 const BUDGET_BYTES = 160 * 1024; // uncompressed, comments included (no build step); FRONTEND.md § 9
-const ON_DEMAND = ['features/palette.js', 'features/panels.js', 'features/find.js', 'features/settings.js', 'features/chrome.js', 'features/markdown.js', 'features/image.js', 'features/git.js', 'features/diff.js', 'features/review.js', 'features/ai.js', 'features/theme-notes.js', 'features/nav.js', 'features/agent.js', 'features/hud.js', 'features/tips.js', 'features/vim.js', 'features/threads.js', 'features/csv.js', 'features/problems.js', 'features/update.js', 'features/history.js', 'features/explain.js', 'features/checks.js', 'features/memory.js', 'ui/dialog.js', 'core/match.js'];
+const ON_DEMAND = ['features/palette.js', 'features/panels.js', 'features/find.js', 'features/settings.js', 'features/chrome.js', 'features/markdown.js', 'features/image.js', 'features/git.js', 'features/diff.js', 'features/review.js', 'features/ai.js', 'features/theme-notes.js', 'features/nav.js', 'features/agent.js', 'features/hud.js', 'features/tips.js', 'features/vim.js', 'features/threads.js', 'features/csv.js', 'features/problems.js', 'features/update.js', 'features/history.js', 'features/explain.js', 'features/checks.js', 'features/memory.js', 'features/repos.js', 'ui/dialog.js', 'core/match.js'];
 
 function staticImports(file) {
   const text = readFileSync(file, 'utf8');
@@ -70,10 +70,11 @@ function shippedModules(dir = SRC, out = []) {
   return out;
 }
 
-// 512 KB → 528 KB on 2026-09-29 (the user's call) for inline edit, which loads on first use.
-test('total shipped web/src JS stays under 528 KB', () => {
+// 512 KB → 528 KB on 2026-09-29 (the user's call) for inline edit, which loads on first use;
+// 528 KB → 560 KB on 2026-10-02 (the user's call), starting with opening repositories.
+test('total shipped web/src JS stays under 560 KB', () => {
   const total = shippedModules().reduce((n, [, size]) => n + size, 0);
-  assert.ok(total <= 528 * 1024, `total shipped web/src is ${(total / 1024).toFixed(1)} KB`);
+  assert.ok(total <= 560 * 1024, `total shipped web/src is ${(total / 1024).toFixed(1)} KB`);
 });
 
 test('no shipped module is over 64 KB', () => {

@@ -22,7 +22,7 @@ const MOCK_SCHEMA = [
 
 const FEATURES = [
   'v1', 'events', 'settings', 'session', 'tree', 'file', 'hl.classes', 'hl.exact', 'markdown.v2', 'outline',
-  'jobs', 'workspace.open', 'metrics', 'fuzzy.v2', 'search.v2', 'search.regex', 'file.find', 'paths.resolve', 'git.status.v2', 'git.changes', 'git.diff', 'git.blob.lines', 'git.gutter', 'git.stage', 'git.unstage', 'git.discard', 'git.commit', 'git.push', 'git.pull', 'git.log', 'auth.logout',
+  'jobs', 'workspace.open', 'workspace.recent', 'metrics', 'fuzzy.v2', 'search.v2', 'search.regex', 'file.find', 'paths.resolve', 'git.status.v2', 'git.changes', 'git.diff', 'git.blob.lines', 'git.gutter', 'git.stage', 'git.unstage', 'git.discard', 'git.commit', 'git.push', 'git.pull', 'git.log', 'auth.logout',
   'pr.open', 'review.drafts', 'review.viewed', 'review.rounds', 'review.submit', 'pr.threads', 'pr.conversation', 'markdown.render',
   'ai', 'ai.ask', 'ai.review', 'ai.commit',
   'symbols', 'nav', 'harness', 'git.hunk', 'harness.threads', 'lsp.diagnostics', 'update.auto', 'git.history', 'ai.explain', 'checks.breaking', 'checks.tests', 'checks.security', 'checks.coverage', 'memory',
@@ -147,6 +147,9 @@ export function createMockServer(opts) {
     index: { state: 'indexing', files: 0, ms: 0, generation: 1, searchIndex: 'off' },
     settings: storage.get('ferro.mock.settings', {}),
     session: storage.get('ferro.mock.session', null),
+    // Opening a folder (repos.js): the mock keeps serving the same files under the new name.
+    ws: { root: '/Users/you/ferro', name: 'ferro', key: 'a1b2c3d4e5f60718' },
+    recent: ['/Users/you/ferro', '/Users/you/code/api', '/Users/you/code/web-app'].map((root, i) => ({ root, openedAt: 1790900000 - i * 3600 })),
   };
   const events = new Set();
   const emit = (type, data) => events.forEach((fn) => fn(type, data));
@@ -204,7 +207,7 @@ export function createMockServer(opts) {
 
   const meta = () => ({
     api: 1, specVersion: '1.0', version: '0.2.0-dev', host: 'cli', mode: 'workspace', readOnly: false,
-    workspace: { root: '/Users/you/ferro', name: 'ferro', key: 'a1b2c3d4e5f60718', git: true, branch: 'main', headSha: '9377e11a4c1f0f5d2d8b0a6f1e2d3c4b5a697886' },
+    workspace: { ...state.ws, git: true, branch: 'main', headSha: '9377e11a4c1f0f5d2d8b0a6f1e2d3c4b5a697886' },
     index: state.index,
     features: FEATURES,
     auth: { remember: true, rememberDays: 30 },
@@ -219,6 +222,20 @@ export function createMockServer(opts) {
 
   const routes = {
     'GET meta': () => meta(),
+    'GET workspace/recent': () => ({
+      items: state.recent.map((r) => ({ ...r, name: r.root.split('/').pop(), current: r.root === state.ws.root, git: true })),
+    }),
+    'POST workspace/open': (q, b) => {
+      const path = String(b?.path || '');
+      const root = path.startsWith('~/') ? `/Users/you/${path.slice(2)}` : path;
+      if (!root.startsWith('/')) throw new ApiError(400, 'bad_request', 'path must be absolute, or start with ~/');
+      if (/missing/.test(root)) throw new ApiError(404, 'not_found', `not a directory: ${path}`);
+      const name = root.split('/').filter(Boolean).pop() || root;
+      state.ws = { root, name, key: [...root].reduce((n, c) => (n * 31 + c.charCodeAt(0)) >>> 0, 7).toString(16).padStart(16, '0') };
+      state.recent = [{ root, openedAt: Math.floor(Date.now() / 1000) }, ...state.recent.filter((r) => r.root !== root)].slice(0, 20);
+      setTimeout(() => emit('workspace', { key: state.ws.key, root, mode: 'workspace' }), 0);
+      return { job: { id: `j_ws_${state.ws.key}`, kind: 'workspace.open' }, files: repo.entries.length, mode: 'workspace' };
+    },
     'GET settings': () => ({ scope: 'effective', values: state.settings, defaults: {} }),
     'PUT settings': (q, b) => {
       for (const [k, v] of Object.entries(b.values || {})) {

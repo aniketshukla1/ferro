@@ -222,6 +222,8 @@ pub async fn serve(
 ) -> ServerHandle {
     let (listener, bound) = bind_walk(&o.host, o.port).await;
     let state = build_state(root, dirs, host_kind, version);
+    // A folder ferro served is one "Open repository" offers again.
+    crate::recent::record(&state.dirs, &state.ws().root);
     serve_with(state, listener, bound, o).await
 }
 

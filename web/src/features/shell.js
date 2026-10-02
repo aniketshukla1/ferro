@@ -24,7 +24,7 @@ export function buildShell(root) {
       h('button', { class: 'brand', 'aria-label': 'ferro home', 'data-tip': 'Home', on: { click: () => execute('view.home') } }, brandMark()),
       sbToggle,
       h('span', { class: 'tb-divider', 'aria-hidden': 'true' }),
-      h('button', { class: 'ws-chip', 'data-tip': 'Go to file', 'data-keys': 'Mod+K', on: { click: () => execute('palette.files') } }, wsName, wsBranch)),
+      h('button', { class: 'ws-chip', 'data-tip': 'Open repository', 'data-keys': 'Mod+Alt+O', on: { click: () => execute('workspace.switch') } }, wsName, wsBranch)),
     h('button', {
       class: 'cmdbar',
       'aria-label': 'Search files, symbols and commands',

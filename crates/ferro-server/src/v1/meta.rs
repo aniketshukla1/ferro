@@ -22,6 +22,7 @@ pub const FEATURES: &[&str] = &[
     "outline",
     "jobs",
     "workspace.open",
+    "workspace.recent",
     "desktop",
     "metrics",
     "fuzzy.v2",

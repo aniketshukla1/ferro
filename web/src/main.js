@@ -1,6 +1,6 @@
 // ferro frontend entry: boot, feature wiring, commands and shortcuts.
-// Boot graph: shell, tree, tabs, code viewer, home, status bar. Everything else loads on first
-// use and is warmed up while the browser is idle (FRONTEND.md § 3.1).
+// Boot graph: shell, tree, tabs, code viewer, home, status bar. The rest loads on first use
+// and warms up while the browser is idle (FRONTEND.md § 3.1).
 import { h, mount } from './core/dom.js';
 import { api, has, request } from './core/api.js';
 import { store } from './core/store.js';
@@ -21,7 +21,7 @@ import { createTree } from './features/tree.js';
 import { createStatusBar } from './features/status.js';
 import { watchConnection } from './features/connection.js';
 
-// On-demand modules (same URL as the static import would use, so the module map dedupes them).
+// On-demand modules (static-import URLs, so the module map dedupes them).
 const load = {
   palette: lazy(() => import('./features/palette.js')),
   panels: lazy(() => import('./features/panels.js')),
@@ -43,6 +43,7 @@ const load = {
   explain: lazy(() => import('./features/explain.js')),
   checks: lazy(() => import('./features/checks.js')),
   memory: lazy(() => import('./features/memory.js')),
+  repos: lazy(() => import('./features/repos.js')),
   hud: lazy(() => import('./features/hud.js')),
   vim: lazy(() => import('./features/vim.js')),
 };
@@ -54,7 +55,7 @@ async function boot() {
   const root = document.getElementById('app');
   const params = new URLSearchParams(location.search);
   let mockMode = params.has('mock') ? (params.get('mock') || '1') : null;
-  // Release builds do not ship the mock backend: ?mock=1 then just uses the real server.
+  // Release builds ship no mock backend: there ?mock=1 just uses the real server.
   if (mockMode) await import('./mock/index.js').then((m) => m.installMock(mockMode), () => { mockMode = null; });
   installKeymap();
   installTooltips();
@@ -140,7 +141,7 @@ async function boot() {
   if (has('git.history')) shell.registerPanel({ id: 'history', title: 'History', icon: 'history', keys: ['Mod+Shift+H'], render: async (s) => { historyPanel = (await load.history()).renderHistoryPanel(s, historyCtx); }, onShow: ({ focus }) => { if (focus) historyPanel?.focus(); } });
   store.subscribe('git', (g) => changesPanel.setBadge(g ? g.counts.staged + g.counts.unstaged + g.counts.untracked : 0));
 
-  // Palette and find are created on first use; these proxies keep call sites synchronous-looking.
+  // Palette and find are created on first use, behind these proxies.
   const getPalette = lazy(async () => (await load.palette()).createPalette({ editor, onOpen }));
   const palette = { open: (...a) => getPalette().then((p) => p.open(...a)) };
   const getFind = lazy(async () => (await load.find()).createFind({ editor, host: shell.viewsEl }));
@@ -159,11 +160,11 @@ async function boot() {
     else d.hide();
   }));
 
-  // ---------- inspector (tabs render the first time the inspector is shown) ----------
+  // ---------- inspector (a tab renders when first shown) ----------
   const aiTab = shell.registerInspectorTab({ id: 'ai', title: 'AI', icon: 'sparkles', render: async (el) => (await load.ai()).renderAiTab(el, { editor, onOpen, getDiffView, peekDiffView: () => diffView }) });
   shell.registerInspectorTab({ id: 'info', title: 'Info', icon: 'info', render: async (el) => (await load.chrome()).renderInfoTab(el) });
 
-  // Code navigation (F5): the viewer reports positions; nav.js loads on first use.
+  // Code navigation (F5): the viewer reports positions; nav.js loads on use.
   const navCtx = {
     onOpen,
     pick: (title, items) => palette.open('', { special: 'pick', title, items }),
@@ -172,7 +173,7 @@ async function boot() {
   // Agent threads (API.md § 10.7): saved conversations with the coding agent.
   const threadsTab = has('harness.threads') ? shell.registerInspectorTab({ id: 'threads', title: 'Agent', icon: 'terminal', render: async (el) => (await load.threads()).renderThreadsTab(el, { editor, onOpen, getDiffView }) }) : null;
   bus.on('threads:open', () => { shell.toggleInspector(true); threadsTab?.show(); });
-  // Problems (API.md § 4.9): language-server diagnostics; problems.js keeps them in sync.
+  // Problems (API.md § 4.9): language-server diagnostics, synced by problems.js.
   const problemsTab = has('lsp.diagnostics') ? shell.registerInspectorTab({ id: 'problems', title: 'Problems', icon: 'alert', render: async (el) => (await load.problems()).renderProblemsTab(el, { onOpen }) }) : null;
   if (problemsTab) load.problems().then((m) => m.installProblems({ editor }));
   bus.on('problems:show', () => { shell.toggleInspector(true); problemsTab?.show(); });
@@ -193,7 +194,7 @@ async function boot() {
 
   registerCommands({ shell, editor, palette, find, getTree: () => tree, getSearch: () => search, aiTab, nav, getDiffView, historyCtx });
 
-  // Narrow screens start with the sidebar closed (in memory only, not saved).
+  // Narrow screens start with the sidebar closed (not saved).
   if (narrow.matches) session.data.layout.sidebar = false;
   shell.applyLayout();
   editor.restore(session.data);
@@ -228,7 +229,7 @@ async function boot() {
     if (v?.['ui.codeFontSize'] !== codeFs) { codeFs = v?.['ui.codeFontSize']; editor.resetViews(); }
   });
 
-  // Keep the tree on the active file (only scrolls when the row is off-screen). ui.autoReveal: false opts out.
+  // Keep the tree on the active file (scrolls only if off-screen); ui.autoReveal: false opts out.
   store.subscribe('active', (p) => {
     if (p && autoReveal()) bus.emit('tree:reveal', { path: p, align: 'auto' });
   });
@@ -276,7 +277,7 @@ function showOffline(root, e) {
 function registerCommands({ shell, editor, palette, find, getTree, getSearch, aiTab, nav, getDiffView, historyCtx }) {
   const hasFile = () => !!editor.active;
   const codeView = () => editor.activeView();
-  // Find works on source text; in the Markdown preview the browser's own find stays available.
+  // Find works on source text; the Markdown preview keeps the browser's own find.
   const findable = () => { const v = codeView(); return v?.kind === 'code' || (!!v?.sourceView && v.mode === 'source'); };
   command({ id: 'find.open', title: 'Find in File', category: 'File', icon: 'search', keys: ['Mod+F'], when: findable, run: () => find.open() });
   command({ id: 'find.next', title: 'Find Next', category: 'File', icon: 'arrow-down', keys: ['F3'], when: findable, run: () => find.next() });
@@ -334,7 +335,7 @@ function registerCommands({ shell, editor, palette, find, getTree, getSearch, ai
   command({ id: 'edit.inline', title: 'Edit Lines', category: 'File', icon: 'pencil', keys: ['Alt+I'], when: editable, run: () => inline(false) });
   command({ id: 'edit.ai', title: 'Edit Lines with AI…', category: 'AI', icon: 'sparkles', keys: ['Alt+K'], when: () => editable() && has('ai.edit'), run: () => inline(true) });
   bus.on('view:select', () => { if (editable()) load.inlineEdit().then((m) => m.offerBar(editor)); });
-  // Background updates (API.md § 13): state in store 'update'; update.js acts on it.
+  // Background updates (API.md § 13): store 'update', acted on by update.js.
   if (has('update.auto')) {
     bus.on('ev:update', (st) => store.set('update', { ...store.get('update'), ...st }));
     whenIdle(() => request('update').then((st) => store.set('update', st)).catch(() => {}));
@@ -355,7 +356,7 @@ function registerCommands({ shell, editor, palette, find, getTree, getSearch, ai
   command({ id: 'ai.ask', title: 'Ask AI', category: 'AI', icon: 'sparkles', keys: ['Mod+I'], run: () => { store.set('aiMode', 'ask'); shell.toggleInspector(true); aiTab.show(); } });
 
   // Security: sign-out is immediate for this browser; "all browsers" goes through
-  // Settings → Security, which explains it and asks for a second click.
+  // Settings → Security, which asks for a second click.
   const canSignOut = () => has('auth.logout');
   command({
     id: 'auth.logout', title: 'Sign Out of This Browser', category: 'Security', icon: 'lock', when: canSignOut,
@@ -384,6 +385,7 @@ function registerCommands({ shell, editor, palette, find, getTree, getSearch, ai
   command({ id: 'copy.path', title: 'Copy Path', category: 'File', icon: 'copy', when: hasFile, run: () => chrome('copyPath', editor.active) });
 
   // Workspace
+  command({ id: 'workspace.switch', title: 'Open Repository…', category: 'Workspace', icon: 'folder-open', keys: ['Mod+Alt+O'], run: () => load.repos().then((m) => m.open(palette)) });
   command({ id: 'index.rebuild', title: 'Rebuild File Index', category: 'Workspace', icon: 'refresh', keys: ['Mod+Shift+R'], run: () => chrome('rebuildIndex', getTree()) });
   command({ id: 'pr.open', title: 'Open Pull Request…', category: 'Review', icon: 'git-pull-request', run: (url) => load.chrome().then((m) => m.openPullRequest(url)) });
 }

@@ -74,7 +74,8 @@ impl FerroDirs {
     }
 }
 
-fn home_dir() -> PathBuf {
+/// The user's home directory (`HOME`, else `USERPROFILE`; the temp dir as a last resort).
+pub fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map(PathBuf::from)

@@ -26,6 +26,7 @@ records it. A new route must be listed here.
 | GET/POST | `/api/v1/jobs`, `/api/v1/jobs/{id}`, `/api/v1/jobs/{id}/cancel` | B1 | `jobs` |
 | POST | `/api/v1/index/rebuild` | B1 | `jobs` |
 | POST | `/api/v1/workspace/open` | B1 | `workspace.open` |
+| GET | `/api/v1/workspace/recent` | repos | `workspace.recent` |
 | POST | `/api/v1/desktop/pick-folder`, `/api/v1/desktop/open-external` | B1 | `desktop` |
 | GET | `/api/v1/metrics` | B1 | `metrics` |
 | GET | `/api/v1/fuzzy` | B2a | `fuzzy.v2` |

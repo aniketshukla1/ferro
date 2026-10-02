@@ -13,6 +13,7 @@ pub mod lines;
 pub mod lsp;
 pub mod mcp;
 pub mod read_only;
+pub mod recent;
 pub mod server;
 pub mod state;
 pub mod tls;
