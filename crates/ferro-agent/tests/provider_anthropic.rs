@@ -6,6 +6,8 @@ use ferro_agent::provider_v2::*;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+/// Tests run on parallel threads of one process: every change to ANTHROPIC_API_KEY
+/// happens under this lock (in `Mock::client`, which also restores it).
 static API_KEY_ENV: Mutex<()> = Mutex::new(());
 
 struct Mock {
@@ -97,7 +99,8 @@ impl Mock {
     }
 
     fn client(&self) -> Anthropic {
-        let _guard = API_KEY_ENV.lock().unwrap();
+        // One test panicking here must not fail every other test with a poisoned lock.
+        let _guard = API_KEY_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var_os("ANTHROPIC_API_KEY");
         std::env::set_var("ANTHROPIC_API_KEY", "test-key");
         let client =
@@ -386,7 +389,6 @@ async fn a_stream_cut_before_its_stop_is_not_a_turn() {
     let m = Mock::start(vec![(200, early, 1), (200, ok, 1)]).await;
     let (out, _) = run(&m.client(), req("q")).await;
     assert_eq!(out.text, "whole");
-    std::env::remove_var("ANTHROPIC_API_KEY");
 }
 
 #[tokio::test]
@@ -414,7 +416,6 @@ async fn a_mid_output_fallback_drops_the_declined_partial() {
         out.blocks
     );
     assert!(matches!(out.blocks.last(), Some(TurnBlock::Text(t)) if t == "answer"));
-    std::env::remove_var("ANTHROPIC_API_KEY");
 }
 
 #[tokio::test]
@@ -430,7 +431,6 @@ async fn fallbacks_stay_off_custom_endpoints() {
     let raw = m.recorded().join("\n");
     assert!(!raw.contains("\"fallbacks\""), "{raw}");
     assert!(!raw.contains("server-side-fallback"), "{raw}");
-    std::env::remove_var("ANTHROPIC_API_KEY");
 }
 
 /// Recorded review run (B5 acceptance): the mock speaks a full review turn
