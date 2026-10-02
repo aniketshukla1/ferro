@@ -18,30 +18,45 @@ async function putSettings(page, values) {
 }
 
 test.describe('Milestone F6 (Polish)', () => {
-  test('settings JSON editor validates, saves, and resets removed keys (mock)', async ({ page }) => {
+  test('settings JSON editor: each section has its own JSON; validates, saves, and resets removed keys (mock)', async ({ page }) => {
     await boot(page);
-    await putSettings(page, { 'ui.autoReveal': false });
+    await putSettings(page, { 'ui.autoReveal': false, 'ui.codeFontSize': 14, 'ui.fileIconColors': true });
     await page.keyboard.press('ControlOrMeta+Comma');
     const dialog = page.locator('.settings-dialog');
+    const section = (name) => dialog.locator('.set-nav button', { hasText: name }).click();
     await dialog.locator('.set-json-btn').click();
     const ta = dialog.locator('.set-json');
+    // Appearance: only its own keys.
+    await expect(ta).toHaveValue(/"ui.codeFontSize": 14/);
+    await expect(ta).not.toHaveValue(/ui.autoReveal/);
+    // Another section shows its own JSON (it used to keep showing the first one).
+    await section('Editor');
     await expect(ta).toHaveValue(/"ui.autoReveal": false/);
+    await expect(ta).not.toHaveValue(/ui.codeFontSize/);
 
-    await ta.fill('{ "ui.codeFontSize": 99 }');
-    await expect(dialog.locator('.set-json-problems li.error')).toContainText('ui.codeFontSize');
+    await ta.fill('{ "ui.diffLayout": "sideways" }');
+    await expect(dialog.locator('.set-json-problems li.error')).toContainText('ui.diffLayout');
     await expect(dialog.locator('.set-json-actions button', { hasText: 'Save' })).toBeDisabled();
 
-    await ta.fill('{ "ui.codeFontSize": 15, "not.a.key": 1 ');
+    await ta.fill('{ "ui.wrap": true, "not.a.key": 1 ');
     await expect(dialog.locator('.set-json-problems li.error')).toBeVisible(); // JSON syntax error
 
-    await ta.fill('{ "ui.codeFontSize": 15, "made.up": true }');
-    await expect(dialog.locator('.set-json-problems li.warn')).toContainText('made.up');
+    // Unsaved edits wait while you look at another section.
+    await ta.fill('{ "ui.wrap": true, "ui.codeFontSize": 15, "made.up": true }');
+    await section('Appearance');
+    await expect(ta).toHaveValue(/"ui.codeFontSize": 14/);
+    await section('Editor');
+    await expect(ta).toHaveValue(/"made.up": true/);
+    await expect(dialog.locator('.set-json-problems li.warn', { hasText: 'made.up' })).toBeVisible();
+    await expect(dialog.locator('.set-json-problems li.warn', { hasText: 'ui.codeFontSize' })).toContainText('Appearance setting');
     await dialog.locator('.set-json-actions button', { hasText: 'Save' }).click();
-    await expect(page.locator('.toast', { hasText: /Saved 3 changes/ })).toBeVisible();
-    // Font size applied live; the removed key went back to its default.
+    await expect(page.locator('.toast', { hasText: /Saved 4 changes/ })).toBeVisible();
+    // Font size applied live; the removed key went back to its default; other sections kept theirs.
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--code-fs').trim())).toBe('15px');
     const s = await page.evaluate(async () => (await import('/web/src/core/store.js')).store.get('settings'));
     expect(s['ui.autoReveal']).toBeUndefined();
+    expect(s['ui.wrap']).toBe(true);
+    expect(s['ui.fileIconColors']).toBe(true);
   });
 
   test('ui.* keys: line height, ruler, wrap by default, diff layout (mock)', async ({ page }) => {

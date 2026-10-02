@@ -143,6 +143,7 @@ export async function openSettings({ section = 'appearance' } = {}) {
   const present = new Set(defs.map((d) => d.section));
   const sections = SECTIONS.filter(([id]) => present.has(id));
   for (const d of defs) if (!SECTIONS.some(([id]) => id === d.section) && !sections.some(([id]) => id === d.section)) sections.push([d.section, d.section[0].toUpperCase() + d.section.slice(1), 'sliders']);
+  const titleOf = (id) => sections.find(([s]) => s === id)?.[1];
 
   const filter = h('input', { class: 'input', type: 'search', placeholder: 'Search settings', 'aria-label': 'Search settings' });
   const navList = h('div', { class: 'col' });
@@ -247,19 +248,21 @@ export async function openSettings({ section = 'appearance' } = {}) {
     return !q || `${d.key} ${d.title} ${d.description || ''}`.toLowerCase().includes(q);
   }
 
-  // ---------- raw JSON (§ 6.16): the explicit values of the current scope ----------
+  // ---------- raw JSON (§ 6.16): the explicit values on view, in the current scope ----------
   let jsonMode = false;
   const byKey = new Map(defs.map((d) => [d.key, d]));
-  const jsonBtn = h('button', { class: 'btn ghost sm set-json-btn', 'aria-pressed': 'false', on: { click: () => { jsonMode = !jsonMode; jsonBtn.setAttribute('aria-pressed', String(jsonMode)); renderMain(); } } }, icon('braces', 'sm'), 'Edit as JSON');
+  const drafts = new Map(); // unsaved JSON per scope and view
+  const jsonBtn = h('button', { class: 'btn ghost sm set-json-btn', 'aria-pressed': 'false', on: { click: () => { jsonMode = !jsonMode; jsonBtn.setAttribute('aria-pressed', String(jsonMode)); renderMain(); main.querySelector('.set-json')?.focus(); } } }, icon('braces', 'sm'), 'Edit as JSON');
 
   /** Problems with a parsed settings object for this scope: [{ key, level: 'error'|'warn', msg }]. */
-  function validate(obj) {
+  function validate(obj, keys) {
     const out = [];
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return [{ key: '', level: 'error', msg: 'The top level must be an object of "key": value pairs.' }];
     const themes = new Set(['auto', ...THEMES.map((t) => t.id)]);
     for (const [k, v] of Object.entries(obj)) {
       const d = byKey.get(k);
       if (!d || d.type === 'security') { out.push({ key: k, level: 'warn', msg: 'Unknown key; saved as is.' }); continue; }
+      if (!keys.has(k)) out.push({ key: k, level: 'warn', msg: `${titleOf(d.section)} setting; saved there.` });
       if (d.scopes && !d.scopes.includes(scope)) out.push({ key: k, level: 'error', msg: `Only allowed in ${d.scopes.join(' or ')} scope.` });
       if (v === null) continue;
       const bad = (want) => out.push({ key: k, level: 'error', msg: `Expected ${want}.` });
@@ -273,10 +276,13 @@ export async function openSettings({ section = 'appearance' } = {}) {
     return out;
   }
 
-  function jsonEditor() {
-    const sorted = Object.fromEntries(Object.keys(scoped).sort().map((k) => [k, scoped[k]]));
-    const ta = h('textarea', { class: 'input mono set-json', spellcheck: 'false', 'aria-label': `Settings JSON, ${scope} scope`, rows: '16' });
-    ta.value = JSON.stringify(sorted, null, 2);
+  function jsonEditor(list, what, q) {
+    const view = `${scope}|${q || current}`;
+    const keys = new Set(list.map((d) => d.key));
+    const mine = Object.keys(scoped).filter((k) => keys.has(k) || (q && !byKey.has(k) && k.includes(q))).sort();
+    const sorted = Object.fromEntries(mine.map((k) => [k, scoped[k]]));
+    const ta = h('textarea', { class: 'input mono set-json', spellcheck: 'false', 'aria-label': `Settings JSON, ${what}, ${scope} scope`, rows: '16' });
+    ta.value = drafts.get(view) ?? JSON.stringify(sorted, null, 2);
     const problems = h('ul', { class: 'set-json-problems', 'aria-live': 'polite' });
     const saveBtn = h('button', { class: 'btn primary sm', on: { click: () => saveJson() } }, 'Save');
     let parsed = sorted;
@@ -284,7 +290,7 @@ export async function openSettings({ section = 'appearance' } = {}) {
       let list;
       try {
         parsed = JSON.parse(ta.value || '{}');
-        list = validate(parsed);
+        list = validate(parsed, keys);
       } catch (e) {
         parsed = null;
         list = [{ key: '', level: 'error', msg: e.message }];
@@ -295,7 +301,7 @@ export async function openSettings({ section = 'appearance' } = {}) {
     async function saveJson() {
       if (saveBtn.disabled) return;
       const values = {};
-      for (const k of Object.keys(scoped)) if (!(k in parsed)) values[k] = null; // removed: back to default
+      for (const k of mine) if (!(k in parsed)) values[k] = null; // removed: back to default
       for (const [k, v] of Object.entries(parsed)) if (JSON.stringify(scoped[k]) !== JSON.stringify(v)) values[k] = v;
       const n = Object.keys(values).length;
       if (!n) { toast({ title: 'No changes to save', timeout: 1500 }); return; }
@@ -304,6 +310,7 @@ export async function openSettings({ section = 'appearance' } = {}) {
         effective = res.values || effective;
         store.set('settings', effective);
         scoped = (await api.settings(scope)).values || {};
+        drafts.delete(view);
         toast({ kind: 'ok', title: `Saved ${n} ${n === 1 ? 'change' : 'changes'}`, timeout: 1500 });
         renderNav();
         renderMain();
@@ -312,25 +319,27 @@ export async function openSettings({ section = 'appearance' } = {}) {
       }
     }
     ta.addEventListener('input', debounce(check, 150));
+    ta.addEventListener('input', () => drafts.set(view, ta.value));
     ta.addEventListener('keydown', (e) => { if (e.key === 's' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); check(); saveJson(); } });
     check();
     return h('div', { class: 'set-json-wrap' },
-      h('p', { class: 'f-desc' }, `Only values set in the ${scope} scope. Removing a key resets it to its default.`),
+      h('p', { class: 'f-desc' }, `${what} set in the ${scope} scope. Removing a key resets it to its default.`),
       ta, problems,
-      h('div', { class: 'row set-json-actions' }, saveBtn, h('button', { class: 'btn ghost sm', on: { click: () => renderMain() } }, 'Discard edits')));
+      h('div', { class: 'row set-json-actions' }, saveBtn, h('button', { class: 'btn ghost sm', on: { click: () => { drafts.delete(view); renderMain(); } } }, 'Discard edits')));
   }
 
   let gallery = null;
   function renderMain() {
     const q = filter.value.trim();
-    if (jsonMode) {
-      mount(main, h('div', { class: 'set-scope' }, h('span', null, 'Editing'), scopeSeg, h('span', { class: 'grow' }, 'scope as JSON'), jsonBtn), jsonEditor());
-      main.querySelector('.set-json')?.focus();
+    const list = defs.filter((d) => (q ? matchesFilter(d) : d.section === current));
+    const stored = list.filter((d) => d.type !== 'security');
+    if (jsonMode && stored.length) {
+      const what = q ? `Settings matching “${q}”` : `${titleOf(current)} settings`;
+      mount(main, h('div', { class: 'set-scope' }, h('span', null, 'Editing'), scopeSeg, h('span', { class: 'grow' }, 'scope as JSON'), jsonBtn), jsonEditor(stored, what, q));
       return;
     }
-    const list = defs.filter((d) => (q ? matchesFilter(d) : d.section === current));
     // Security holds actions, not stored settings: no scope switch there.
-    const out = list.some((d) => d.type !== 'security')
+    const out = stored.length
       ? [h('div', { class: 'set-scope' }, h('span', null, 'Saving to'), scopeSeg,
         h('span', { class: 'grow' }, scope === 'user' ? 'for every workspace' : 'for this workspace only'), jsonBtn)]
       : [];
@@ -339,7 +348,7 @@ export async function openSettings({ section = 'appearance' } = {}) {
     for (const d of list) {
       if (q && d.section !== lastSection) {
         lastSection = d.section;
-        out.push(h('h3', { class: 'label' }, sections.find(([id]) => id === d.section)?.[1] || d.section));
+        out.push(h('h3', { class: 'label' }, titleOf(d.section) || d.section));
       }
       if (d.type === 'theme') {
         gallery = themeGallery();
