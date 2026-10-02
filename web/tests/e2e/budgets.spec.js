@@ -114,9 +114,15 @@ test.describe('Performance Budgets (§ 9)', () => {
     // "First paint" is only meaningful on a cold load (per-file diffs get cached
     // after the first open), so each sample reloads the page for a true cold measurement
     // rather than re-emitting diff:open against the same warm .diff-view instance.
+    // WebKit on Linux CI once failed one of these reloads with "WebKit encountered an internal
+    // error": the engine, not the page under test. That navigation gets one more try.
+    const reload = () => page.goto('/web/index.html?mock=1').catch((e) => {
+      if (!/WebKit encountered an internal error/.test(e.message)) throw e;
+      return page.goto('/web/index.html?mock=1');
+    });
     const firstPaintSamples = [];
     for (let i = 0; i < 5; i++) {
-      await page.goto('/web/index.html?mock=1');
+      await reload();
       await expect(page.locator('#app')).not.toHaveAttribute('aria-busy', 'true', { timeout: 10_000 });
 
       await page.evaluate(async () => {
