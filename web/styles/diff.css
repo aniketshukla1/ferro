@@ -239,7 +239,7 @@
 
 .diff-toolbar-left {
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   align-items: center;
   gap: var(--sp-4);
@@ -249,13 +249,17 @@
 
 .diff-toolbar-info { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* The buttons keep their size; the info on the left gives way first. */
+/* The buttons keep their size; the info on the left gives way first. Past that the buttons
+   scroll sideways, and the close button stays in view. */
 .diff-toolbar-right {
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
   align-items: center;
   gap: var(--sp-2);
 }
+.diff-toolbar-right > *, .diff-close-btn { flex: none; }
 
 /* A narrow toolbar: Checks and Explain keep their icon, Whitespace becomes ¶ (names and tooltips stay). */
 .diff-toolbar .lbl-short { display: none; }

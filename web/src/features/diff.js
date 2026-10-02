@@ -505,7 +505,7 @@ export function createDiffView(host, { onOpen } = {}) {
   }, icon('x', 'sm'));
   mount(toolbar,
     h('div', { class: 'diff-toolbar-left' }, infoSpan),
-    h('div', { class: 'diff-toolbar-right' }, checksBtn, explainBtn, h('div', { class: 'btn-group' }, splitBtn, unifiedBtn), wsBtn, closeBtn));
+    h('div', { class: 'diff-toolbar-right' }, checksBtn, explainBtn, h('div', { class: 'btn-group' }, splitBtn, unifiedBtn), wsBtn), closeBtn);
 
   function setLayout(next) {
     layout = next;

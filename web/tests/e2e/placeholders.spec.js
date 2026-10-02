@@ -54,6 +54,33 @@ test.describe('Milestone F2 (Changes, Git Panel & Diff View)', () => {
     await expect.poll(async () => page.evaluate(() => document.querySelector('.diff-scroller').__vl.count)).toBeGreaterThan(itemsCountBefore);
   });
 
+  test('F2: the diff toolbar stays on one row, close button in view, however narrow', async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 700 });
+    await page.goto('/web/index.html?mock=1');
+    await expect(page.locator('#app')).not.toHaveAttribute('aria-busy', 'true', { timeout: 10_000 });
+    await page.locator('.sw-btn[aria-label="Changes"]').click();
+    await page.locator('.git-file-row', { hasText: 'search.rs' }).click();
+    const bar = page.locator('.diff-view .diff-toolbar');
+    await expect(bar).toBeVisible();
+
+    // With the sidebar and the inspector open, 900 px leaves the diff under 300 px, 800 px under 200 px.
+    await page.locator('#insp-toggle').click();
+    for (const [width, under] of [[900, 300], [800, 200]]) {
+      await page.setViewportSize({ width, height: 700 });
+      await expect.poll(() => bar.evaluate((el) => el.offsetWidth)).toBeLessThan(under);
+      expect(await bar.evaluate((el) => {
+        const box = el.getBoundingClientRect();
+        const close = el.querySelector('.diff-close-btn').getBoundingClientRect();
+        const tops = [...el.querySelectorAll('button')].filter((b) => b.offsetWidth).map((b) => Math.round(b.getBoundingClientRect().top));
+        return { rows: new Set(tops).size, closeInView: close.left >= box.left && close.right <= box.right };
+      })).toEqual({ rows: 1, closeInView: true });
+    }
+    // Labels give way to icons; every button keeps its name.
+    for (const name of ['Checks', 'Explain', 'Split', 'Unified', 'Whitespace', 'Back to editor']) {
+      await expect(bar.getByRole('button', { name, exact: true })).toBeAttached();
+    }
+  });
+
   test('F2: file header actions, collapse, viewed status, and keyboard shortcuts', async ({ page }) => {
     await page.goto('/web/index.html?mock=1');
     await expect(page.locator('#app')).not.toHaveAttribute('aria-busy', 'true', { timeout: 10_000 });
