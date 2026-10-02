@@ -224,6 +224,7 @@
 }
 
 .diff-toolbar {
+  container-type: inline-size;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -238,17 +239,42 @@
 
 .diff-toolbar-left {
   display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
   align-items: center;
   gap: var(--sp-4);
   color: var(--fg-muted);
   overflow: hidden;
 }
 
+.diff-toolbar-info { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The buttons keep their size; the info on the left gives way first. */
 .diff-toolbar-right {
   display: flex;
+  flex: none;
   align-items: center;
   gap: var(--sp-2);
 }
+
+/* A narrow toolbar: Checks and Explain keep their icon, Whitespace becomes ¶ (names and tooltips stay). */
+.diff-toolbar .lbl-short { display: none; }
+@container (max-width: 600px) {
+  .diff-toolbar-right .lbl { display: none; }
+}
+@container (max-width: 420px) {
+  .diff-toolbar-right .lbl-ws { display: none; }
+  .diff-toolbar-right .lbl-short { display: inline; }
+}
+.diff-ws-btn[aria-pressed="true"] { background: color-mix(in srgb, var(--bg-2) 100%, var(--fg) 14%); font-weight: 600; }
+
+/* Segmented control: one row, the chosen option shows pressed. */
+.btn-group { display: inline-flex; flex: none; }
+.btn-group > .btn { border-radius: 0; }
+.btn-group > .btn:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.btn-group > .btn:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.btn-group > .btn + .btn { margin-left: -1px; }
+.btn-group > .btn.active, .btn-group > .btn[aria-pressed="true"] { position: relative; z-index: 1; background: color-mix(in srgb, var(--bg-2) 100%, var(--fg) 14%); color: var(--fg); font-weight: 600; }
 
 .diff-scroller {
   flex: 1;

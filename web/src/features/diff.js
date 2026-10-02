@@ -489,12 +489,14 @@ export function createDiffView(host, { onOpen } = {}) {
 
   // Toolbar
   const infoSpan = h('span', { class: 'diff-toolbar-info' });
-  const layoutBtn = (name, label) => h('button', { class: `btn sm diff-layout-btn${layout === name ? ' active' : ''}`, 'data-layout': name, on: { click: () => setLayout(name) } }, label);
+  const layoutBtn = (name, label) => h('button', { class: `btn sm diff-layout-btn${layout === name ? ' active' : ''}`, 'aria-pressed': String(layout === name), 'data-layout': name, on: { click: () => setLayout(name) } }, label);
   const splitBtn = layoutBtn('split', 'Split');
   const unifiedBtn = layoutBtn('unified', 'Unified');
-  const wsBtn = h('button', { class: 'btn sm diff-ws-btn', on: { click: toggleWs } }, 'Whitespace');
-  const checksBtn = h('button', { class: 'btn sm diff-checks-btn', hidden: !has('checks.breaking'), 'data-tip': 'Breaking changes, tests, security, coverage for this diff', on: { click: () => bus.emit('checks:open') } }, icon('check-circle', 'sm'), 'Checks');
-  const explainBtn = h('button', { class: 'btn sm diff-explain-btn', hidden: !has('ai.explain'), 'data-tip': 'AI notes on what each change does', on: { click: () => bus.emit('ai:explain') } }, icon('sparkles', 'sm'), 'Explain');
+  const wsBtn = h('button', { class: 'btn sm diff-ws-btn', 'aria-pressed': 'false', 'aria-label': 'Whitespace', 'data-tip': 'Ignore whitespace-only changes', on: { click: toggleWs } },
+    h('span', { class: 'lbl-ws' }, 'Whitespace'), h('span', { class: 'lbl-short', 'aria-hidden': 'true' }, '¶'));
+  // Labels are dropped on a narrow toolbar (diff.css); the aria-label keeps the name.
+  const checksBtn = h('button', { class: 'btn sm diff-checks-btn', hidden: !has('checks.breaking'), 'aria-label': 'Checks', 'data-tip': 'Breaking changes, tests, security, coverage for this diff', on: { click: () => bus.emit('checks:open') } }, icon('check-circle', 'sm'), h('span', { class: 'lbl' }, 'Checks'));
+  const explainBtn = h('button', { class: 'btn sm diff-explain-btn', hidden: !has('ai.explain'), 'aria-label': 'Explain', 'data-tip': 'AI notes on what each change does', on: { click: () => bus.emit('ai:explain') } }, icon('sparkles', 'sm'), h('span', { class: 'lbl' }, 'Explain'));
   const closeBtn = h('button', {
     class: 'icon-btn sm diff-close-btn',
     'aria-label': 'Back to editor',
@@ -509,6 +511,8 @@ export function createDiffView(host, { onOpen } = {}) {
     layout = next;
     splitBtn.classList.toggle('active', layout === 'split');
     unifiedBtn.classList.toggle('active', layout === 'unified');
+    splitBtn.setAttribute('aria-pressed', String(layout === 'split'));
+    unifiedBtn.setAttribute('aria-pressed', String(layout === 'unified'));
     if (store.get('settings')?.['ui.diffLayout'] !== layout) {
       store.update('settings', (s) => ({ ...s, 'ui.diffLayout': layout }));
       request('settings', { method: 'PUT', query: { scope: 'user' }, body: { values: { 'ui.diffLayout': layout } } }).catch(() => {});
@@ -524,6 +528,7 @@ export function createDiffView(host, { onOpen } = {}) {
   async function toggleWs() {
     ignoreWs = !ignoreWs;
     wsBtn.classList.toggle('active', ignoreWs);
+    wsBtn.setAttribute('aria-pressed', String(ignoreWs));
     await loadChanges(currentBase, targetScrollPath);
   }
 
