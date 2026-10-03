@@ -59,3 +59,7 @@ opt-level = 3
 opt-level = "s"
 [profile.release.package.ferro-forge]
 opt-level = "s"
+# The server's request handlers are glue (parse, call ferro-core, build JSON): for size too.
+# Search, fuzzy matching, diffs and indexing live in ferro-core and stay at opt-level 3.
+[profile.release.package.ferro-server]
+opt-level = "s"

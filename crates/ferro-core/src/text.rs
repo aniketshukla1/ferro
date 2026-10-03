@@ -67,8 +67,32 @@ pub fn utf8_range_to_utf16(line: &str, start: usize, end: usize) -> (usize, usiz
     )
 }
 
+/// Byte offsets of every line start in `bytes`, the first being 0. memchr's SIMD search does
+/// the scan, so callers built for size (ferro-server) still read big files at full speed.
+pub fn line_starts(bytes: &[u8]) -> Vec<u64> {
+    let mut offs = Vec::with_capacity(bytes.len() / 48 + 1);
+    offs.push(0);
+    offs.extend(memchr::memchr_iter(b'\n', bytes).map(|i| (i + 1) as u64));
+    offs
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn line_starts_finds_every_line() {
+        assert_eq!(line_starts(b""), vec![0]);
+        assert_eq!(line_starts(b"one"), vec![0]);
+        assert_eq!(line_starts(b"a\nbb\r\n\nccc"), vec![0, 2, 6, 7]);
+        assert_eq!(
+            line_starts(b"x\n"),
+            vec![0, 2],
+            "the trailing newline's empty line is the caller's to drop"
+        );
+        let long = "line\n".repeat(10_000);
+        let offs = line_starts(long.as_bytes());
+        assert_eq!((offs.len(), offs[9_999]), (10_001, 49_995));
+    }
+
     use super::*;
 
     #[test]

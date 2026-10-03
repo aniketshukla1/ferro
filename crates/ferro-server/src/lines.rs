@@ -49,13 +49,7 @@ impl LineIndex {
             return Ok(t.clone());
         }
         let bytes = std::fs::read(path)?;
-        let mut offs = Vec::new();
-        offs.push(0u64);
-        for (i, b) in bytes.iter().enumerate() {
-            if *b == b'\n' {
-                offs.push((i + 1) as u64);
-            }
-        }
+        let mut offs = ferro_core::text::line_starts(&bytes);
         // A trailing newline does not add a line (API.md § 4.2).
         if offs.len() > 1 && offs.last() == Some(&(bytes.len() as u64)) {
             offs.pop();
