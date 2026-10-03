@@ -185,6 +185,8 @@ function createItem(type, layout) {
   }
 }
 
+/** A focused field whose box was recycled before its card moved to a new box (see 'annotation'). */
+let lostFocus = null;
 function updateItem(el, item, layout, findingsCtx) {
   const q = (sel) => el.querySelector(sel);
   switch (item.type) {
@@ -258,10 +260,18 @@ function updateItem(el, item, layout, findingsCtx) {
     case 'image':
       renderImageDiffStage(el, item);
       break;
-    case 'annotation':
+    case 'annotation': {
       el.__item = item;
+      // Moving a card drops the focus of a field in it (a half-typed comment): mount only when
+      // the stack changed, then give the focus back (also when its old box was recycled first).
+      if (el.childNodes.length === item.cards.length && item.cards.every((c, i) => el.childNodes[i] === c)) break;
+      const had = (x) => x && x !== document.body && item.cards.some((c) => c.contains(x));
+      const focused = had(lostFocus) ? lostFocus : document.activeElement;
       mount(el, ...item.cards);
+      if (had(focused) && document.activeElement !== focused) focused.focus({ preventScroll: true });
+      if (focused === lostFocus) lostFocus = null;
       break;
+    }
     default:
       updateDiffRow(el, item, layout, findingsCtx);
   }
@@ -446,6 +456,9 @@ export function createDiffView(host, { onOpen } = {}) {
       if (!item) return;
       const key = item.type === 'diff-row' ? `row:${layout}` : item.type;
       if (box.__key !== key) {
+        // The box goes to another item: a field focused in it loses focus now; its card's next
+        // mount (in this pass) gives it back.
+        if (box.contains(document.activeElement)) lostFocus = document.activeElement;
         for (const c of box.querySelectorAll('.diff-code')) clearIntraline(c);
         mount(box, createItem(item.type, layout));
         box.__key = key;
@@ -926,7 +939,9 @@ export function createDiffView(host, { onOpen } = {}) {
     }
     // Later rebuilds (lazy loads, expanders, live refresh) keep the reader's position.
     targetScrollPath = null;
-    scroller.focus();
+    // Keys for the review (j/k, v, c), unless the reader is typing somewhere: a comment started
+    // while the diffs loaded, a filter, the palette.
+    if (!document.activeElement?.closest?.('input, textarea, select, [contenteditable="true"]')) scroller.focus();
   }
 
   // Live updates: files changing on disk reload their diffs; the Changes panel's base picker

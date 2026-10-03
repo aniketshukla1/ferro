@@ -171,6 +171,8 @@ export function createMockServer(opts) {
   };
   const events = new Set();
   const emit = (type, data) => events.forEach((fn) => fn(type, data));
+  // e2e: extra milliseconds for a route, e.g. slow['git/changes'] = 800 for a slow diff.
+  const slow = {};
 
   // -------- Harness edits (F4b / B7): opt-in, jobs, snapshot diffs, per-hunk revert --------
   const harness = {
@@ -1024,6 +1026,7 @@ export function createMockServer(opts) {
     if (!handler) throw new ApiError(404, 'not_found', `mock: no route ${method} ${path}`);
     // realistic latency: localhost round trip + handler time
     await sleep(path === 'search' ? 18 + Math.random() * 20 : 1.5 + Math.random() * 3);
+    if (slow[path]) await sleep(slow[path]);
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
     const s0 = performance.now();
     const data = await handler(q, body || {});
@@ -1118,6 +1121,7 @@ export function createMockServer(opts) {
 
   return {
     request,
+    slow,
     events: eventStream,
     stream,
     rawUrl: (path) => new URL(`../${path}`, document.baseURI).toString(),

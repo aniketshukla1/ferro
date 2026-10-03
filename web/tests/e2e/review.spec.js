@@ -128,6 +128,8 @@ test.describe('Milestone F3 (Review mode)', () => {
     await expect(page.locator('.draft-card', { hasText: 'From the other tab' })).toBeVisible();
     await expect(page.locator('.pr-submit-btn')).toContainText('(1)');
     await expect(composer.locator('.composer-textarea')).toHaveValue('half-typed thought');
+    // And it is still where the typing goes (the list moved its card when the draft arrived).
+    await expect(composer.locator('.composer-textarea')).toBeFocused();
 
     // Collapsing the file drops its rows from the view; expanding it brings the text back.
     const header = diffView.locator('.diff-file-header', { hasText: 'search.rs' }).first();

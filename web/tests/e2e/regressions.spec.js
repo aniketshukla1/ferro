@@ -85,3 +85,18 @@ test('overview ruler jumps; word wrap never overlaps rows', async ({ page }) => 
   expect(layout.overlaps).toBe(0);
   expect(layout.clipped).toBe(0);
 });
+
+test('a diff that finishes loading late does not take focus from where the reader moved it', async ({ page }) => {
+  await boot(page);
+  // Slow diffs: the reader starts typing elsewhere before the view finishes loading (2026-10-03:
+  // the view then focused itself and the half-typed text went to its review keys).
+  await page.evaluate(() => { window.__ferroMock.slow['git/changes'] = 600; });
+  await page.evaluate(async () => (await import('./src/core/bus.js')).bus.emit('diff:open', {}));
+  const filter = page.getByLabel('Filter files');
+  await filter.click();
+  await filter.pressSequentially('abc');
+  await expect(page.locator('.diff-view .diff-row').first()).toBeVisible({ timeout: 10_000 });
+  await page.waitForTimeout(100);
+  await expect(filter).toBeFocused();
+  await expect(filter).toHaveValue('abc');
+});
