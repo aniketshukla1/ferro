@@ -336,6 +336,7 @@ function createReviewPanel({ onOpen, getDiffView } = {}, handlers = {}) {
   let streamed = 0;
   let jobId = null;
   let reviewedHeadSha = null;
+  let reviewPair = null; // "base..target" of the change under review (Checks → Every angle)
   let diffViewRef = null;
   let closePopover = null;
 
@@ -379,6 +380,8 @@ function createReviewPanel({ onOpen, getDiffView } = {}, handlers = {}) {
     streamed = 0;
     outdatedBanner.hidden = true;
     reviewedHeadSha = store.get('git')?.headSha;
+    const pr = store.get('pr');
+    reviewPair = scope === 'pr' && pr ? `${pr.mergeBaseSha || pr.baseSha || 'HEAD'}..${pr.headSha}` : `${base}..worktree`;
     startBtn.disabled = true;
     summaryEl.textContent = 'Reviewing…';
     renderList();
@@ -416,6 +419,7 @@ function createReviewPanel({ onOpen, getDiffView } = {}, handlers = {}) {
       startBtn.disabled = false;
       pushFindingsToDiff();
       renderList();
+      publishAngles();
     } else if (data.state === 'failed' || data.state === 'cancelled') {
       startBtn.disabled = false;
       summaryEl.textContent = '';
@@ -426,6 +430,21 @@ function createReviewPanel({ onOpen, getDiffView } = {}, handlers = {}) {
   store.subscribe('git', (g) => {
     if (reviewedHeadSha && g?.headSha && g.headSha !== reviewedHeadSha && findings.length) outdatedBanner.hidden = false;
   });
+
+  // Checks → Every angle: the findings counted by the angle they belong to.
+  const ANGLE_OF = { bug: 'correctness', security: 'security', performance: 'performance', tests: 'tests', maintainability: 'conventions', style: 'conventions' };
+  function publishAngles() {
+    const count = {};
+    for (const id of Object.values(ANGLE_OF)) count[id] = { n: 0, high: false };
+    for (const f of findings) {
+      if (f.dismissed) continue;
+      const c = count[ANGLE_OF[f.category]] || count.correctness;
+      c.n += 1;
+      c.high ||= f.severity === 'high';
+    }
+    store.update('angles', Object.fromEntries(Object.entries(count).map(([id, c]) => [id,
+      { pair: reviewPair, state: c.high ? 'fail' : c.n ? 'warn' : 'ok', text: c.n ? plural(c.n, 'AI finding') : 'AI review: none' }])));
+  }
 
   function pushFindingsToDiff() {
     getDiffView?.().then((v) => {

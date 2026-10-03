@@ -1,6 +1,7 @@
 // Checks (API.md § 16, FRONTEND.md § 6.23): does this change break anything? One inspector tab
-// for the diff that is open (working tree, commit, comparison, PR): breaking-change radar,
-// affected tests, security scan, coverage of the changed lines, and agent-written tests.
+// for the diff that is open (working tree, commit, comparison, PR): every review angle at a
+// glance, then the breaking-change radar, affected tests, security scan, coverage of the
+// changed lines, and agent-written tests.
 // Checks that only read run by themselves; anything that executes project code runs on click,
 // after showing the exact command. Loads on first use.
 import { h, mount } from '../core/dom.js';
@@ -463,6 +464,47 @@ function agentSection() {
 
 // ---------- the tab ----------
 
+// ---------- every angle: one line each, from these checks and the AI's last results ----------
+
+const ANGLES = [['intent', 'Intent'], ['correctness', 'Correctness'], ['tests', 'Tests'], ['security', 'Security'],
+  ['performance', 'Performance'], ['compatibility', 'Compatibility'], ['conventions', 'Conventions'], ['coverage', 'Coverage']];
+const SECTION_OF = { tests: 'tests', security: 'security', compatibility: 'breaking', coverage: 'coverage' };
+const STATE_RANK = { fail: 3, warn: 2, ok: 1 };
+const STATE_LABEL = { fail: 'Problem', warn: 'Worth a look', ok: 'Fine', '': 'Not checked' };
+
+/** The AI tab in the mode that checks an angle (intent.js and ai.js publish into store 'angles'). */
+function openAi(id) {
+  execute('ai.review');
+  if (id === 'intent') store.set('aiMode', 'intent');
+}
+
+function anglesView(sections, getPair) {
+  const list = h('ul', { class: 'ang-list' });
+  const el = h('section', { class: 'ang', 'aria-label': 'Every angle' }, h('div', { class: 'ck-head' }, h('span', { class: 'ck-title' }, 'Every angle')), list);
+  const byId = Object.fromEntries(sections.map((x) => [x.el.dataset.check, x]));
+  function render() {
+    const pair = getPair();
+    const ai = store.get('angles') || {};
+    mount(list, ANGLES.map(([id, name]) => {
+      const sec = byId[SECTION_OF[id]];
+      // The AI's results count only for the change on screen.
+      const a = pair && ai[id]?.pair === `${pair.base}..${pair.target}` ? ai[id] : null;
+      const state = [sec?.el.dataset.state, a?.state].filter(Boolean).sort((x, y) => STATE_RANK[y] - STATE_RANK[x])[0] || '';
+      const text = [sec?.status.textContent, a?.text].filter(Boolean).join(' · ') || 'Not checked yet';
+      return h('li', { class: `ang-row ${state}` },
+        h('span', { class: 'ang-dot', role: 'img', 'aria-label': STATE_LABEL[state], title: STATE_LABEL[state] }),
+        h('span', { class: 'ang-name' }, name),
+        h('span', { class: 'ang-text faint small', title: text }, text),
+        h('button', { class: 'link-btn small', 'aria-label': `${sec ? 'Show' : a ? 'Open' : 'Check'} ${name.toLowerCase()}`, on: { click: () => (sec ? sec.el.scrollIntoView({ block: 'nearest' }) : openAi(id)) } }, sec ? 'Show' : a ? 'Open' : 'Check'));
+    }));
+  }
+  // Sections finish on their own time: follow their state and status lines.
+  const watch = new MutationObserver(render);
+  for (const x of sections) watch.observe(x.el, { attributes: true, attributeFilter: ['data-state'], subtree: false }), watch.observe(x.status, { childList: true, characterData: true, subtree: true });
+  const off = store.subscribe('angles', render);
+  return { el, render, destroy: () => { watch.disconnect(); off?.(); } };
+}
+
 export function renderChecksTab(el, ctx) {
   const pairEl = h('span', { class: 'ck-pair' });
   const rerun = h('button', { class: 'icon-btn sm', 'aria-label': 'Run the checks again', 'data-tip': 'Run again', on: { click: () => refresh(true) } }, icon('refresh', 'sm'));
@@ -473,8 +515,10 @@ export function renderChecksTab(el, ctx) {
     has('harness.threads') ? agentSection(ctx) : null,
     has('checks.coverage') ? coverageSection(ctx) : null,
   ].filter(Boolean);
+  const angles = anglesView(sections, () => pair);
   mount(el, h('div', { class: 'ck' },
     h('div', { class: 'ck-top' }, icon('check-circle', 'sm'), pairEl, h('span', { class: 'ck-sp' }), rerun),
+    angles.el,
     sections.map((s) => s.el)));
 
   let pair = null;
@@ -484,6 +528,7 @@ export function renderChecksTab(el, ctx) {
     pair = next;
     mount(pairEl, h('code', null, short(pair.base)), ' → ', h('code', null, short(pair.target)));
     for (const s of sections) s.run?.(pair);
+    angles.render();
   }
   const offs = [
     bus.on('diff:shown', () => refresh()),
@@ -492,7 +537,7 @@ export function renderChecksTab(el, ctx) {
     bus.on('ev:git', () => { if (pair?.target === 'worktree') refresh(true); }),
   ];
   refresh(true);
-  return { destroy: () => { offs.forEach((off) => off()); sections.forEach((s) => s.destroy?.()); }, refresh: () => refresh(true) };
+  return { destroy: () => { offs.forEach((off) => off()); sections.forEach((s) => s.destroy?.()); angles.destroy(); }, refresh: () => refresh(true) };
 }
 
 export const _test = { currentPair, has };

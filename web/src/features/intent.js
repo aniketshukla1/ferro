@@ -83,6 +83,8 @@ export function createIntentPanel(ctx) {
       const { job } = await request('ai/intent', { method: 'POST', body: { intent, base: base.value.trim() || pair.base, target: pair.target } });
       const r = await waitJob(job.id, (p) => { status.textContent = STAGES[p?.stage] || STAGES.ai; });
       status.textContent = '';
+      // Checks → Every angle shows it while the same change is on screen.
+      store.update('angles', { intent: { pair: `${r.range?.base}..${r.range?.target}`, state: { complete: 'ok', incomplete: 'warn', 'off-track': 'fail' }[r.verdict] || '', text: `${VERDICT[r.verdict] || r.verdict} · ${r.counts?.done || 0} of ${(r.requirements || []).length} done` } });
       mount(out, view(r, open));
     } catch (e) {
       status.textContent = '';

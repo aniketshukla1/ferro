@@ -195,6 +195,16 @@
 .ck-top { display: flex; align-items: center; gap: var(--sp-2); }
 .ck-pair code, .ck-name { font-family: var(--font-mono); font-size: var(--fs-sm); }
 .ck-sp { flex: 1; }
+/* Every angle (Checks): one line per review angle, worst news in color. */
+.ang { border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-1); }
+.ang-list { display: flex; flex-direction: column; gap: 2px; padding: 0 var(--sp-2) var(--sp-2); }
+.ang-row { display: grid; grid-template-columns: 8px 92px minmax(0, 1fr) auto; align-items: center; gap: var(--sp-3); min-height: 22px; font-size: var(--fs-sm); }
+.ang-dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--border-strong); }
+.ang-row.ok .ang-dot { background: var(--ok); border-color: var(--ok); }
+.ang-row.warn .ang-dot { background: var(--warn); border-color: var(--warn); }
+.ang-row.fail .ang-dot { background: var(--danger); border-color: var(--danger); }
+.ang-name { color: var(--fg); font-weight: 600; }
+.ang-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ck-sec { border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-1); }
 .ck-sec[data-state="fail"] { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
 .ck-sec[data-state="warn"] { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
