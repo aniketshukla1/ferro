@@ -1,4 +1,4 @@
-// Open a repository (API.md § 7.2): a folder opened before, any folder by its path (the desktop
+// Open a project (API.md § 7.2): a folder opened before, any folder by its path (the desktop
 // app asks with the system picker), or a pull request by its link. The server switches roots in
 // place, and its `workspace` event moves the whole UI over, as when a pull request opens.
 import { h } from '../core/dom.js';
@@ -14,7 +14,7 @@ const PR_LINK = /^https?:\/\/\S+\/(pull\/\d+|-\/merge_requests\/\d+)/;
 /** The picker, in the palette: folders opened before, then a folder by path, then a pull request. */
 export async function open(palette) {
   if (store.get('meta')?.readOnly) {
-    toast({ title: 'This ferro is read-only', message: 'Opening another repository is turned off.' });
+    toast({ title: 'This ferro is read-only', message: 'Opening another project is turned off.' });
     return;
   }
   const recent = has('workspace.recent') ? (await request('workspace/recent').catch(() => null))?.items || [] : [];
@@ -30,7 +30,7 @@ export async function open(palette) {
     { key: 'repo:folder', icon: icon('folder-open', 'sm'), label: 'Open Folder…', desc: store.get('meta')?.host === 'desktop' ? 'choose a folder' : 'type its path', text: 'open folder path', run: openFolder },
     { key: 'repo:pr', icon: icon('git-pull-request', 'sm'), label: 'Open Pull Request…', desc: 'paste a GitHub or GitLab link', text: 'open pull request merge request link', run: openPr },
   );
-  palette.open('', { special: 'pick', title: 'Open repository', items });
+  palette.open('', { special: 'pick', title: 'Open project', items });
 }
 
 async function switchTo(path) {

@@ -83,7 +83,7 @@ test.describe('Milestone F6 (Polish)', () => {
     await expect(page.locator('#app')).not.toHaveAttribute('aria-busy', 'true', { timeout: 10_000 });
     const tips = page.locator('.home-tips');
     await expect(tips).toBeVisible();
-    await expect(tips.locator('.home-tip')).toHaveCount(3);
+    await expect(tips.locator('.home-tip')).toHaveCount(4);
     await tips.locator('.ht-action', { hasText: 'Open the palette' }).click();
     await expect(page.locator('.pal-input')).toBeVisible();
     await page.keyboard.press('Escape');

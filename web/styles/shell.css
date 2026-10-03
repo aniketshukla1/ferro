@@ -55,6 +55,9 @@
   border-radius: var(--r-md);
 }
 .ws-chip:hover { background: var(--hover); }
+/* The project name opens the project picker: a caret says so. */
+.ws-chip::after { content: ''; flex: none; width: 0; height: 0; margin-left: calc(-1 * var(--sp-2)); border: 4px solid transparent; border-top-color: var(--fg-faint); border-bottom-width: 0; }
+.ws-chip:hover::after { border-top-color: var(--fg-muted); }
 .ws-name { color: var(--fg); font-weight: 600; letter-spacing: var(--tracking-tight); flex: none; max-width: 180px; }
 .ws-branch {
   display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 220px;

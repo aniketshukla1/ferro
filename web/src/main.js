@@ -385,7 +385,7 @@ function registerCommands({ shell, editor, palette, find, getTree, getSearch, ai
   command({ id: 'copy.path', title: 'Copy Path', category: 'File', icon: 'copy', when: hasFile, run: () => chrome('copyPath', editor.active) });
 
   // Workspace
-  command({ id: 'workspace.switch', title: 'Open Repository…', category: 'Workspace', icon: 'folder-open', keys: ['Mod+Alt+O'], run: () => load.repos().then((m) => m.open(palette)) });
+  command({ id: 'workspace.switch', title: 'Open Project…', category: 'Workspace', icon: 'folder-open', keys: ['Mod+Alt+O'], run: () => load.repos().then((m) => m.open(palette)) });
   command({ id: 'index.rebuild', title: 'Rebuild File Index', category: 'Workspace', icon: 'refresh', keys: ['Mod+Shift+R'], run: () => chrome('rebuildIndex', getTree()) });
   command({ id: 'pr.open', title: 'Open Pull Request…', category: 'Review', icon: 'git-pull-request', run: (url) => load.chrome().then((m) => m.openPullRequest(url)) });
 }
