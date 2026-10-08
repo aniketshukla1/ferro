@@ -293,6 +293,8 @@ export OLLAMA_MODEL=llama3.1   # or stay fully local with Ollama
 
 For **coding agents**, install one (Claude Code, Codex, Gemini CLI, Cursor Agent, OpenCode, Aider, Goose…) and pick it the first time you open the **Agent** tab. <kbd>Alt</kbd><kbd>E</kbd> hands it a selection; **Fix N with agent** sends it all your review comments at once.
 
+**ferro inside your agent (MCP).** Run `claude mcp add ferro -- ferro mcp` (any MCP client works with `ferro mcp`) and your agent gets ferro's review, not just files: `ferro_intent_check` (does the change do what the task says?), `ferro_checks` (what it breaks, secrets, tests to run, coverage), `ferro_rules` (your team's review rules) and `ferro_pr_open` for any GitHub pull request or GitLab merge request. Each answer ends with the `ferro` command that shows it in the app.
+
 <br/>
 
 ## 🧩 From your editor

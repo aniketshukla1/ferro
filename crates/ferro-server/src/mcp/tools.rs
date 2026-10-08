@@ -17,7 +17,7 @@ fn prop(kind: &str, description: &str) -> Value {
     serde_json::json!({"type": kind, "description": description})
 }
 
-fn schema(props: &[(&str, &str, &str)], required: &[&str]) -> Value {
+pub(super) fn schema(props: &[(&str, &str, &str)], required: &[&str]) -> Value {
     let mut map = serde_json::Map::new();
     for (name, kind, desc) in props {
         map.insert(name.to_string(), prop(kind, desc));
@@ -30,7 +30,7 @@ fn schema(props: &[(&str, &str, &str)], required: &[&str]) -> Value {
 }
 
 pub fn tool_definitions() -> Vec<Value> {
-    vec![
+    let mut defs = vec![
         tool_def(
             "ferro_search",
             "Full-text search across the workspace. Returns path:line hits.",
@@ -136,7 +136,7 @@ pub fn tool_definitions() -> Vec<Value> {
         ),
         tool_def(
             "ferro_pr_threads",
-            "List PR review threads and conversation comments (PR mode only).",
+            "The open pull request: its summary and description, review threads and conversation (PR mode only).",
             schema(&[], &[]),
         ),
         tool_def(
@@ -154,10 +154,12 @@ pub fn tool_definitions() -> Vec<Value> {
                 &["path", "line", "body"],
             ),
         ),
-    ]
+    ];
+    defs.extend(super::review::definitions());
+    defs
 }
 
-fn tool_def(name: &str, description: &str, input_schema: Value) -> Value {
+pub(super) fn tool_def(name: &str, description: &str, input_schema: Value) -> Value {
     serde_json::json!({
         "name": name,
         "description": description,
@@ -214,6 +216,9 @@ pub fn call_sync(s: &Arc<AppState>, name: &str, args: Value) -> Value {
 }
 
 pub async fn call_async(s: &Arc<AppState>, name: &str, args: Value) -> Value {
+    if let Some(v) = super::review::call(s, name, &args).await {
+        return v;
+    }
     match name {
         "ferro_pr_threads" => pr_threads(s).await,
         "ferro_add_draft" => add_draft(s, args).await,
@@ -240,7 +245,7 @@ fn scrub_tool_text(s: &AppState, text: String) -> String {
     }
 }
 
-fn tool_text(s: &AppState, text: impl Into<String>, is_error: bool) -> Value {
+pub(super) fn tool_text(s: &AppState, text: impl Into<String>, is_error: bool) -> Value {
     tool_result_text(scrub_tool_text(s, text.into()), is_error)
 }
 
@@ -266,6 +271,7 @@ async fn pr_threads(s: &Arc<AppState>) -> Value {
         Err(e) => return tool_text(s, format!("upstream: {e}"), true),
     };
     let out = serde_json::json!({
+        "pr": super::review::pr_summary(s),
         "threads": threads.iter().map(|t| {
             serde_json::json!({
                 "id": t.id,

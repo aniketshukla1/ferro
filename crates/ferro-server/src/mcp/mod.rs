@@ -2,6 +2,7 @@
 
 mod http;
 mod protocol;
+mod review;
 mod stdio;
 pub mod tools;
 

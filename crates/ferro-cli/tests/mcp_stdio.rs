@@ -53,7 +53,7 @@ async fn ferro_mcp_stdio_protocol_only_on_stdout() {
         out_lines.push(line);
     }
     let list: serde_json::Value = serde_json::from_str(&out_lines[1]).unwrap();
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 9);
+    assert!(list["result"]["tools"].as_array().unwrap().len() >= 13);
     let call: serde_json::Value = serde_json::from_str(&out_lines[2]).unwrap();
     assert_eq!(call["result"]["isError"], false);
     assert!(call["result"]["content"][0]["text"]

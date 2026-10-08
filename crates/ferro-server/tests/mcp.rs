@@ -147,7 +147,7 @@ async fn mcp_http_list_and_call_tools() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 9);
+    assert!(names.len() >= 13, "{names:?}");
     for n in [
         "ferro_search",
         "ferro_fuzzy",
@@ -158,6 +158,10 @@ async fn mcp_http_list_and_call_tools() {
         "ferro_diff",
         "ferro_pr_threads",
         "ferro_add_draft",
+        "ferro_pr_open",
+        "ferro_intent_check",
+        "ferro_checks",
+        "ferro_rules",
     ] {
         assert!(names.contains(&n), "{n}");
         let tool = v["result"]["tools"]
@@ -287,4 +291,59 @@ async fn mcp_http_list_and_call_tools() {
         .as_str()
         .unwrap()
         .contains("never-send"));
+}
+
+#[tokio::test]
+async fn mcp_review_tools_answer_with_ferros_own_review() {
+    let app = fixture_app().await;
+    let text = |v: &serde_json::Value| {
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+
+    let (status, v) = mcp_call(&app, &tool_call("ferro_checks", serde_json::json!({}))).await;
+    assert_tool_envelope("ferro_checks", status, &v);
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    let t = text(&v);
+    assert!(t.starts_with("### ferro checks: HEAD → worktree"), "{t}");
+    for part in [
+        "**Breaking changes:** none",
+        "**Security:** nothing on the added lines",
+        "**Tests to run:** none found",
+        "**Coverage of added lines:** no coverage report",
+        "See it in ferro: `ferro open ",
+    ] {
+        assert!(t.contains(part), "{part} in {t}");
+    }
+    assert!(t.ends_with(" --view checks`"), "{t}");
+
+    let (status, v) = mcp_call(&app, &tool_call("ferro_rules", serde_json::json!({}))).await;
+    assert_tool_envelope("ferro_rules", status, &v);
+    assert!(text(&v).starts_with("No review rules yet."), "{v}");
+
+    // Refusals come back as tool errors carrying the API's own message.
+    for (name, args, needle) in [
+        (
+            "ferro_intent_check",
+            serde_json::json!({}),
+            "describe what the change should do",
+        ),
+        (
+            "ferro_pr_open",
+            serde_json::json!({"url": "https://example.com/x"}),
+            "not a GitHub PR or GitLab MR url",
+        ),
+        (
+            "ferro_checks",
+            serde_json::json!({"base": "x".repeat(300)}),
+            "too long",
+        ),
+    ] {
+        let (status, v) = mcp_call(&app, &tool_call(name, args)).await;
+        assert_tool_envelope(name, status, &v);
+        assert_eq!(v["result"]["isError"], true, "{name} {v}");
+        assert!(text(&v).contains(needle), "{name}: {v}");
+    }
 }
