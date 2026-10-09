@@ -30,7 +30,7 @@ fn git_out(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Mock forge: GraphQL threads, comments, review submit, replies.
+/// Mock forge: GraphQL threads (an error under `/offline`), comments, review submit, replies.
 async fn mock_forge() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -79,7 +79,9 @@ async fn mock_forge() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
                         raw.push_str(&String::from_utf8_lossy(&body));
                     }
                     seen3.lock().unwrap().push(raw);
-                    let resp_body = if first.contains("/graphql") {
+                    let resp_body = if first.contains("/offline/graphql") {
+                        serde_json::json!({"errors": [{"message": "rate limited"}]})
+                    } else if first.contains("/graphql") {
                         serde_json::json!({"data": {"repository": {"pullRequest": {"reviewThreads": {
                             "nodes": [{"id": "T1", "isResolved": false, "isOutdated": false,
                                 "path": "a.txt", "line": 2, "startLine": null, "diffSide": "RIGHT",
@@ -367,6 +369,37 @@ async fn submit_pins_and_clears() {
     let (s, v) = req(app.clone(), "GET", "/api/v1/review/rounds", None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["rounds"][0]["kind"], "submitted");
+}
+
+#[tokio::test]
+async fn a_failed_thread_fetch_fails_only_the_replies() {
+    let (mock, seen) = mock_forge().await;
+    // GraphQL is down, REST is up: the review posts, its reply can't find the thread.
+    let (app, _d, _h) = pr_state(&format!("{mock}/offline"), Some("tok"));
+    for draft in [
+        r#"{"path":"a.txt","line":1,"body":"inline"}"#,
+        r#"{"path":"a.txt","line":1,"body":"r","threadId":"T1"}"#,
+    ] {
+        let (s, v) = req(app.clone(), "POST", "/api/v1/review/drafts", Some(draft)).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let (s, v) = req(
+        app.clone(),
+        "POST",
+        "/api/v1/review/submit",
+        Some(r#"{"event":"COMMENT","body":""}"#),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["posted"], 1);
+    assert_eq!(v["failed"].as_array().unwrap().len(), 1, "{v}");
+    // Only the reply is left to retry; the posted inline draft is gone.
+    let (_, v) = req(app, "GET", "/api/v1/review/drafts", None).await;
+    let left = v["drafts"].as_array().unwrap();
+    assert_eq!(left.len(), 1, "{v}");
+    assert_eq!(left[0]["threadId"], "T1");
+    let raw = seen.lock().unwrap().join("\n");
+    assert!(raw.contains("/pulls/7/reviews"), "{raw}");
 }
 
 #[tokio::test]

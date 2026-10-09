@@ -313,11 +313,20 @@ async fn submit(
     for (draft_id, _) in staged_replies {
         pr.store.remove(&draft_id);
     }
-    if !is_gitlab {
-        // Reply drafts post after the review; failures stay as drafts.
-        let live_threads = pr.client.threads(&pr.pr_ref).await.map_err(forge_err)?;
+    if !replies.is_empty() {
+        // GitHub: reply drafts post after the review; failures stay as drafts.
+        // The review is out already, so a failed thread fetch fails only the
+        // replies: an error here would keep its drafts for a retry to post twice.
+        let live_threads = pr.client.threads(&pr.pr_ref).await;
         for (draft_id, thread_id, text) in replies {
-            let cid = live_threads
+            let threads = match &live_threads {
+                Ok(t) => t,
+                Err(e) => {
+                    failed.push(serde_json::json!({ "draftId": draft_id, "error": e.to_string() }));
+                    continue;
+                }
+            };
+            let cid = threads
                 .iter()
                 .find(|t| t.id == thread_id)
                 .and_then(|t| t.comments.first())
