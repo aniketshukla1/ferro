@@ -227,6 +227,14 @@ pub async fn serve(
     serve_with(state, listener, bound, o).await
 }
 
+/// Resolves when `ServerHandle::shutdown` sends. A dropped handle never resolves it: the
+/// desktop app keeps only the port and token, and ferro must keep serving its window.
+async fn stop_requested(rx: tokio::sync::oneshot::Receiver<()>) {
+    if rx.await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
 /// Bind with port walking: try the requested port plus the next 100 when taken.
 /// Port 0 means "any free port" with no walking.
 pub async fn bind_walk(host: &str, want: u16) -> (tokio::net::TcpListener, u16) {
@@ -385,9 +393,7 @@ pub async fn serve_with(
         match tls {
             crate::tls::TlsConfig::None => {
                 axum::serve(listener, app)
-                    .with_graceful_shutdown(async move {
-                        let _ = shutdown_rx.await;
-                    })
+                    .with_graceful_shutdown(stop_requested(shutdown_rx))
                     .await
                     .expect("serve");
             }
@@ -398,7 +404,7 @@ pub async fn serve_with(
                 let handle = axum_server::Handle::new();
                 let shutdown_handle = handle.clone();
                 tokio::spawn(async move {
-                    let _ = shutdown_rx.await;
+                    stop_requested(shutdown_rx).await;
                     shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(2)));
                 });
                 axum_server::from_tcp_rustls(std_listener, rustls)

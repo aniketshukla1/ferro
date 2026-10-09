@@ -174,6 +174,55 @@ async fn read_only_blocks_legacy_api_writes() {
 }
 
 #[tokio::test]
+async fn a_dropped_handle_keeps_serving() {
+    // The desktop app keeps only the port and token: dropping the handle must not stop ferro.
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let dirs = ferro_core::dirs::FerroDirs::new(
+        home.path().join("c"),
+        home.path().join("s"),
+        home.path().join("h"),
+    );
+    let o = server::ServeOpts {
+        host: "127.0.0.1".into(),
+        port: 0,
+        no_git: true,
+        narrate: false,
+        no_open: true,
+        initial: None,
+        token: Some(TOKEN.into()),
+        allow_hosts: vec![],
+        no_auth: false,
+        dev_web: None,
+        read_only: false,
+        tls: tls::TlsConfig::None,
+        tls_fingerprint: None,
+        base_path: None,
+        no_lsp: true,
+    };
+    let port = server::serve(
+        dir.path().to_path_buf(),
+        dirs,
+        ferro_server::Host::Cli,
+        "test".into(),
+        o,
+    )
+    .await
+    .port;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let mut stream = wait_tcp(port).await;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let req = format!(
+        "GET /api/v1/meta HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await.unwrap();
+    let resp = String::from_utf8_lossy(&buf);
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+}
+
+#[tokio::test]
 async fn tls_self_signed_serves_https_and_refuses_plain_http() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let dir = tempfile::tempdir().unwrap();
