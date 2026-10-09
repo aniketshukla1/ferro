@@ -40,6 +40,9 @@ pub enum Host {
 pub trait DesktopHost: Send + Sync {
     async fn pick_folder(&self) -> Option<PathBuf>;
     async fn open_external(&self, url: &url::Url) -> anyhow::Result<()>;
+    /// Show `url` (another ferro in this app) in an app window of its own, or bring forward
+    /// the window already showing it.
+    async fn open_window(&self, url: &url::Url) -> anyhow::Result<()>;
 }
 
 /// See BACKEND.md §1.7.

@@ -21,7 +21,7 @@ pub fn routes() -> Router<Arc<AppState>> {
 }
 
 /// `~` and `~/…` are the user's home; anything else must be absolute (never the server's cwd).
-fn expand(path: &str, home: &Path) -> Option<PathBuf> {
+pub(crate) fn expand(path: &str, home: &Path) -> Option<PathBuf> {
     let p = match path.strip_prefix('~') {
         Some("") => home.to_path_buf(),
         Some(rest) if rest.starts_with(['/', std::path::MAIN_SEPARATOR]) => home.join(&rest[1..]),
