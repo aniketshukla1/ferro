@@ -300,54 +300,7 @@ pub async fn serve_with(
         Some(b) => under_base_path(b, app),
         None => app,
     };
-
-    // Highlight exact passes announce themselves as `hl` events.
-    {
-        let bus = state.bus.clone();
-        let ws = state.ws();
-        ws.hl
-            .lock()
-            .set_on_exact(Arc::new(move |path: String, mtime_ms: u64| {
-                bus.publish(crate::bus::ServerEvent::Hl { path, mtime_ms });
-            }));
-    }
-
-    // Idle scavenger: after 15 s without requests, trim caches and collect.
-    {
-        let last = last_active.clone();
-        let state = state.clone();
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
-            loop {
-                tick.tick().await;
-                let idle = last.lock().map(|t| t.elapsed()).unwrap_or_default();
-                if idle >= std::time::Duration::from_secs(15) {
-                    ferro_core::highlight::clear_cache();
-                    // Idle trigram catch-up (delta or threshold rebuilds),
-                    // off the runtime: the policy reconciles over every path.
-                    let s2 = state.clone();
-                    tokio::task::spawn_blocking(move || s2.ensure_search_built());
-                    state.ensure_symbols_built();
-                    // mimalloc keeps freed pages per thread: collect on every thread that did
-                    // heavy work (the scan/fuzzy pool and both index build pools), not only here.
-                    // SAFETY: mi_collect is thread-safe and only affects the calling thread's heap.
-                    let collect = || unsafe { libmimalloc_sys::mi_collect(true) };
-                    let ws = state.ws();
-                    tokio::task::spawn_blocking(move || {
-                        ferro_core::rayon::broadcast(|_| collect());
-                        ws.search.broadcast(&collect);
-                        ws.symbols.broadcast(&collect);
-                        collect();
-                    });
-                    collect();
-                    tracing::debug!("ferro idle {}s: caches trimmed", idle.as_secs());
-                }
-            }
-        });
-    }
-
-    // Live updates: fs events, incremental snapshots, status refresh.
-    crate::watch::start(&state);
+    start_background(&state, last_active);
 
     state.update.set_serve_info(guard.token.clone(), bound);
     crate::update_check::spawn_background(state.clone());
@@ -383,8 +336,6 @@ pub async fn serve_with(
     if o.no_auth {
         tracing::warn!("--no-auth: API auth disabled (loopback only)");
     }
-    // Background initial index (walk, then search and symbol policies).
-    state.index_in_background(state.ws());
     // Opening is the host's job: ferro-cli opens the browser for Host::Cli,
     // the desktop shell loads the URL in its own window.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -422,4 +373,61 @@ pub async fn serve_with(
         url,
         shutdown: shutdown_tx,
     }
+}
+
+/// What a served workspace runs beside its router: highlight events, the idle trim, the file
+/// watcher and the first index. `last_active` is the request clock its router updates.
+pub fn start_background(
+    state: &Arc<AppState>,
+    last_active: Arc<std::sync::Mutex<std::time::Instant>>,
+) {
+    // Highlight exact passes announce themselves as `hl` events.
+    {
+        let bus = state.bus.clone();
+        let ws = state.ws();
+        ws.hl
+            .lock()
+            .set_on_exact(Arc::new(move |path: String, mtime_ms: u64| {
+                bus.publish(crate::bus::ServerEvent::Hl { path, mtime_ms });
+            }));
+    }
+
+    // Idle scavenger: after 15 s without requests, trim caches and collect.
+    {
+        let last = last_active;
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                tick.tick().await;
+                let idle = last.lock().map(|t| t.elapsed()).unwrap_or_default();
+                if idle >= std::time::Duration::from_secs(15) {
+                    ferro_core::highlight::clear_cache();
+                    // Idle trigram catch-up (delta or threshold rebuilds),
+                    // off the runtime: the policy reconciles over every path.
+                    let s2 = state.clone();
+                    tokio::task::spawn_blocking(move || s2.ensure_search_built());
+                    state.ensure_symbols_built();
+                    // mimalloc keeps freed pages per thread: collect on every thread that did
+                    // heavy work (the scan/fuzzy pool and both index build pools), not only here.
+                    // SAFETY: mi_collect is thread-safe and only affects the calling thread's heap.
+                    let collect = || unsafe { libmimalloc_sys::mi_collect(true) };
+                    let ws = state.ws();
+                    tokio::task::spawn_blocking(move || {
+                        ferro_core::rayon::broadcast(|_| collect());
+                        ws.search.broadcast(&collect);
+                        ws.symbols.broadcast(&collect);
+                        collect();
+                    });
+                    collect();
+                    tracing::debug!("ferro idle {}s: caches trimmed", idle.as_secs());
+                }
+            }
+        });
+    }
+
+    // Live updates: fs events, incremental snapshots, status refresh.
+    crate::watch::start(state);
+    // Background initial index (walk, then search and symbol policies).
+    state.index_in_background(state.ws());
 }
