@@ -41,13 +41,22 @@ impl DesktopHost for TauriHost {
     }
 
     async fn open_window(&self, url: &url::Url) -> anyhow::Result<()> {
-        // One window per ferro: its port names it.
-        let label = format!("ferro-{}", url.port().unwrap_or(0));
-        if let Some(win) = self.app.get_webview_window(&label) {
-            let _ = win.unminimize();
-            let _ = win.show();
-            return win.set_focus().map_err(|e| anyhow::anyhow!(e.to_string()));
+        // The window already showing that ferro (same origin and path), else a new one.
+        for win in self.app.webview_windows().into_values() {
+            if win
+                .url()
+                .is_ok_and(|u| u.origin() == url.origin() && u.path() == url.path())
+            {
+                let _ = win.unminimize();
+                let _ = win.show();
+                return win.set_focus().map_err(|e| anyhow::anyhow!(e.to_string()));
+            }
         }
+        let label = format!(
+            "ferro-{}{}",
+            url.port().unwrap_or(0),
+            url.path().trim_end_matches('/').replace('/', "-")
+        );
         tauri::WebviewWindowBuilder::new(&self.app, label, tauri::WebviewUrl::External(url.clone()))
             .title("Ferro — fast review")
             .inner_size(1280.0, 800.0)
