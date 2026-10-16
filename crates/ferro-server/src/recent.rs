@@ -22,9 +22,14 @@ pub fn load(dirs: &FerroDirs) -> Vec<Recent> {
         .unwrap_or_default()
 }
 
-/// Move `root` to the front. Best effort: a failed write only loses the history.
+/// Move `root` to the front. Best effort: a failed write only loses the history. ferro's own
+/// folders (its state and cache, such as the desktop app's empty start folder) are no projects.
 pub fn record(dirs: &FerroDirs, root: &Path) {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let own = |d: &Path| root.starts_with(d.canonicalize().unwrap_or_else(|_| d.to_path_buf()));
+    if own(&dirs.state_dir) || own(&dirs.cache_dir) {
+        return;
+    }
     let root = root.to_string_lossy().into_owned();
     let mut list = load(dirs);
     list.retain(|r| r.root != root);
@@ -81,5 +86,23 @@ mod tests {
             !list.iter().any(|r| r.root == canon(&roots[0])),
             "the oldest fell off"
         );
+    }
+
+    #[test]
+    fn ferro_own_folders_are_not_recorded() {
+        let home = tempfile::tempdir().unwrap();
+        let dirs = FerroDirs::new(
+            home.path().join("c"),
+            home.path().join("s"),
+            home.path().join("h"),
+        );
+        for own in [
+            dirs.state_dir.join("Open a project"),
+            dirs.cache_dir.join("pr"),
+        ] {
+            std::fs::create_dir_all(&own).unwrap();
+            record(&dirs, &own);
+        }
+        assert!(load(&dirs).is_empty());
     }
 }

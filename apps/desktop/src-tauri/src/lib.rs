@@ -104,12 +104,23 @@ pub fn run() {
                 notify_for_setup,
             );
 
-            let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             // The main window (tauri.conf.json) shows the splash (frontendDist) until the
             // server is up, then loads the token URL.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let dirs = ferro_core::dirs::FerroDirs::resolve();
+                let empty = dirs.state_dir.join("Open a project");
+                let root = start_root(
+                    std::env::current_dir().ok(),
+                    &ferro_core::dirs::home_dir(),
+                    ferro_server::recent::load(&dirs)
+                        .into_iter()
+                        .map(|r| PathBuf::from(r.root)),
+                    empty.clone(),
+                );
+                if root == empty {
+                    let _ = std::fs::create_dir_all(&empty);
+                }
                 let host = Host::Desktop(std::sync::Arc::new(TauriHost {
                     app: handle.clone(),
                 }));
@@ -153,6 +164,22 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running ferro");
+}
+
+/// The folder the app opens. Started from a shell, the folder it was started in. Started from
+/// Finder or the Dock (`/`) or a Linux launcher (the home folder), no folder was chosen: the most
+/// recent project that still exists, else `empty`, a first-run folder whose name ("Open a
+/// project") is what the project chip shows until one is picked.
+fn start_root(
+    cwd: Option<PathBuf>,
+    home: &std::path::Path,
+    recents: impl IntoIterator<Item = PathBuf>,
+    empty: PathBuf,
+) -> PathBuf {
+    match cwd {
+        Some(dir) if dir.parent().is_some() && dir != home => dir,
+        _ => recents.into_iter().find(|r| r.is_dir()).unwrap_or(empty),
+    }
 }
 
 fn register_ferro_scheme(app: &tauri::App) {
@@ -310,6 +337,40 @@ fn show_error(app: &tauri::AppHandle, message: &str) {
         .title("Ferro")
         .kind(MessageDialogKind::Error)
         .show(|_| {});
+}
+
+#[cfg(test)]
+mod start_root_tests {
+    use super::start_root;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_shell_start_opens_its_folder_and_finder_reopens_the_last_project() {
+        let home = PathBuf::from("/Users/ann");
+        let empty = PathBuf::from("/state/ferro/Open a project");
+        let last = std::env::temp_dir(); // a folder that exists
+        let gone = last.join("ferro-no-such-folder");
+        let recents = || vec![gone.clone(), last.clone()];
+        let project = PathBuf::from("/Users/ann/code/api");
+        assert_eq!(
+            start_root(Some(project.clone()), &home, recents(), empty.clone()),
+            project
+        );
+        // Finder or the Dock (`/`), a Linux launcher (home), no folder: the last project.
+        for cwd in [Some(PathBuf::from("/")), Some(home.clone()), None] {
+            assert_eq!(start_root(cwd, &home, recents(), empty.clone()), last);
+        }
+        // First run: nothing recent that still exists.
+        assert_eq!(
+            start_root(
+                Some(PathBuf::from("/")),
+                &home,
+                vec![gone.clone()],
+                empty.clone()
+            ),
+            empty
+        );
+    }
 }
 
 #[cfg(test)]
