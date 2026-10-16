@@ -105,15 +105,8 @@ pub fn run() {
             );
 
             let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            // Splash window first (frontendDist), then swap to the token URL.
-            tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
-            .title("Ferro — fast review")
-            .inner_size(1280.0, 800.0)
-            .build()?;
+            // The main window (tauri.conf.json) shows the splash (frontendDist) until the
+            // server is up, then loads the token URL.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let dirs = ferro_core::dirs::FerroDirs::resolve();
