@@ -738,11 +738,27 @@ mod tests {
         }
     }
 
+    /// `tee` writes the script, so this process never holds it open for
+    /// writing. On Linux a child that another test thread forks meanwhile
+    /// keeps that handle until it execs, and running the script fails with
+    /// "Text file busy" (ETXTBSY) until then.
     fn write_exec(path: &Path, body: &str) {
+        use std::io::Write;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
-        std::fs::write(path, body).unwrap();
+        let mut tee = Command::new("tee")
+            .arg(path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        tee.stdin
+            .take()
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        assert!(tee.wait().unwrap().success());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

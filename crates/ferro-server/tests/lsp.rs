@@ -42,10 +42,27 @@ while True:
         send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"uri": td["uri"], "diagnostics": diags}})
 "#;
 
+/// `tee` writes the fake server, so this process never holds it open for
+/// writing. On Linux a child that another test thread forks meanwhile keeps
+/// that handle until it execs, and spawning the server fails with "Text file
+/// busy" (ETXTBSY) until then.
 fn fake_server_dir() -> tempfile::TempDir {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
     let bin = tempfile::tempdir().unwrap();
     let p = bin.path().join("rust-analyzer");
-    std::fs::write(&p, FAKE).unwrap();
+    let mut tee = Command::new("tee")
+        .arg(&p)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    tee.stdin
+        .take()
+        .unwrap()
+        .write_all(FAKE.as_bytes())
+        .unwrap();
+    assert!(tee.wait().unwrap().success());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

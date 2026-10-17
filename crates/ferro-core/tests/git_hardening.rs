@@ -265,18 +265,31 @@ fn blobs_are_capped_before_reading() {
 #[cfg(unix)]
 #[test]
 fn git_never_prompts_on_the_terminal() {
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
     let dir = repo();
     let hook = dir.path().join(".git/hooks/pre-commit");
     let seen = dir.path().join("seen.txt");
-    std::fs::write(
-        &hook,
-        format!(
-            "#!/bin/sh\nprintf '%s %s' \"$GIT_TERMINAL_PROMPT\" \"$GIT_LITERAL_PATHSPECS\" > '{}'\n",
-            seen.display()
-        ),
-    )
-    .unwrap();
+    // `tee` writes the hook, so this process never holds it open for writing.
+    // On Linux a child that another test thread forks meanwhile keeps that
+    // handle until it execs, and git cannot run the hook (ETXTBSY) until then.
+    let mut tee = Command::new("tee")
+        .arg(&hook)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let body = format!(
+        "#!/bin/sh\nprintf '%s %s' \"$GIT_TERMINAL_PROMPT\" \"$GIT_LITERAL_PATHSPECS\" > '{}'\n",
+        seen.display()
+    );
+    tee.stdin
+        .take()
+        .unwrap()
+        .write_all(body.as_bytes())
+        .unwrap();
+    assert!(tee.wait().unwrap().success());
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     let g = GitRepo::new(dir.path().to_path_buf());
     std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
