@@ -18,6 +18,9 @@ ignore = [
   { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident 0.9.0 is pulled by Tauri's urlpattern stack; no safe upgrade is available" },
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version 0.9.0 is pulled by Tauri's urlpattern stack; no safe upgrade is available" },
   { id = "RUSTSEC-2024-0320", reason = "yaml-rust 0.4.5 is an unmaintained transitive dependency of syntect; no safe upgrade is available" },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant 4.2.0 and 5.15.0 are part of zbus, pulled on Linux by keyring 3.6.3's Secret Service backend (ferro-core) and by tauri-plugin-opener and tauri-plugin-single-instance; no safe upgrade is available" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names 3.0.0 and 4.3.4 are part of zbus, pulled on Linux by keyring 3.6.3's Secret Service backend (ferro-core) and by tauri-plugin-opener and tauri-plugin-single-instance; no safe upgrade is available" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 4.2.0 and 5.15.0 are part of zbus, pulled on Linux by keyring 3.6.3's Secret Service backend (ferro-core) and by tauri-plugin-opener and tauri-plugin-single-instance; no safe upgrade is available" },
 ]
 
 [licenses]
